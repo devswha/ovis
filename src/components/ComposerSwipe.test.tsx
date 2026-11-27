@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, mock, spyOn } from "bun:test";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { Composer, type ComposerProps } from "./Composer.tsx";
 import * as settingsModule from "../lib/settings.ts";
 import * as commandsModule from "../lib/usePaneCommands.ts";
@@ -10,23 +11,18 @@ import { composerDrafts } from "../lib/composerDraft.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
 
 const pane = "swipe-pane", draftKey = `ovis:composer-draft:${pane}`;
-const globals = ["window", "document", "navigator", "requestAnimationFrame", "cancelAnimationFrame", "IS_REACT_ACT_ENVIRONMENT"];
+const globals = ["requestAnimationFrame", "cancelAnimationFrame"];
 const saved = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
-let direction = "ltr";
+let page: Page;
 
 beforeEach(() => {
-  direction = "ltr";
+  page = openPage("https://ovis.test/");
+  for (const [key, value] of Object.entries({ ResizeObserver: page.window.ResizeObserver, HTMLElement: page.window.HTMLElement, Event: page.window.Event, CustomEvent: page.window.CustomEvent })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
   for (const key of globals) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-  const listen = { addEventListener() {}, removeEventListener() {} };
-  const values: Record<string, unknown> = {
-    IS_REACT_ACT_ENVIRONMENT: true,
-    navigator: { languages: ["en"], userAgent: "test", maxTouchPoints: 5 },
-    window: { ...listen, innerWidth: 400, location: { href: "https://ovis.test/" }, matchMedia: () => ({ matches: true, ...listen }), setTimeout, clearTimeout, getComputedStyle: () => ({ direction }) },
-    document: { ...listen, querySelector: () => null },
-    requestAnimationFrame: () => 1,
-    cancelAnimationFrame: () => {},
-  };
+  const values: Record<string, unknown> = { requestAnimationFrame: () => 1, cancelAnimationFrame: () => {} };
   for (const key of globals) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: values[key] });
   const data = new Map<string, string>();
   spyOn(paneLifetimes.paneStorage, "getItem").mockImplementation((key) => data.get(key) ?? null);
@@ -37,13 +33,12 @@ beforeEach(() => {
   spyOn(usageModule, "useUsage").mockReturnValue({ report: null } as ReturnType<typeof usageModule.useUsage>);
   spyOn(facesModule, "useFacesArrived").mockReturnValue(0);
   spyOn(voiceModule, "useDictation").mockReturnValue({ shown: false, voice: { state: "idle" }, forget() {} } as unknown as ReturnType<typeof voiceModule.useDictation>);
-  composerDrafts.set(draftKey, "");
+  composerDrafts.set(draftKey, "", "replace");
 });
 
-afterEach(() => {
-  act(() => { renderer?.unmount(); });
-  renderer = undefined;
-  composerDrafts.set(draftKey, "");
+afterEach(async () => {
+  await page.close();
+  composerDrafts.set(draftKey, "", "replace");
   mock.restore();
   for (const [key, descriptor] of saved) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -52,44 +47,61 @@ afterEach(() => {
   saved.clear();
 });
 
-const touch = (x: number, y: number) => ({ clientX: x, clientY: y });
-const event = (...points: { clientX: number; clientY: number }[]) => ({ touches: points, currentTarget: {} });
+type Point = [x: number, y: number, msSinceDown?: number];
 
-async function swipe(draft: string, suggestion: string | null, from: [number, number], to: [number, number]): Promise<string> {
-  const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "idle", connected: true, autoFocus: false, suggestion, onSend: () => true, onAbort() {}, onUploadImage: async () => "" };
-  await act(async () => { renderer?.unmount(); });
-  composerDrafts.set(draftKey, draft);
-  await act(async () => { renderer = create(<Composer {...props} />); });
-  const box = renderer!.root.findAll((node) => node.type === "textarea" && node.props.onTouchStart !== undefined)[0]!;
-  await act(async () => { box.props.onTouchStart(event(touch(...from))); });
-  await act(async () => { box.props.onTouchMove(event(touch(...to))); });
+function touch(field: Element, type: string, [x, y, at = 0]: Point): void {
+  const point = new page.window.Touch({ identifier: 1, target: field as never, clientX: x, clientY: y });
+  const event = new page.window.TouchEvent(type, { bubbles: true, cancelable: true, touches: [point], changedTouches: [point] });
+  // React reads a zero timeStamp as missing and uses the clock instead
+  Object.defineProperty(event, "timeStamp", { value: 1000 + at });
+  field.dispatchEvent(event as never);
+}
+
+async function swipe(draft: string, suggestion: string | null, path: Point[], over: Partial<ComposerProps> = {}): Promise<string> {
+  const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "idle", connected: true, autoFocus: false, suggestion, onSend: () => true, onAbort() {}, onUploadImage: async () => "", ...over };
+  composerDrafts.set(draftKey, draft, "replace");
+  await page.render(<Composer {...props} />);
+  const box = page.one("textarea.composer-text");
+  const [first, ...rest] = path;
+  await act(async () => { touch(box, "touchstart", first!); });
+  for (const point of rest) await act(async () => { touch(box, "touchmove", point); });
   return composerDrafts.read(draftKey).text;
 }
 
 it("a forward swipe across the empty box takes the suggestion", async () => {
-  expect(await swipe("", "run the tests", [100, 300], [200, 305])).toBe("run the tests");
+  expect(await swipe("", "run the tests", [[100, 300], [200, 305]])).toBe("run the tests");
 });
 
 it("a right-to-left box takes a swipe to the left", async () => {
-  direction = "rtl";
-  expect(await swipe("", "run the tests", [200, 300], [100, 300])).toBe("run the tests");
+  page.container.style.direction = "rtl";
+  expect(await swipe("", "run the tests", [[200, 300], [100, 300]])).toBe("run the tests");
 });
 
 it("leaves the box alone for a backward swipe, a vertical drag, an edge start or typed text", async () => {
-  expect(await swipe("", "run the tests", [200, 300], [100, 300])).toBe("");
-  expect(await swipe("", "run the tests", [100, 300], [130, 420])).toBe("");
-  expect(await swipe("", "run the tests", [10, 300], [200, 300])).toBe("");
-  expect(await swipe("typed", "run the tests", [100, 300], [200, 300])).toBe("typed");
+  expect(await swipe("", "run the tests", [[200, 300], [100, 300]])).toBe("");
+  expect(await swipe("", "run the tests", [[100, 300], [130, 420]])).toBe("");
+  expect(await swipe("", "run the tests", [[10, 300], [200, 300]])).toBe("");
+  expect(await swipe("typed", "run the tests", [[100, 300], [200, 300]])).toBe("typed");
 });
 
-it("shows the arrow only over an empty box with a suggestion, and a tap on it takes the suggestion", async () => {
-  const arrows = () => renderer!.root.findAll((node) => node.type === "button" && node.props.className === "composer-swipe-hint");
-  // a backward stroke leaves the empty box as it was, so the arrow is still there to tap
-  expect(await swipe("", "run the tests", [200, 300], [100, 300])).toBe("");
-  expect(arrows().map((arrow) => arrow.props["aria-label"])).toEqual(["Swipe or tap to use the suggestion"]);
-  await act(async () => { arrows()[0]!.props.onClick(); });
-  expect(composerDrafts.read(draftKey).text).toBe("run the tests");
-  expect(arrows()).toHaveLength(0);
-  await swipe("", null, [200, 300], [100, 300]);
-  expect(arrows()).toHaveLength(0);
+it("a stroke that began as a scroll stays one when it turns sideways", async () => {
+  expect(await swipe("", "run the tests", [[100, 300], [103, 330], [200, 332]])).toBe("");
+});
+
+it("a long press that then slides is the caret or a selection, not a swipe", async () => {
+  expect(await swipe("", "run the tests", [[100, 300, 0], [102, 301, 300], [200, 302, 800]])).toBe("");
+  // a quick start that slows down is still a swipe
+  expect(await swipe("", "run the tests", [[100, 300, 0], [120, 301, 60], [200, 302, 900]])).toBe("run the tests");
+});
+
+it("does nothing while text is selected or in a pane that may only be watched", async () => {
+  const selection = spyOn(page.window.document, "getSelection").mockReturnValue({ isCollapsed: false } as never);
+  expect(await swipe("", "run the tests", [[100, 300], [200, 305]])).toBe("");
+  selection.mockRestore();
+  expect(await swipe("", "run the tests", [[100, 300], [200, 305]], { role: "observe" })).toBe("");
+});
+
+it("adds nothing to the box: no hint and no extra room", async () => {
+  await swipe("", "run the tests", [[200, 300], [100, 300]]);
+  expect(page.container.querySelectorAll(".composer-swipe-hint, .has-swipe-hint")).toHaveLength(0);
 });

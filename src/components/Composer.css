@@ -1500,35 +1500,3 @@
     }
   }
 }
-
-/* the empty box's suggestion takes a forward swipe on a touch screen: a dim arrow at the end of the
-   first line says so, and gives a screen reader the action; the text leaves it room */
-.composer-swipe-hint {
-  display: none;
-}
-
-@media (pointer: coarse) {
-  .composer-swipe-hint {
-    display: block;
-    position: absolute;
-    inset-block-start: var(--space-3);
-    inset-inline-end: var(--space-2);
-    z-index: 1;
-    padding: 0 var(--space-1);
-    border: 0;
-    background: none;
-    color: var(--text-dim);
-    font: inherit;
-    line-height: var(--lh-code);
-    opacity: 0.6;
-  }
-
-  .composer-text.has-swipe-hint,
-  .composer-measure.has-swipe-hint {
-    padding-inline-end: var(--space-6);
-  }
-
-  .composer-swipe-hint:dir(rtl) {
-    transform: scaleX(-1);
-  }
-}

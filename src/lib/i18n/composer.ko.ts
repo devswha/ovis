@@ -130,7 +130,6 @@ export const COMPOSER_KO: Record<string, string> = {
   "Transcribing…": "음성 변환 중…",
   "Transcription failed": "음성 변환에 실패했습니다",
   "Use the suggestion": "제안 사용",
-  "Swipe or tap to use the suggestion": "밀거나 탭해서 제안 사용",
   "Send “{reply}”": "“{reply}” 보내기",
   "Terminal commands": "터미널 명령",
   "Skills and files": "스킬과 파일",

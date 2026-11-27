@@ -130,7 +130,6 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Transcribing…": "正在转录…",
   "Transcription failed": "转录失败",
   "Use the suggestion": "使用建议",
-  "Swipe or tap to use the suggestion": "滑动或轻点以使用建议",
   "Send “{reply}”": "发送“{reply}”",
   "Terminal commands": "终端命令",
   "Skills and files": "技能和文件",

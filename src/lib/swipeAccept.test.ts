@@ -1,43 +1,56 @@
 import { describe, expect, test } from "bun:test";
-import { ACCEPT_SWIPE_PX, isAcceptSwipe, SCREEN_EDGE_PX, type SwipeStroke } from "./swipeAccept.ts";
+import { ACCEPT_SWIPE_PX, LONG_PRESS_MS, SCREEN_EDGE_PX, SLOP_PX, trackAcceptSwipe, type SwipeStart, type SwipeVerdict } from "./swipeAccept.ts";
 
-const stroke = (over: Partial<SwipeStroke>): SwipeStroke =>
-  ({ startX: 100, startY: 300, x: 100, y: 300, viewportWidth: 400, rtl: false, touches: 1, ...over });
+type Move = [x: number, y: number, at?: number, touches?: number];
 
-describe("isAcceptSwipe", () => {
+function verdicts(moves: Move[], over: Partial<SwipeStart> = {}): SwipeVerdict[] {
+  const move = trackAcceptSwipe({ x: 100, y: 300, at: 0, viewportWidth: 400, rtl: false, ...over });
+  return moves.map(([x, y, at = 0, touches = 1]) => move({ x, y, at, touches }));
+}
+
+describe("trackAcceptSwipe", () => {
   test("a forward stroke past the threshold accepts", () => {
-    expect(isAcceptSwipe(stroke({ x: 100 + ACCEPT_SWIPE_PX }))).toBe(true);
-    expect(isAcceptSwipe(stroke({ x: 220, y: 310 }))).toBe(true);
+    expect(verdicts([[100 + ACCEPT_SWIPE_PX, 300]])).toEqual(["accept"]);
+    expect(verdicts([[220, 310]])).toEqual(["accept"]);
   });
 
-  test("a short stroke or a tap does not", () => {
-    expect(isAcceptSwipe(stroke({}))).toBe(false);
-    expect(isAcceptSwipe(stroke({ x: 100 + ACCEPT_SWIPE_PX - 1 }))).toBe(false);
+  test("a short stroke or a resting finger is not decided yet", () => {
+    expect(verdicts([[100 + SLOP_PX - 1, 300], [100 + ACCEPT_SWIPE_PX - 1, 300], [100 + ACCEPT_SWIPE_PX, 300]])).toEqual(["pending", "pending", "accept"]);
   });
 
   test("a backward stroke does not", () => {
-    expect(isAcceptSwipe(stroke({ x: 100 - 120 }))).toBe(false);
+    expect(verdicts([[100 - 120, 300]])).toEqual(["cancel"]);
   });
 
   test("a right-to-left box takes the mirrored direction", () => {
-    expect(isAcceptSwipe(stroke({ rtl: true, x: 100 - 80 }))).toBe(true);
-    expect(isAcceptSwipe(stroke({ rtl: true, x: 100 + 80 }))).toBe(false);
+    expect(verdicts([[100 - 80, 300]], { rtl: true })).toEqual(["accept"]);
+    expect(verdicts([[100 + 80, 300]], { rtl: true })).toEqual(["cancel"]);
   });
 
   test("a vertical or diagonal drag is left to scrolling", () => {
-    expect(isAcceptSwipe(stroke({ x: 160, y: 400 }))).toBe(false);
-    expect(isAcceptSwipe(stroke({ x: 160, y: 340 }))).toBe(false);
-    expect(isAcceptSwipe(stroke({ x: 160, y: 320 }))).toBe(true);
+    expect(verdicts([[160, 400]])).toEqual(["cancel"]);
+    expect(verdicts([[160, 340]])).toEqual(["cancel"]);
+    expect(verdicts([[160, 320]])).toEqual(["accept"]);
+  });
+
+  test("a decided stroke stays decided: a scroll that turns sideways is still a scroll", () => {
+    expect(verdicts([[103, 330], [250, 332]])).toEqual(["cancel", "cancel"]);
+    expect(verdicts([[200, 300], [100, 300]])).toEqual(["accept", "accept"]);
+  });
+
+  test("a finger that rests before it moves is a long press", () => {
+    expect(verdicts([[102, 301, LONG_PRESS_MS], [200, 300, LONG_PRESS_MS + 1]])).toEqual(["pending", "cancel"]);
+    expect(verdicts([[120, 301, LONG_PRESS_MS], [200, 300, 5 * LONG_PRESS_MS]])).toEqual(["pending", "accept"]);
   });
 
   test("a stroke starting at a screen edge is the system's", () => {
-    expect(isAcceptSwipe(stroke({ startX: SCREEN_EDGE_PX - 1, x: 150 }))).toBe(false);
-    expect(isAcceptSwipe(stroke({ startX: SCREEN_EDGE_PX, x: 150 }))).toBe(true);
-    expect(isAcceptSwipe(stroke({ startX: 400 - SCREEN_EDGE_PX + 1, x: 500 }))).toBe(false);
-    expect(isAcceptSwipe(stroke({ rtl: true, startX: 400 - SCREEN_EDGE_PX + 1, x: 250 }))).toBe(false);
+    expect(verdicts([[150, 300]], { x: SCREEN_EDGE_PX - 1 })).toEqual(["cancel"]);
+    expect(verdicts([[150, 300]], { x: SCREEN_EDGE_PX })).toEqual(["accept"]);
+    expect(verdicts([[500, 300]], { x: 400 - SCREEN_EDGE_PX + 1 })).toEqual(["cancel"]);
+    expect(verdicts([[250, 300]], { rtl: true, x: 400 - SCREEN_EDGE_PX + 1 })).toEqual(["cancel"]);
   });
 
   test("more than one finger is a pinch or a scroll, not a swipe", () => {
-    expect(isAcceptSwipe(stroke({ x: 220, touches: 2 }))).toBe(false);
+    expect(verdicts([[220, 300, 0, 2], [240, 300]])).toEqual(["cancel", "cancel"]);
   });
 });

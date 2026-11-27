@@ -85,7 +85,7 @@ import { useT } from "../lib/i18n.ts";
 import { failureReason, offersRetry, uploadFailure, type UserFailure } from "../lib/userError.ts";
 import { AttachmentTooLargeError } from "../lib/api.ts";
 import { modalOpen } from "../lib/focus.ts";
-import { isAcceptSwipe } from "../lib/swipeAccept.ts";
+import { trackAcceptSwipe, type SwipeMove, type SwipeVerdict } from "../lib/swipeAccept.ts";
 
 export interface ComposerProps {
   connected: boolean;
@@ -723,36 +723,38 @@ export function Composer({
     if (activeRef.current) element.focus();
   }, []);
 
-  // a forward swipe across the empty box takes the suggestion, as Tab does; a phone has no Tab
-  const swipe = useRef<{ x: number; y: number } | null>(null);
-  const swipeable = offered !== null && text === "";
+  // a forward swipe across the empty box takes the suggestion, as Tab does; a phone has no Tab.
+  // Not while text is selected: the finger is dragging the selection's handles
+  const swipe = useRef<((move: SwipeMove) => SwipeVerdict) | null>(null);
+  const swipeable = offered !== null && text === "" && !viewOnly;
   const swipeAccept = useMemo(() => ({
     onTouchStart: (event: React.TouchEvent<HTMLTextAreaElement>) => {
       const touch = event.touches[0];
-      swipe.current = swipeable && event.touches.length === 1 && touch ? { x: touch.clientX, y: touch.clientY } : null;
+      swipe.current = swipeable && event.touches.length === 1 && touch && document.getSelection?.()?.isCollapsed !== false
+        ? trackAcceptSwipe({ x: touch.clientX, y: touch.clientY, at: event.timeStamp, viewportWidth: window.innerWidth,
+          rtl: window.getComputedStyle?.(event.currentTarget).direction === "rtl" })
+        : null;
     },
     onTouchMove: (event: React.TouchEvent<HTMLTextAreaElement>) => {
-      const start = swipe.current, touch = event.touches[0];
-      if (!start || !touch) return;
-      const rtl = window.getComputedStyle?.(event.currentTarget).direction === "rtl";
-      if (event.touches.length > 1) swipe.current = null;
-      else if (isAcceptSwipe({ startX: start.x, startY: start.y, x: touch.clientX, y: touch.clientY, viewportWidth: window.innerWidth, rtl, touches: 1 })) {
-        swipe.current = null;
-        acceptSuggestionRef.current();
-      }
+      const touch = event.touches[0];
+      if (!swipe.current || !touch) return;
+      const verdict = swipe.current({ x: touch.clientX, y: touch.clientY, at: event.timeStamp, touches: event.touches.length });
+      if (verdict === "pending") return;
+      swipe.current = null;
+      if (verdict === "accept" && document.getSelection?.()?.isCollapsed !== false) acceptSuggestionRef.current();
     },
     onTouchEnd: () => { swipe.current = null; },
     onTouchCancel: () => { swipe.current = null; },
   }), [swipeable]);
 
   const acceptSuggestion = useCallback(() => {
-    if (offered === null || textRef.current !== "" || composingRef.current) return;
+    if (viewOnly || offered === null || textRef.current !== "" || composingRef.current) return;
     if (offered.length > MAX_COMPOSER_CHARS) {
       setNote(t("{max}-character limit · {count} over", { max: formatChars(MAX_COMPOSER_CHARS), count: formatChars(offered.length - MAX_COMPOSER_CHARS) }));
       return;
     }
     setTextAndCaret(offered, offered.length);
-  }, [offered, setTextAndCaret]);
+  }, [offered, setTextAndCaret, viewOnly]);
   const acceptSuggestionRef = useRef(acceptSuggestion);
   acceptSuggestionRef.current = acceptSuggestion;
 
@@ -1682,14 +1684,9 @@ export function Composer({
           onInput={(event) => syncTextarea(event.currentTarget)}
           onChange={(event) => syncTextarea(event.currentTarget)}
         />
-        {/* a dim arrow at the end of the first line says the suggestion can be swiped in; it is also the action for a screen reader */}
-        {swipeable && (
-          <button type="button" tabIndex={-1} className="composer-swipe-hint" title={t("Swipe or tap to use the suggestion")} aria-label={t("Swipe or tap to use the suggestion")}
-            onClick={acceptSuggestion}>→</button>
-        )}
         <textarea
           ref={measurementRef}
-          className={`composer-measure${swipeable ? " has-swipe-hint" : ""}`}
+          className="composer-measure"
           rows={1}
           value={text}
           placeholder={placeholder}

@@ -130,7 +130,6 @@ export const COMPOSER_JA: Record<string, string> = {
   "Transcribing…": "文字起こし中…",
   "Transcription failed": "文字起こしに失敗しました",
   "Use the suggestion": "提案を使う",
-  "Swipe or tap to use the suggestion": "スワイプまたはタップで提案を使う",
   "Send “{reply}”": "「{reply}」を送信",
   "Terminal commands": "ターミナルコマンド",
   "Skills and files": "スキルとファイル",
