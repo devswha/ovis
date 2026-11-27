@@ -1345,6 +1345,17 @@ describe("a Codex TUI on the app server its own launcher started (codex --remote
     finally { read.mockRestore(); }
   });
 
+  launchIt("reads the server's peer from an ss that prints socket inodes as signed 32-bit numbers (iproute2 6.1)", async () => {
+    await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(served)], [lock(served)]);
+    // what iproute2 6.1's ss prints once the kernel's socket inodes pass 2^31: each inode less 2^32
+    const bin = mkdtempSync(join(root, "ss-"));
+    writeFileSync(join(bin, "ss"), `#!/bin/sh\n${Bun.which("ss")} "$@" | awk '$1 == "u_str" { $(NF-2) -= 4294967296; $NF -= 4294967296 } { print }'\n`, { mode: 0o755 });
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path}`;
+    try { expect(await resolve()).toBe(rollout); }
+    finally { process.env.PATH = path; }
+  });
+
   for (const change of ["lost writer lock", "reused server birth"]) launchIt(`drops a remote tmux rollout after attachment recheck: ${change}`, async () => {
     const pid = await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(served)], [lock(served)]);
     const argv = ["codex", "--remote", `unix://${socket}`];

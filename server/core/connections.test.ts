@@ -69,6 +69,27 @@ function watching() {
 }
 const GRID = { cols: 80, rows: 24 };
 
+it("offers blocking hook cards only to a connected driver watching that pane's Chat", () => {
+  const h = harness();
+  h.client.data.attached.set("p", { keepSize: false });
+  h.client.data.conversationWatches.add("p");
+  h.client.data.promptWatches.add("p");
+  expect(h.chatConnected("p")).toBe(false);
+  h.client.data.conversationInterests.add("p");
+  expect(h.chatConnected("p")).toBe(false); // older client: its watch survives a temporary Terminal view
+  h.client.data.attached.set("p", { keepSize: false, visibleCards: true });
+  expect(h.chatConnected("p")).toBe(true);
+  expect(h.chatConnected("other")).toBe(false);
+  h.client.data.conversationInterests.delete("p");
+  expect(h.chatConnected("p")).toBe(false);
+  h.client.data.conversationInterests.add("p");
+  h.setRole(h.client, "observe");
+  expect(h.chatConnected("p")).toBe(false);
+  h.setRole(h.client, "interact");
+  h.end(h.client, "closed");
+  expect(h.chatConnected("p")).toBe(false);
+});
+
 it("T46/S24: a lock fired between the upgrade and opening prevents admission", () => {
   const opened = harness();
   const signal = new LockSignal();

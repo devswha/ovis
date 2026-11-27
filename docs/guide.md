@@ -266,7 +266,7 @@ The chat view reads the agent's own session files wherever it knows where they a
 | **omo** | Native session file, found through the pane's process tree | ✓ the `/model` list (picked for the session); other menus — use Terminal |
 | **gjc** | Native session file reported by the web UI's GJC extension, verified against the pane's process | — use Terminal |
 | **pi** | Native session file, resolved through herdr; after `/tree`, the branch in play | ✓ its dialogs: a question, a confirmation, an answer typed in |
-| **Command Code** (`cmd`) | Native session file under `~/.commandcode/projects/`, named by the session herdr reports for the pane (see below); after `/tree`, the branch in play. Start it from **New workspace**, **New tab with agent…** or **New worktree** on Linux and macOS | ✓ its permission prompts: Yes / Yes, don't ask again / No |
+| **Command Code** (`cmd`) | Native session under `~/.commandcode/projects/`, identified by the pane's process (see below). Start it from **New workspace**, **New tab with agent…** or **New worktree** on Linux and macOS | ✓ allow once, deny, or answer a question in Chat; hand it back to Terminal |
 | **OpenCode** | Native session in OpenCode 2's own database, resolved through herdr: `~/.local/share/opencode/opencode.db` (`%USERPROFILE%\.local\share\opencode\opencode.db` on Windows), or where the server's `XDG_DATA_HOME` or `OPENCODE_DB` puts it | ✓ its questions on OpenCode 2.0 or later, answered through its background service (`~/.local/state/opencode/service.json`, or under the server's `XDG_STATE_HOME`) one question at a time, with Back to change an earlier one; its permission requests on OpenCode 2 (a shell command, a file edit with its patch, a web fetch, an MCP tool with its input), answered Allow once, Always allow or Deny through the same service, the card closing when the terminal answers first; other prompts, and OpenCode 1 — use Terminal |
 | **Devin CLI** | Native SQLite session, showing the active branch when herdr or the live process explicitly identifies the session; otherwise terminal text | — use Terminal |
 | **Grok** | Native update log on Linux and macOS. Any Grok executable named `grok` or `grok-…` that holds the `events.jsonl` for the session Herdr reported in exactly one directory, with a newer write time than every other held session. Linux reads `/proc`; macOS reads that process's held files through `lsof` and its environment through `sysctl KERN_PROCARGS2`, not the bridge's home. It verifies the kernel's microsecond process start time through `sysctl kern.proc.pid` around those reads and a fresh pane foreground lookup. Older open files do not hide it; ambiguous IDs, tied times, and a held file that may be a renamed events file use Terminal. After a `/resume` Herdr does not hear about, Chat can keep showing the previous conversation until the resumed session writes; it then uses Terminal until Herdr names that session. Windows uses Terminal. See [Grok setup and limits](grok-chat.md). | — use Terminal |
@@ -353,13 +353,25 @@ then restart gentle-shell. Without it a gentle-shell pane uses Terminal. This wo
 Ovis cannot read a running pi's environment, so it looks for the extension in its own pi home only,
 and a gentle-shell pane there uses Terminal too.
 
-Command Code chat needs the session herdr reports for the pane. Command Code sends that report
-and herdr keeps only the sessions of the agents it knows natively, so no released herdr accepts
-it yet: the pane's status, title and model arrive, its conversation does not. Without it the
-bridge cannot tell which file under `~/.commandcode/projects/` a pane is showing, and two `cmd`
-panes in one folder are indistinguishable, so Command Code opens in Terminal. Its permission
-prompt cards are read off the screen, not from the session file, so they answer from the chat
-either way.
+When Ovis starts Command Code 1.93.4 or later in the 1.x series on local herdr-core, it passes
+a session-only `--mod` if the pane's PATH selects the executable whose version Ovis checked.
+If the workspace selects another `cmd`, or the runtime cannot verify the command (including
+herdr's manifest-based launcher), it starts normally without the mod. The mod identifies the
+session and reports turn ends. It changes no Command Code settings.
+A connected device can answer a permission request or `ask_user_question` in Chat. Command Code
+waits for the mod before drawing its own prompt: choose **Answer in terminal**, or wait five
+minutes, to return it there. Leaving Chat on the last device that can answer also releases the
+request. With no connected device viewing the pane's Chat, an unreachable bridge,
+a safety-forced prompt, or an option preview the card cannot show, the native prompt takes over.
+The mod offers only one-time decisions. After a handoff, the existing screen-based cards reflect
+Command Code's own terminal choices. The per-process session file keeps Chat bound to the same
+session if Ovis restarts while Command Code is running.
+
+Starting `cmd` yourself, `--safe-mode`, and older or unrecognized versions keep the existing
+terminal behavior and screen-based permission cards. For self-started sessions only, you can
+optionally copy `integrations/cmd-session.ts` to `~/.commandcode/mods/ovis-session.ts` and restart
+Command Code. This identifies the session in `~/.commandcode/ovis/<pid>.json` for Chat and adds
+`command-code --session <id>` to herdr's resume report; it does not enable Chat-first prompts.
 
 Devin sessions are never selected by directory or recency alone. A plain `devin` shows the
 terminal text, since herdr does not report its session without its Devin integration; a session
