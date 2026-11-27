@@ -111,7 +111,7 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
       mkdirSync(process.env.UI_EVIDENCE_DIR, { recursive: true });
       await page.locator(".sidebar-shell").screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-popover.png") });
     }
-    const refreshed = page.waitForRequest((request) => request.url().endsWith("/api/usage?refresh=1"));
+    const refreshed = page.waitForRequest((request) => request.url().includes("/api/usage?refresh=1"));
     await popover.getByRole("button", { name: "Refresh", exact: true }).click();
     await refreshed;
     await page.keyboard.press("Escape");
