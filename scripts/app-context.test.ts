@@ -118,4 +118,13 @@ describe("the fake clock", () => {
     expect([page.url(), await page.evaluate(() => typeof (window as unknown as { started: unknown }).started)]).toEqual(["about:blank", "number"]);
     await expect(installClock(page)).rejects.toThrow("before the page loads anything");
   });
+
+  test.skipIf(noBrowser)("is refused under a setContent whose script left no node behind", async () => {
+    const context = await appContext(browser);
+    opened.push(context);
+    const page = await context.newPage();
+    await page.setContent("<script>window.started = setInterval(() => {}, 1000); document.currentScript.remove();</script>");
+    expect([page.url(), await page.evaluate(() => document.head.childNodes.length + document.body.childNodes.length), await page.evaluate(() => typeof (window as unknown as { started: unknown }).started)]).toEqual(["about:blank", 0, "number"]);
+    await expect(installClock(page)).rejects.toThrow("before the page loads anything");
+  });
 });
