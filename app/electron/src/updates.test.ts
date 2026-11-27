@@ -101,15 +101,16 @@ describe("checkFeeds", () => {
       const config = join(root, "resources", "app-update.yml");
       writeFileSync(config, `provider: generic\nurl: ${STABLE_FEED}\nupdaterCacheDirName: ovis-desktop-updater\n`);
       const feedFile = (version: string) => `version: ${version}\nfiles:\n  - url: Ovis-linux-x64.deb\n    sha512: c2hhNTEy\n    size: 12\npath: Ovis-linux-x64.deb\nsha512: c2hhNTEy\n`;
-      // what each check finds, by the file it asks for: the beta feed's last beta, the stable feed's release
+      // what each check finds, by the feed it asks: the beta feed's last beta, the stable feed's release
+      // (the channel file's name depends on the platform the test runs on: beta-linux.yml, beta.yml on Windows)
       const offered = async (running: string, beta: string, stable: string) => {
         const app = { version: running, name: "Ovis", isPackaged: true, appUpdateConfigPath: config, userDataPath: join(root, "user-data"),
           baseCachePath: join(root, "cache"), whenReady: () => Promise.resolve(), quit() {}, relaunch() {}, onQuit() {} };
         const httpExecutor = {
           request: async (options: { path?: string; hostname?: string }) => {
             const path = options.path ?? "";
-            if (path.includes("/desktop-beta/beta-linux.yml")) return feedFile(beta);
-            if (path.includes("/latest/download/latest-linux.yml")) return feedFile(stable);
+            if (/\/desktop-beta\/beta[\w-]*\.yml/.test(path)) return feedFile(beta);
+            if (/\/latest\/download\/latest[\w-]*\.yml/.test(path)) return feedFile(stable);
             throw new Error(`no such feed file: ${path}`);
           },
           download: async () => { throw new Error("not downloaded here"); },
