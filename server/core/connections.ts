@@ -419,5 +419,15 @@ export function createConnections({ clients, present, pending, devices, detachCl
     }
   }
 
-  return { mayType, authorizeSocket, admit, setRole, watchPane, unwatchPane, killWatches, end };
+  /** An attached Terminal alone cannot answer a Chat card. ChatView registers a conversation interest
+   * while visible; detached clients may watch the conversation or the prompt directly. */
+  function chatConnected(paneId: string): boolean {
+    for (const client of clients) {
+      if (client.readyState === WebSocket.OPEN && mayType(client) && (client.data.conversationInterests.has(paneId)
+        || client.data.conversationWatches.has(paneId) || client.data.promptWatches.has(paneId))) return true;
+    }
+    return false;
+  }
+
+  return { mayType, chatConnected, authorizeSocket, admit, setRole, watchPane, unwatchPane, killWatches, end };
 }

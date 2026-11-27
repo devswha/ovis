@@ -1182,6 +1182,8 @@ export interface InteractivePromptAnswer {
 }
 
 export interface InteractivePromptOption {
+  /** Release a blocking hook instead of selecting an answer (also on a multiple-choice card). */
+  action?: "terminal";
   label: string;
   description: string | null;
   /** true when the agent explicitly marked this option as its recommended pick. */
