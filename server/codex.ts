@@ -3506,7 +3506,7 @@ async function withoutStartedThreads(paneId: string, processes: string, screen: 
 
 /**
  * A pane's rollout and how codexTranscriptPath knew it: `served` when the Codex server Ovis started beside the pane
- * says it (servedRollouts), `held` when the pane's Codex, or the server its TUI runs on, holds that file open, and
+ * says it (servedRollouts), `held` when the pane's Codex, or the server its TUI runs on, is proven to hold that file open, and
  * `inferred` for every other way (the screen, a binding remembered from it, the thread herdr reported, the command
  * line). For the reader to tell a fact from a guess; nothing refuses an inferred one yet.
  */
@@ -3584,7 +3584,8 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     // held, but its file not provable (a conflict, a closed descriptor, lsof without D or i): an empty proof, which
     // the outcome read never matches, rather than the unchecked read a rollout chosen by other means keeps (#3402)
     proofs?.set(only, held.get(only) ?? "");
-    return { path: only, how: "held" };
+    // the path a descriptor named may lead to another file by now: held only for the file proven open
+    return { path: only, how: held.has(only) ? "held" : "inferred" };
   }
   const served = open.size === 0 ? ownServerRollout(codexProcesses, home) : null;
   // the pane's own server is known: no screen or folder evidence stands in for what it does not tell

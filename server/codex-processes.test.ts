@@ -1094,7 +1094,7 @@ describe("a Codex TUI on the app server its own launcher started (codex --remote
 
   launchIt("reads the one conversation the server beside it holds, with no screen evidence", async () => {
     await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(served)], [lock(served)]);
-    expect(await resolve()).toBe(rollout);
+    expect(await resolveHow()).toEqual({ path: rollout, how: "held" });
   });
 
   launchIt("takes none, not even by the screen, while the server holds another thread's lock too: a /new not written yet", async () => {
@@ -1185,7 +1185,7 @@ describe("a thread of another folder Codex has loaded, as a resume through the p
     writeFileSync(join(home, "thread-writer-locks", `${other}.lock`), "");
     expect(await resolve()).toBeNull();
     await loaded(other);
-    expect(await resolve()).toBe(rollout);
+    expect(await resolveHow()).toEqual({ path: rollout, how: "inferred" });
     screen = `• ${otherAnswer}\n• All tests passed (38s).`;
     expect(await resolve()).toBe(rollout);
     // nothing binds: a background reader is not told, and the screen is asked again each time,
