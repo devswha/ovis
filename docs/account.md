@@ -568,6 +568,37 @@ after a minute. Only this PC's own window or CLI gets one (403 `owner_only` othe
 `one-press`); 503 `account_unavailable` when the service gave no challenge. The way back into an
 account after `ovis logout` is so a sign-in on the PC itself.
 
+`GET /api/account/move` and `POST /api/account/move`: this PC's own window only, with Step 2 on.
+When the window is signed in to another account, **Move this PC to this account** moves the PC there
+with the account service's existing routes, keeping its paired devices as local pairings (without
+making them members of the destination):
+
+- `{ "into", "stage": "prepare", "provider"? }` writes the move journal before anything is asked of
+  the service, and answers `200 { "state": "prepare", "pc": { "server_id", "public_key", "relay",
+  "name"? } }`: what the window lists in the destination (`PUT /v1/pcs/{server_id}`) before it
+  admits it (`POST /v1/pcs/{server_id}/admit`) with its own sign-in. `provider` is how that sign-in
+  was made; the PC names it for its relay pass once it is in the destination.
+- `{ "into" }` takes the destination's admission, asks for a relay pass under it, and switches the
+  binding in one write: `200 { "state": "moved", "account" }`. `200 { "state": "sign_in", "account" }`
+  when no admission waits yet (the window lists and admits the PC first); `202 { "state": "pending" }`
+  while something can be asked again (the service, a file).
+- `{ "into", "stage": "cancel" }` gives the move up only before the PC took the admission:
+  `200 { "state": "aborted", "account", "reason": "cancelled" }`. Once it took it, or switched, the
+  move only goes forward, and the answer is the move's own (`pending` while the mailbox does not
+  answer).
+
+From the journal on, the PC finishes the move by itself, at its start and on its own retries, without
+a window: it takes an admission as soon as one waits, completes the destination's add, then leaves
+the old account (`POST /v1/pcs/{server_id}/leave`) until that answers 204, and only then drops the
+journal. A move given up answers `aborted` with its `reason`: `cancelled`, `relay_limit` (the
+destination has no relay slot for another PC), `list_account` (either account keeps a signed list,
+which this move does not support), `listing_changed` (the destination's listing changed before the
+switch) or `binding_changed` (the PC left its account meanwhile). A move given up never removes the
+destination's listing: the window says the PC is still listed there, to remove there if it is not
+wanted. `GET` answers `{ "into" }`, the destination of a move under way (else `null`), and while the
+PC stays in its account the last move given up as `aborted`. One press still refuses to move a PC
+that is already in an account.
+
 `GET /api/account/list`: how this PC follows
 [its account's signed list](#the-accounts-signed-list-on-a-pc), for this PC's own window and CLI
 alone (403 `owner_only` otherwise); 404 with Step 2 off.

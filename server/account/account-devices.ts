@@ -65,6 +65,8 @@ export class AccountDeviceStore implements AccountRowSource {
 
   missing(): boolean { return !existsSync(this.path); }
 
+  account(): string | null { return this.file.account; }
+
   rows(): readonly AccountRow[] { return this.error === null ? this.file.devices : []; }
 
   row(id: string): AccountRow | null {

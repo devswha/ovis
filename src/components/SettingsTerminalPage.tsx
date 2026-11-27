@@ -1,8 +1,9 @@
 import { useContext, type RefObject } from "react";
-import { AppWindow, ClipboardCopy, Image as ImageIcon, Keyboard, Mouse, TextCursorInput } from "lucide-react";
+import { AppWindow, ClipboardCopy, Image as ImageIcon, Keyboard, LockKeyhole, Mouse, TextCursorInput } from "lucide-react";
 
-import { TERMINAL_WHEEL_SPEED_MAX, TERMINAL_WHEEL_SPEED_MIN, useSettings } from "../lib/settings.ts";
+import { TERMINAL_WHEEL_SPEED_MAX, TERMINAL_WHEEL_SPEED_MIN, secretFieldOn, useSettings } from "../lib/settings.ts";
 import { useT } from "../lib/i18n.ts";
+import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { KeyBarToggles } from "./KeyBarSettings.tsx";
 import { SettingsBare, Segmented, SettingsFold, SettingsGroup, SettingsQuery, SettingsRow, SettingsSelect, Stepper, Toggle } from "./SettingsControls.tsx";
 import { HERDR_WINDOW_CHOICES, type HerdrWindowChoice } from "../lib/herdrWindow.ts";
@@ -11,6 +12,7 @@ export function TerminalPage({ keyBarButtonRef, onEditKeyBar, picturesByDefault 
   const { settings, update } = useSettings();
   const t = useT();
   const searching = useContext(SettingsQuery).length > 0;
+  const touch = useMediaQuery("(pointer: coarse)");
   const herdrWindow: HerdrWindowChoice = settings.followHerdrFocus ? "follow" : settings.releasePaneAway ? "alongside" : "separate";
   return (
     <SettingsBare.Provider value={true}>
@@ -20,6 +22,9 @@ export function TerminalPage({ keyBarButtonRef, onEditKeyBar, picturesByDefault 
         <SettingsSelect id="terminal-input-mode" value={settings.terminalInputMode === "line" ? "line" : "direct"} onChange={(event) => update({ terminalInputMode: event.target.value as "line" | "direct" })}>
           <option value="direct">{t("Direct typing")}</option><option value="line">{t("Input line")}</option>
         </SettingsSelect>
+      </SettingsRow>
+      <SettingsRow label={t("Password field")} description={t("When a terminal asks for a password, type it in a masked field instead of the terminal, so a phone keyboard does not learn it. On by default on a touch screen; Input line always uses it.")} icon={LockKeyhole} reset={["terminalSecretField"]}>
+        <Toggle label={t("Password field")} checked={secretFieldOn(settings, touch)} onChange={(terminalSecretField) => update({ terminalSecretField })} />
       </SettingsRow>
       <SettingsRow label={t("Wheel scroll speed")} description={t("How far one turn of the mouse wheel scrolls a terminal pane on this device: 1× is the terminal's own step, and a higher number scrolls that many times as far.")} icon={Mouse} reset={["terminalWheelSpeed"]}>
         <Stepper label={t("Wheel scroll speed")} value={settings.terminalWheelSpeed} text={`${settings.terminalWheelSpeed}×`} min={TERMINAL_WHEEL_SPEED_MIN} max={TERMINAL_WHEEL_SPEED_MAX} decreaseLabel={t("Slower wheel scrolling")} increaseLabel={t("Faster wheel scrolling")} onChange={(terminalWheelSpeed) => update({ terminalWheelSpeed })} />

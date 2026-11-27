@@ -18,6 +18,8 @@ export interface AccountRowSource {
   blocked(): string | null;
   /** No `account-devices.json` on disk: no listed row is known here, which is not proof that none was. */
   missing(): boolean;
+  /** The account of the rows on disk, which can be the previous binding during a move. */
+  account?(): string | null;
   rows(): readonly AccountRow[];
   row(id: string): AccountRow | null;
   rename(id: string, label: string): AccountRow | null;
