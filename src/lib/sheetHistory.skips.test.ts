@@ -1148,6 +1148,21 @@ describe("the address bar over a phone's sheets: a pane's address goes onto that
     expect(fake.entries[start]!.href).toBe(address("b"));
   });
 
+  it("follows the user's Back onto pane a's entry right after a closed sheet's own Back landed unheard, and keeps both panes' entries (#4393)", async () => {
+    const start = await open();
+    await show({ paneId: "b" });
+    await lands(() => fake.tap());
+    const leave = sheet(() => {});
+    fake.muteNextBack();
+    await lands(leave);
+    expect(fake.at()).toBe(start + 1);
+    await lands(() => h.back());
+    expect(fake.at()).toBe(start);
+    expect(place.paneId).toBe("a");
+    await rosterAgain();
+    expect(addresses(start).slice(0, 2)).toEqual([address("a"), address("b")]);
+  });
+
   it("writes pane b's file on the file's new entry and keeps pane a's, with no Navigation API and the drawer's way back from a's entry dropped (#4400)", async () => {
     const api = fake.window.navigation;
     (fake.window as { navigation?: unknown }).navigation = undefined;

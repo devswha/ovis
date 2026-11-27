@@ -454,8 +454,16 @@ if (typeof window !== "undefined") {
     if (event === heard) return;
     heard = event;
     holding = false;
-    const was = here;
+    let was = here;
     here = where();
+    // A closed sheet's step lands on the entry it named. One that landed there unheard leaves this
+    // traversal, onto another entry, the user's own, from the entry that step landed on.
+    if (stepping !== null && stepOnto !== null && here !== null && here.key !== stepOnto) {
+      was = navigation()?.entries().find((entry) => entry.key === stepOnto) ?? was;
+      stepping = null;
+      stepOnto = null;
+      seen = null;
+    }
     settle(here);
     ahead = null;
     took = climbing !== null && here?.key === climbing.key;
