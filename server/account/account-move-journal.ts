@@ -38,30 +38,44 @@ export function readMoveJournal(path: string): MoveJournal | "unreadable" | "una
   }
 }
 
+const ABORT_FILE = "account-move-abort.json";
+type Aborted = { readonly id: string; readonly from: string; readonly answer: AccountMoveAborted };
+
+function readAborted(path: string): Aborted | null {
+  try {
+    const doc: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (!isJsonObject(doc) || doc.v !== 1 || typeof doc.id !== "string" || !ID.test(doc.id) || typeof doc.from !== "string"
+      || !isAccountId(doc.from) || typeof doc.into !== "string" || !isAccountId(doc.into)) return null;
+    const reason = doc.reason;
+    if (reason !== "cancelled" && reason !== "relay_limit" && reason !== "list_account" && reason !== "listing_changed" && reason !== "binding_changed") return null;
+    return { id: doc.id, from: doc.from, answer: { state: "aborted", account: doc.into, reason } };
+  } catch (error) {
+    if (error instanceof SyntaxError || (isJsonObject(error) && error.code === "ENOENT")) return null;
+    throw error;
+  }
+}
+
+/** The move journal of this folder and its sibling, which a start copies across (account-merge.ts), and the notice of a move given up, kept in both. */
 export class MoveJournalFile {
   readonly path: string;
-  private readonly abortPath: string;
   private readonly paths: readonly string[];
+  private readonly abortPaths: readonly string[];
   constructor(stateDir: string, sibling: string | null) {
+    const dirs = [...new Set([stateDir, ...(sibling === null ? [] : [sibling])])];
     this.path = join(stateDir, ACCOUNT_MOVE_FILE);
-    this.abortPath = join(stateDir, "account-move-abort.json");
-    this.paths = [...new Set([this.path, ...(sibling === null ? [] : [join(sibling, ACCOUNT_MOVE_FILE)])])];
+    this.paths = dirs.map((dir) => join(dir, ACCOUNT_MOVE_FILE));
+    this.abortPaths = dirs.map((dir) => join(dir, ABORT_FILE));
   }
 
   read() { return readMoveJournal(this.path); }
 
-  aborted(): { id: string; from: string; answer: AccountMoveAborted } | null {
-    try {
-      const doc: unknown = JSON.parse(readFileSync(this.abortPath, "utf8"));
-      if (!isJsonObject(doc) || doc.v !== 1 || typeof doc.id !== "string" || !ID.test(doc.id) || typeof doc.from !== "string"
-        || !isAccountId(doc.from) || typeof doc.into !== "string" || !isAccountId(doc.into)) return null;
-      const reason = doc.reason;
-      if (reason !== "cancelled" && reason !== "relay_limit" && reason !== "list_account" && reason !== "listing_changed" && reason !== "binding_changed") return null;
-      return { id: doc.id, from: doc.from, answer: { state: "aborted", account: doc.into, reason } };
-    } catch (error) {
-      if (error instanceof SyntaxError || (isJsonObject(error) && error.code === "ENOENT")) return null;
-      throw error;
+  /** The last move given up, as either folder holds its notice (this one's first); with `id`, only that move's. */
+  aborted(id?: string): Aborted | null {
+    for (const path of this.abortPaths) {
+      const notice = readAborted(path);
+      if (notice !== null && (id === undefined || notice.id === id)) return notice;
     }
+    return null;
   }
 
   begin(intent: MoveJournal): ReturnType<MoveJournalFile["read"]> {
@@ -81,7 +95,7 @@ export class MoveJournalFile {
   commit<T>(intent: MoveJournal, work: () => T): T | undefined {
     return this.lock(() => {
       const existing = this.read();
-      if (typeof existing !== "object" || existing?.id !== intent.id || this.aborted()?.id === intent.id) return undefined;
+      if (typeof existing !== "object" || existing?.id !== intent.id || this.aborted(intent.id) !== null) return undefined;
       return work();
     });
   }
@@ -91,8 +105,9 @@ export class MoveJournalFile {
     return this.lock(() => {
       const existing = this.read();
       if (typeof existing !== "object" || existing?.id !== intent.id || !mayRemove()) return false;
-      // Keep the notice before unlinking. A stop between these writes still means this move was cancelled.
-      if (reason !== undefined) writePrivateState(this.abortPath, { v: 1, id: intent.id, from: intent.from.account, into: intent.into, reason });
+      // The notice goes to both folders before either journal does: a stop between these writes, then a start from
+      // either folder, still finds the move given up
+      if (reason !== undefined) for (const path of this.abortPaths) writePrivateState(path, { v: 1, id: intent.id, from: intent.from.account, into: intent.into, reason });
       for (const path of [...this.paths].reverse()) {
         const held = readMoveJournal(path);
         if (typeof held === "string") throw new Error("The move journal could not be read");

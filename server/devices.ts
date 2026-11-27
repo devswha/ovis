@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { admissionPosition, compareAdmission, compareAdmissionPositions, isRowOrigin, legacyOrigin, type AdmissionPosition, type RowOrigin } from "./account/admission-order.ts";
 import { type AccountBinding, type AccountClear, type ClearReason, LIST_REMOVED, type ListBound, PcAccountState } from "./account/pc-binding.ts";
 import { isAccountId } from "../shared/account-list-invite.ts";
-import { expiresAt, unusedUntil } from "./account/row-expiry.ts";
+import { unusedUntil } from "./account/row-expiry.ts";
 import type { ListAuthority } from "./account/list-follow.ts";
 import type { BlockAsOf, LiftCause, SafetyGot, SafetyLog, SafetyState } from "./account/safety-log.ts";
 import type { RemovalEvidence } from "./account/removal-evidence.ts";
@@ -1786,15 +1786,21 @@ export class DeviceStore {
     const next = this.devices.map(row => markBeforeMove(row, mark));
     const ids: string[] = [];
     // The listed file, not the new binding, says which account admitted these rows.
+    // Every row the source account let in is carried, whatever its state here: one on its join hold keeps that hold
+    // (a promoted hold, as a pairing over a listed row keeps it), and one that expired or is denied stays so
+    const holds: { readonly held: string; readonly until: string | null }[] = [];
     if (this.joinedRows?.account?.() === from) for (const row of this.joinedRows.rows()) {
-      if (row.state !== "live" || expiresAt(row) <= Date.now() || this.accountRowStale(row, from)) continue;
       const held = next.find(device => device.id === row.id || device.relay_public_key === row.key);
       if (held) {
         if (held.relay_public_key === row.key) ids.push(row.id);
         continue;
       }
+      const holding = row.state === "hold" && (row.hold_until === null || Date.parse(row.hold_until) > Date.now());
+      const notice = holding ? this.listNotice(row)?.id ?? row.id : undefined;
+      if (notice !== undefined) holds.push({ held: notice, until: row.hold_until });
       next.push({ id: row.id, label: row.label, role: this.joinedRole(row), relay_public_key: row.key,
         created_at: row.confirmed_at, last_seen_at: null, origin: row.origin, token_hash: randomBytes(32).toString("hex"),
+        ...(notice === undefined ? {} : { held: notice }),
         before_move: { ...mark, listed: true, origin_day: row.origin.at.slice(0, 10), last_signin_day: row.last_signin_day } });
       ids.push(row.id);
     }
@@ -1802,6 +1808,7 @@ export class DeviceStore {
       this.save(next);
       this.devices = next;
     }
+    for (const { held, until } of holds) this.promotedHolds.carry(held, until);
     if (ids.length) this.joinedRows?.removeRows(ids, "promoted");
     this.movingRows = false;
   }

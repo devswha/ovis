@@ -761,17 +761,11 @@ export class AccountMailbox {
     });
   }
 
-  async moveRelayPass(identity: RelayIdentity, account: string): Promise<void> {
+  /** A relay pass under the destination before the switch: `relay_limit` there gives the move up; the answer is the pass kept after it. */
+  async moveRelayPass(identity: RelayIdentity, account: string): Promise<Record<string, unknown>> {
     const answer = await this.proved(identity, "/v1/pc/relay-pass", { account, pass_versions: [1, 2] });
-    if (parseRelayPass(answer?.pass)?.payload.sid !== identity.server_id) throw new Error("The account service did not issue this PC a relay pass");
-  }
-
-  /** The move journal, not the ordinary add receipt, owns retries and must see completion before leaving the source. */
-  async completeMove(identity: RelayIdentity, account: string, listingId: string): Promise<void> {
-    const scope = { account, listing_id: listingId };
-    if (!completed(await this.proved(identity, "/v1/pc/complete", scope, false, scope))) {
-      throw new Error("The account service did not confirm the PC's completed move");
-    }
+    if (answer === null || parseRelayPass(answer.pass)?.payload.sid !== identity.server_id) throw new Error("The account service did not issue this PC a relay pass");
+    return answer;
   }
 
   async leaveMovedAccount(identity: RelayIdentity, account: string): Promise<void> {

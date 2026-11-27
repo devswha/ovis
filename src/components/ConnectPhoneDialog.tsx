@@ -10,7 +10,7 @@ import type { AddPcPreset } from "../lib/actions.ts";
 import { indexedAccountStore, type AccountProvider, type AccountSession } from "../lib/account/store.ts";
 import { pcAccountStatus, type PcAccountStatus } from "../lib/account/join.ts";
 import { listOfferedPc } from "../lib/account/addThisPc.ts";
-import { cancelPcMove, moveThisPc, pcMoveStatus } from "../lib/account/movePc.ts";
+import { cancelPcMove, MOVE_STATUS_MS, moveThisPc, pcMoveStatus } from "../lib/account/movePc.ts";
 import { decodeOffer } from "../../shared/relay-offer.ts";
 import { AccountService } from "../lib/account/service.ts";
 import type { AddConnectionTab } from "../lib/addConnectionRequest.ts";
@@ -908,10 +908,27 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
   const [moveTo, setMoveTo] = useState<string | null>(null);
   const [moveAnswer, setMoveAnswer] = useState<AccountMoveAnswer | "failed" | null>(null);
   const moveRequest = useRef<AbortController | null>(null);
-  const acceptMove = useCallback((answer: AccountMoveAnswer) => {
+  /** the destination of a move the PC answered pending: it finishes that by itself, and this tab reads until it has */
+  const [settling, setSettling] = useState<string | null>(null);
+  const [settleReads, setSettleReads] = useState(0);
+  const acceptMove = useCallback((answer: AccountMoveAnswer, into?: string) => {
     setMoveAnswer(answer);
+    setSettling(answer.state === "pending" && into !== undefined ? into : null);
     if (answer.state === "moved") setPcAccount(answer.account);
   }, []);
+  useEffect(() => {
+    if (settling === null) return;
+    const read = new AbortController();
+    const timer = setTimeout(() => {
+      void pcMoveStatus(read.signal).then(({ into, aborted }) => {
+        if (read.signal.aborted) return;
+        if (into === settling) setSettleReads((reads) => reads + 1);
+        else if (into === null) acceptMove(aborted?.account === settling ? aborted : { state: "moved", account: settling });
+        else setSettling(null);
+      }, () => { if (!read.signal.aborted) setSettleReads((reads) => reads + 1); });
+    }, MOVE_STATUS_MS);
+    return () => { read.abort(); clearTimeout(timer); };
+  }, [settling, settleReads, acceptMove]);
   const startMove = useCallback((into: string, resuming: boolean) => {
     if (moveRequest.current !== null) return;
     const run = new AbortController();
@@ -919,7 +936,7 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
     setMoveTo(into);
     setMoveAnswer(null);
     void moveThisPc(into, run.signal, resuming).then((answer) => {
-      if (!run.signal.aborted) acceptMove(answer);
+      if (!run.signal.aborted) acceptMove(answer, into);
     }, (error: unknown) => {
       if (run.signal.aborted) return;
       console.warn("Ovis: the PC move could not finish", error instanceof Error ? error.name : error);
@@ -946,7 +963,7 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
     const cancelling = new AbortController();
     moveRequest.current = cancelling;
     setMoveTo(into);
-    void cancelPcMove(into).then(acceptMove, () => setMoveAnswer("failed")).finally(() => {
+    void cancelPcMove(into).then((answer) => acceptMove(answer, into), () => setMoveAnswer("failed")).finally(() => {
       if (moveRequest.current === cancelling) { moveRequest.current = null; setMoveTo(null); }
     });
   };

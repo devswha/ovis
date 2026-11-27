@@ -345,8 +345,20 @@ export class RelayService {
     return true;
   }
 
+  /** The account a pass taken outside the keeper was asked under (adoptPass): the next binding change to it asks for none. */
+  private adopted: string | null = null;
+
+  /** A pass a PC move asked for under `account` before switching to it: the keeper keeps it, and the switch asks no second. */
+  adoptPass(answer: unknown, account: string): void {
+    if (this.passKeeper?.adopt(answer)) this.adopted = account;
+  }
+
   /** The binding changed, so the next pass must name its account even if the last pass still works. */
-  accountChanged(): void { void this.passKeeper?.refresh(); }
+  accountChanged(): void {
+    const adopted = this.adopted;
+    this.adopted = null;
+    if (adopted === null || adopted !== this.passAccount()) void this.passKeeper?.refresh();
+  }
 
   /**
    * Forgets the account named for this PC, as before any was (`ovis join` that ended unbound puts back what it found).

@@ -15,6 +15,8 @@ const refuse = (code: string, message: string, status = 409): MoveOutcome => ({ 
 const unavailable = () => refuse("account_unavailable", "This PC cannot read its account, relay identity or move journal", 503);
 const listAccount = () => refuse("list_account", "This PC cannot move into or out of an account with a signed list");
 const moved = (account: string): AccountMoveAnswer => ({ state: "moved", account });
+/** The first retry of a move that could not advance; each next one waits twice as long, up to a mailbox pull's period. */
+const RETRY_MS = 1_000;
 
 type Ports = {
   readonly stateDir: string;
@@ -26,8 +28,17 @@ type Ports = {
   readonly safety: SafetyLog | null;
 };
 
+/**
+ * A move of this PC from its account to another (docs/account.md, "Moving a PC"), on the account service's existing
+ * routes. The journal is on disk before the destination lists the PC; from then on the server finishes the move by
+ * itself, forward only: it takes the destination's admission whenever one waits, switches the binding in one write,
+ * and leaves the old account until that answers 204. It gives up only before the switch, and never removes the
+ * destination's listing.
+ */
 export class AccountMove {
   private readonly journal: MoveJournalFile;
+  /** One step at a time: an attempt, and a cancel that must see what the attempt took. */
+  private turn: Promise<unknown> = Promise.resolve();
   private attempt: { readonly id: string; readonly result: Promise<MoveOutcome> } | null = null;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private retries = 0;
@@ -47,49 +58,53 @@ export class AccountMove {
     const { devices, relay, holds, mailbox } = this.ports;
     if (this.stopped) return unavailable();
     const { into, stage } = request;
-    const binding = devices.standingAccountBinding();
     const held = this.journal.read();
     if (typeof held === "string") return unavailable();
     if (held !== null && held.into !== into) return refuse("move_in_progress", "This PC is already moving to a different account");
-    if (held && this.switched(held)) return this.run(held, false);
-    if (stage === "cancel") return held === null
-      ? { state: "aborted", account: into, reason: "cancelled" }
-      : this.abort(held, "cancelled");
+    if (stage === "cancel") return held === null ? { state: "aborted", account: into, reason: "cancelled" } : this.cancel(held);
+    const binding = devices.standingAccountBinding();
+    const pc = relay.publicFields();
+    // a move under way is finished, or given up, by the journal it wrote: what stands now is the journal's to judge
+    if (held !== null) {
+      if (stage === "prepare" && !this.committed(held) && pc && binding?.bind_id === held.from.bind_id && pc.server_id === held.server_id) return { state: "prepare", pc };
+      return this.run(held);
+    }
     if (binding?.account === into) return moved(into);
     if (!binding) return refuse("not_in_account", "This PC is not in an account");
     if (binding.list || devices.listFollowed() || devices.listRemovedFrom(into)) return listAccount();
     if (this.ports.safety?.state().locked) return refuse("locked", "Unlock this PC on its own screen first");
-    if (devices.failsClosed || binding.pending || holds.enrolling() || devices.revokeAllError || mailbox.serviceOff()) return unavailable();
-    const pc = relay.publicFields();
-    if (!pc) return unavailable();
-
-    if (stage === "prepare") {
-      try {
-        const started = held ?? this.journal.begin({ v: 1, id: randomBytes(16).toString("hex"), server_id: pc.server_id, from: { account: binding.account, bind_id: binding.bind_id },
-          into, started_at: new Date().toISOString(), ...(request.provider === undefined ? {} : { provider: request.provider }) });
-        if (typeof started === "string" || started === null) return unavailable();
-        if (started.into !== into) return refuse("move_in_progress", "This PC is already moving to a different account");
-        if (started.from.bind_id !== binding.bind_id || started.server_id !== pc.server_id) return this.abort(started, "binding_changed");
-        const ended = this.journal.aborted();
-        if (ended?.id === started.id) return this.abort(started, ended.answer.reason);
-        return { state: "prepare", pc };
-      } catch (error) { return this.failed(error, unavailable()); }
-    }
-    return held === null ? refuse("move_not_started", "Start moving this PC from its own window first") : this.run(held, true);
+    if (devices.failsClosed || binding.pending || holds.enrolling() || devices.revokeAllError || mailbox.serviceOff() || !pc) return unavailable();
+    if (stage !== "prepare") return refuse("move_not_started", "Start moving this PC from its own window first");
+    try {
+      const started = this.journal.begin({ v: 1, id: randomBytes(16).toString("hex"), server_id: pc.server_id, from: { account: binding.account, bind_id: binding.bind_id },
+        into, started_at: new Date().toISOString(), ...(request.provider === undefined ? {} : { provider: request.provider }) });
+      if (typeof started === "string" || started === null) return unavailable();
+      if (started.into !== into) return refuse("move_in_progress", "This PC is already moving to a different account");
+      if (started.from.bind_id !== binding.bind_id || started.server_id !== pc.server_id) return this.run(started);
+      return { state: "prepare", pc };
+    } catch (error) { return this.failed(error, unavailable()); }
   }
 
+  /** At start, and at each retry: a journal on disk is finished by the server, with or without a window. */
   resume(): void {
     if (this.stopped || this.attempt) return;
     const intent = this.journal.read();
     if (intent === "unavailable") this.retry();
-    else if (typeof intent === "object" && intent !== null) void this.run(intent, false);
+    else if (typeof intent === "object" && intent !== null) void this.run(intent);
   }
 
   stop(): void { this.stopped = true; clearTimeout(this.timer); }
 
+  private exclusively<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.turn.then(work, work);
+    this.turn = next.catch(() => undefined);
+    return next;
+  }
+
   private retry(seconds = 0): void {
+    if (this.stopped) return;
     clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.resume(), Math.max(seconds * 1000, Math.min(MAILBOX_PULL_MS, 5_000 * 2 ** this.retries++)));
+    this.timer = setTimeout(() => { this.timer = undefined; this.resume(); }, Math.max(seconds * 1000, Math.min(MAILBOX_PULL_MS, RETRY_MS * 2 ** this.retries++)));
     this.timer.unref();
   }
 
@@ -98,41 +113,62 @@ export class AccountMove {
     return result;
   }
 
-  private run(intent: MoveJournal, take: boolean): Promise<MoveOutcome> {
-    const running = this.attempt;
-    if (running) return running.result.then(outcome => !this.stopped
-      && (running.id !== intent.id || (take && "state" in outcome && outcome.state === "sign_in"))
-      ? this.run(intent, take) : outcome);
+  private run(intent: MoveJournal): Promise<MoveOutcome> {
+    if (this.attempt?.id === intent.id) return this.attempt.result;
     clearTimeout(this.timer);
     this.timer = undefined;
-    const result = this.settle(intent, take).catch((error: unknown) => {
-      if (!this.stopped && this.journal.read() !== null) this.retry(error instanceof AccountServiceRefusal ? error.retryAfter ?? 0 : 0);
+    let wait = 0;
+    const result: Promise<MoveOutcome> = this.exclusively(() => this.settle(intent)).catch((error: unknown) => {
+      wait = error instanceof AccountServiceRefusal ? error.retryAfter ?? 0 : 0;
       return this.failed(error, pending);
-    }).then(outcome => {
-      if ("state" in outcome && outcome.state === "pending" && !this.stopped && this.timer === undefined) this.retry();
+    }).then((outcome) => {
+      // a move that waits (on the service, on the destination's admission, on a file) is asked again by the server
+      if ("state" in outcome && (outcome.state === "pending" || outcome.state === "sign_in")) {
+        if (this.journal.read() !== null) this.retry(wait);
+      } else this.retries = 0;
       return outcome;
-    }).finally(() => { this.attempt = null; });
+    }).finally(() => { if (this.attempt?.result === result) this.attempt = null; });
     this.attempt = { id: intent.id, result };
     return result;
   }
 
-  private switched(intent: MoveJournal): boolean {
-    const { devices } = this.ports;
-    return devices.standingAccountBinding()?.account === intent.into
-      && devices.accountClears().some(clear => clear.bind_id === intent.from.bind_id && clear.moved?.into === intent.into);
+  /**
+   * A cancel gives up only a move that has not taken its admission: once the PC holds the destination's admission,
+   * or switched, it finishes forward. A mailbox that does not answer cancels nothing.
+   */
+  private cancel(intent: MoveJournal): Promise<MoveOutcome> {
+    return this.exclusively(async (): Promise<MoveOutcome | "forward"> => {
+      if (this.committed(intent)) return "forward";
+      const identity = this.ports.relay.currentIdentity();
+      if (identity?.server_id !== intent.server_id) return "forward";
+      try {
+        if ((await this.ports.mailbox.moveListing(identity, intent.into)).admitted) return "forward";
+      } catch (error) { return this.failed(error, pending); }
+      return this.abort(intent, "cancelled");
+    }).then(outcome => outcome === "forward" ? this.run(intent) : outcome);
+  }
+
+  /** The switch happened: this binding's clear says it moved to the destination, whatever stands since. */
+  private committed(intent: MoveJournal): boolean {
+    return this.ports.devices.accountClears().some(clear => clear.bind_id === intent.from.bind_id && clear.moved?.into === intent.into);
   }
 
   private abort(intent: MoveJournal, reason: AccountMoveAborted["reason"]): MoveOutcome {
     try {
-      if (!this.journal.remove(intent, () => !this.switched(intent), reason) && this.switched(intent)) return pending;
+      if (!this.journal.remove(intent, () => !this.committed(intent), reason)) return pending;
       return { state: "aborted", account: intent.into, reason };
     } catch (error) { return this.failed(error, pending); }
   }
 
-  private async settle(intent: MoveJournal, take: boolean): Promise<MoveOutcome> {
+  private async settle(intent: MoveJournal): Promise<MoveOutcome> {
     const { devices, relay, mailbox } = this.ports;
-    const ended = this.journal.aborted();
-    if (ended?.id === intent.id) return this.abort(intent, ended.answer.reason);
+    const current = this.journal.read();
+    if (typeof current === "string") return pending;
+    // the journal went while this step waited its turn: the move ended, by its switch or by giving up
+    if (current === null || current.id !== intent.id) return this.committed(intent) ? moved(intent.into)
+      : { state: "aborted", account: intent.into, reason: this.journal.aborted(intent.id)?.answer.reason ?? "cancelled" };
+    const ended = this.journal.aborted(intent.id);
+    if (ended !== null && !this.committed(intent)) return this.abort(intent, ended.answer.reason);
     const identity = relay.currentIdentity();
     if (!identity || this.stopped || devices.failsClosed) return pending;
     if (identity.server_id !== intent.server_id) {
@@ -140,26 +176,25 @@ export class AccountMove {
       this.journal.remove(intent, () => true);
       return refuse("identity_changed", "This PC's relay identity changed");
     }
-    const binding = devices.standingAccountBinding();
-    if (this.switched(intent) && binding?.listing_id) return this.finish(intent, identity, binding.listing_id);
-    if (binding?.bind_id !== intent.from.bind_id) return this.abort(intent, "binding_changed");
+    if (this.committed(intent)) return this.finish(intent, identity);
+    if (devices.standingAccountBinding()?.bind_id !== intent.from.bind_id) return this.abort(intent, "binding_changed");
     if (this.ports.safety?.state().locked) return pending;
 
     let listing: string | undefined;
+    let pass: Record<string, unknown>;
     try {
       if (await mailbox.listNamed(intent.into) !== null) return this.abort(intent, "list_account");
-      if (take) {
-        const receipt = await mailbox.admission(intent.into, identity);
-        if (receipt?.account === intent.into) listing = receipt.listing_id;
-      }
-      // A taken admission is written on the service's listing, not on this disk. It survives a lost answer
-      // and the ten-minute admission window. Untaken admits still need the target sign-in's window.
+      // the destination's admission, taken as soon as it waits: once taken the move only goes forward
+      const receipt = await mailbox.admission(intent.into, identity);
+      if (receipt?.account === intent.into) listing = receipt.listing_id;
+      // A taken admission is written on the service's listing, not on this disk: it outlives a lost answer and the
+      // admission's ten minutes
       if (listing === undefined) {
-        const receipt = await mailbox.moveListing(identity, intent.into);
-        if (receipt.admitted) listing = receipt.listing ?? undefined;
+        const read = await mailbox.moveListing(identity, intent.into);
+        if (read.admitted) listing = read.listing ?? undefined;
       }
       if (listing === undefined) return { state: "sign_in", account: intent.into };
-      await mailbox.moveRelayPass(identity, intent.into);
+      pass = await mailbox.moveRelayPass(identity, intent.into);
       const current = await mailbox.moveListing(identity, intent.into);
       if (!current.admitted || current.listing !== listing) return this.abort(intent, "listing_changed");
     } catch (error) {
@@ -178,30 +213,40 @@ export class AccountMove {
       if (before?.bind_id !== intent.from.bind_id || relay.currentIdentity()?.server_id !== identity.server_id) return "binding_changed";
       if (before.list || devices.listFollowed() || devices.listRemovedFrom(intent.into)) return "list_account";
       if (this.stopped || devices.failsClosed || this.ports.safety?.state().locked || this.ports.holds.enrolling() || devices.revokeAllError) return "pending";
+      // the pass the destination just issued is the one kept: the switch asks for no second one
+      relay.adoptPass(pass, intent.into);
       devices.rebindAccount(intent.from.bind_id, { account: intent.into, listing_id: listingId, at: intent.started_at });
       devices.settleMovedRows({ from: intent.from.account, at: intent.started_at });
       logAccess({ event: "account.binding.moved" });
       return "switched";
     }));
     if (changed === undefined) {
-      if (this.journal.read() === null) return { state: "aborted", account: intent.into, reason: "cancelled" };
-      if (!this.switched(intent) && devices.standingAccountBinding()?.bind_id !== intent.from.bind_id) return this.abort(intent, "binding_changed");
+      if (this.journal.read() === null) return { state: "aborted", account: intent.into, reason: this.journal.aborted(intent.id)?.answer.reason ?? "cancelled" };
+      if (this.committed(intent)) return this.finish(intent, identity);
+      if (this.journal.aborted(intent.id) !== null) return this.abort(intent, this.journal.aborted(intent.id)!.answer.reason);
+      if (devices.standingAccountBinding()?.bind_id !== intent.from.bind_id) return this.abort(intent, "binding_changed");
       return pending;
     }
     if (changed === "pending") return pending;
     if (changed !== "switched") return this.abort(intent, changed);
-    return this.finish(intent, identity, listingId);
+    return this.finish(intent, identity);
   }
 
-  private async finish(intent: MoveJournal, identity: RelayIdentity, listing: string): Promise<MoveOutcome> {
+  /**
+   * After the switch: the destination's add is completed (its receipt is kept and sent again by the mailbox, whatever
+   * it answers), then the old account is left, asked again until it answers 204. Only then does the journal go.
+   */
+  private async finish(intent: MoveJournal, identity: RelayIdentity): Promise<MoveOutcome> {
     const { relay, mailbox, devices } = this.ports;
     devices.settleMovedRows({ from: intent.from.account, at: intent.started_at });
-    if (relay.savedRelayAccount() !== intent.into) relay.setRelayAccount(intent.into, intent.provider ?? null);
-    await mailbox.completeMove(identity, intent.into, listing);
-    if (this.stopped || relay.currentIdentity()?.server_id !== identity.server_id || !this.switched(intent)) return pending;
+    const binding = devices.standingAccountBinding();
+    if (binding?.account === intent.into) {
+      if (relay.savedRelayAccount() !== intent.into) relay.setRelayAccount(intent.into, intent.provider ?? null);
+      if (binding.listing_id !== undefined) await mailbox.complete(intent.into, binding.listing_id);
+    }
+    if (this.stopped || relay.currentIdentity()?.server_id !== identity.server_id) return pending;
     await mailbox.leaveMovedAccount(identity, intent.from.account);
     this.journal.remove(intent, () => true);
-    this.retries = 0;
     return moved(intent.into);
   }
 }

@@ -1010,7 +1010,8 @@ export class FakeAccountService {
       if (entry === undefined) return problem(400, "unknown_pc", "List PCs of this account only");
       if (this.askingExpired(entry)) return problem(409, "listing_expired", "This PC asked to join more than ten minutes ago; start adding it again on the PC");
       if (this.cardExpired(admitted, account, entry)) return problem(409, "listing_expired", "This PC's card ran out; a new invite opens it again");
-      if (open !== undefined && !open.taken && this.now() - open.at <= ADMISSION_TTL_MS && entry.new_until != null) {
+      // as the service's RETRY_OF: the admission made for this listing within ten minutes answers again, taken or not
+      if (open !== undefined && (open.listing === undefined || open.listing === entry.listing_id) && this.now() - open.at <= ADMISSION_TTL_MS && entry.new_until != null) {
         return json({ server_id: admitted, account, admitted_at: new Date(open.at).toISOString(), new_until: entry.new_until });
       }
       // C4: the account's one-press adds of the last day
@@ -1376,7 +1377,10 @@ export class FakeAccountService {
       this.challenges.set(context, { server_id: body.server_id, expected, expires: this.now() + CHALLENGE_TTL_MS });
       return json({ challenge_id: challengeId, frame });
     }
-    if (path === "/v1/pc/relay-pass" && this.relayPassSlots !== null) {
+    if (path === "/v1/pc/relay-pass") {
+      const max = this.relayPassSlots;
+      // as the service with no RELAY_PASS_SIGNING_KEY: refused before the body or the proof is read
+      if (max === null) return problem(503, "relay_pass_unavailable", "This service issues no relay passes");
       const challenge = this.takeProof({ server_id: body.server_id, challenge_id: body.challenge_id, proof: body.proof });
       if (!challenge) return problem(401, "proof_invalid", "Ask for a new challenge and answer it");
       if (typeof body.account !== "string") return problem(400, "invalid_account", "Name the account this PC belongs to");
@@ -1390,7 +1394,7 @@ export class FakeAccountService {
       if (count >= 48) return problem(429, "rate_limited", "Too many relay passes today");
       const slots = this.relaySlots.get(body.account) ?? new Map<string, number>();
       for (const [pc, expires] of slots) if (expires <= now) slots.delete(pc);
-      if (!slots.has(id) && slots.size >= this.relayPassSlots) return problem(409, "relay_limit", "The account has no relay slot");
+      if (!slots.has(id) && slots.size >= max) return problem(409, "relay_limit", "The account has no relay slot");
       slots.set(id, now + (RELAY_PASS_LIFETIME_S + RELAY_PASS_SKEW_S) * 1000);
       this.relaySlots.set(body.account, slots);
       this.relayIssues.set(id, { day, count: count + 1 });

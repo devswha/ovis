@@ -6,6 +6,8 @@ import { ownPcProof } from "./pcProof.ts";
 import { AccountServiceError, indexedAccountService, sameSignIn, SignedOutError } from "./service.ts";
 
 const path = "/api/account/move";
+/** How often an open dialog reads a move this PC still finishes by itself. */
+export const MOVE_STATUS_MS = 2_000;
 const headers = { "content-type": "application/json", "x-herdr-machine": "1" };
 let active: { readonly into: string; readonly stop: AbortController; readonly run: Promise<AccountMoveAnswer> } | null = null;
 

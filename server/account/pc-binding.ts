@@ -9,7 +9,7 @@
  * the one-time migration (T50). Read only while OVIS_ACCOUNT_OPENS_ALL is on.
  */
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, openSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { isIsoTime } from "../../shared/account-records.ts";
 import { writePrivateState } from "../private-state.ts";
@@ -226,6 +226,18 @@ const LOCK_WAIT_MS = 500;
 const wallNow = (): number => performance.timeOrigin + performance.now();
 
 /**
+ * Whether the process that wrote `lock` (the pid it holds) is gone for certain: no process answers to that pid. A pid
+ * that answers may be another process that reuses it, so such a lock, as one that names nobody, waits out its age.
+ */
+function lockOwnerGone(lock: string): boolean {
+  let pid: number;
+  try { pid = Number(bindingFs.readFileSync(lock, "utf8").trim()); } catch { return false; }
+  if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  try { process.kill(pid, 0); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+}
+
+/**
  * One writer of `path` at a time, among every Ovis server that shares the folder (two can run on one state folder):
  * what `work` reads of the file it then writes is what is there. A lock another server holds is waited for, briefly;
  * a write that cannot have it fails, with nothing written.
@@ -235,17 +247,24 @@ export function withFileLock<T>(path: string, work: () => T): T {
   const deadline = performance.now() + LOCK_WAIT_MS;
   let held = false;
   for (;;) {
-    try { closeSync(bindingFs.openSync(lock, "wx", 0o600)); held = true; break; } catch (error) {
+    let fd: number;
+    try { fd = bindingFs.openSync(lock, "wx", 0o600); } catch (error) {
       // nothing is written without the lock: a folder that takes no lock file ends the write with an error
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw new Error(`${path} cannot be locked (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`);
       let age = Number.POSITIVE_INFINITY;
       try { age = wallNow() - statSync(lock).mtimeMs; } catch { /* gone meanwhile: taken at the next turn */ }
-      // a lock left by a server that ended while it wrote is taken over. One that cannot be deleted is waited for
-      // like any other, and no longer: the wait ends in an error, never in a loop
-      if (age > LOCK_STALE_MS) { try { bindingFs.unlinkSync(lock); continue; } catch (gone) { if ((gone as NodeJS.ErrnoException).code === "ENOENT") continue; } }
+      // a lock left by a server that ended while it wrote (its process is gone, or it is that old) is taken over. One
+      // that cannot be deleted is waited for like any other, and no longer: the wait ends in an error, never in a loop
+      if (age > LOCK_STALE_MS || lockOwnerGone(lock)) { try { bindingFs.unlinkSync(lock); continue; } catch (gone) { if ((gone as NodeJS.ErrnoException).code === "ENOENT") continue; } }
       if (performance.now() >= deadline) throw new Error(`${path} is being written by another Ovis on this PC`);
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      continue;
     }
+    held = true;
+    // the lock names the process that holds it, so a start after that process was killed takes it over at once
+    try { writeSync(fd, String(process.pid)); } catch { /* a lock that names nobody waits out its age */ }
+    finally { closeSync(fd); }
+    break;
   }
   try { return work(); } finally { if (held) { try { bindingFs.unlinkSync(lock); } catch { /* already gone */ } } }
 }
