@@ -187,13 +187,14 @@ function tellTraversalOver(): void {
   for (const listener of [...traversalOver]) listener();
 }
 
-const entriesMade = new Set<() => void>();
+const entriesMade = new Set<(over: string | undefined) => void>();
 
 /**
  * Calls `listener` when the page made a history entry, whoever pushed it (a sheet, Settings, a file,
  * a move to another pane): the history is on an entry no traversal landed on, so no popstate tells of it.
+ * `over` is the key of the entry it was made over, where the browser or this module tells one.
  */
-export function onHistoryEntryMade(listener: () => void): () => void {
+export function onHistoryEntryMade(listener: (over: string | undefined) => void): () => void {
   entriesMade.add(listener);
   return () => { entriesMade.delete(listener); };
 }
@@ -414,7 +415,11 @@ if (typeof window !== "undefined") {
       here = where();
       ahead = null;
       stood = null;
-      if (made) for (const listener of [...entriesMade]) listener();
+      if (made) {
+        const at = here;
+        const over = at === null ? undefined : navigation()?.entries().find((entry) => entry.index === at.index - 1)?.key;
+        for (const listener of [...entriesMade]) listener(over);
+      }
     }
   }) as History["pushState"];
   here = where();
