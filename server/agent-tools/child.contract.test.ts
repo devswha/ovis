@@ -33,6 +33,8 @@ const RECORDED: readonly Recorded[] = [
     .map(([run, kind]) => ({ harness: "gemini", fixture: `gemini-0.71.1-${run}`, version: "0.71.1", mode: "default", kinds: [kind] })),
   // Kiro's V3 engine names no kind on the request itself, only on the tool call it announced before it
   ...["ask-write", "ask-mkdir"].map(run => ({ harness: "kiro", fixture: `kiro-3.6.2-${run}`, version: "kiro-cli 3.6.2", mode: "vibe", kinds: [null] })),
+  ...([["ask-write", "edit"], ["ask-mkdir", "execute"]] as const)
+    .map(([run, kind]) => ({ harness: "qwen", fixture: `qwen-0.28.7-${run}`, version: "0.28.7", mode: "default", kinds: [kind] })),
 ];
 
 describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $fixture", ({ harness, fixture, version, mode, kinds }) => {
@@ -182,6 +184,7 @@ exec "${process.execPath}" "${REPLAY}" "${FIXTURE}" "${join(dir, "replay.jsonl")
     ["copilot-1.0.109-ask", ["https://agentclientprotocol.com/protocol/session-modes#autopilot"]],
     ["gemini-0.71.1-ask-write", ["autoEdit", "yolo"]],
     ["kiro-3.6.2-ask-write", ["autonomous"]],
+    ["qwen-0.28.7-ask-write", ["auto-edit", "auto", "yolo"]],
   ]).get(fixture);
   if (elevatedModes) {
     it.each([...elevatedModes])("stops a child in wider mode %s before sending its initial task", async (startMode) => {

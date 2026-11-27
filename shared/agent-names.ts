@@ -14,6 +14,7 @@ export const AGENT_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   agy: "Antigravity",
   gemini: "Gemini CLI",
   kiro: "Kiro CLI",
+  qwen: "Qwen Code",
   omp: "Oh My Pi",
   omo: "OmO",
   gjc: "Gajae Code",
