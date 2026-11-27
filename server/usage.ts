@@ -24,8 +24,10 @@ import { join, resolve } from "node:path";
 import { readStatusline, STALE_MS, type StatuslinePayload } from "./statusline.ts";
 import { installStatusline, removeStatusline, StatuslineInstallError, statuslineInstallState, type StatuslineInstallState } from "./statusline-install.ts";
 import type { ProviderUsage, UsageCredits, UsageFailure, UsageProblem, UsageProviderId, UsageReport, UsageResets, UsageWindow } from "../shared/protocol.ts";
-import { jsonResponse } from "./http.ts";
+import { knownUsageProviders } from "../shared/usage.ts";
+import { isJsonObject, jsonResponse } from "./http.ts";
 import { opencodeDatabasePath } from "./opencode.ts";
+import { kimiUsage } from "./usage-kimi.ts";
 import { recordedUsages, type RecordedReading, type RecordedSource, type RecordedUsage } from "./usage-recorded.ts";
 import { gjcRecorded } from "./usage-recorded-gjc.ts";
 import { ompRecorded } from "./usage-recorded-omp.ts";
@@ -63,6 +65,8 @@ interface SignIn {
   token: string;
   expiresAt: number | null;
   plan?: string | null;
+  /** Kimi: the regional API base this credential belongs to */
+  baseUrl?: string;
   chatgptAccount?: string | null;
   fallbacks?: string[];
   account?: Account | null;
@@ -75,6 +79,8 @@ interface SignIn {
    * when it names none, or a console other than opencode.ai, so nothing is asked with its token.
    */
   opencodeOrg?: string | null;
+  /** Devin: the seat-management endpoint the key was issued against, from its credentials.toml. */
+  devinServer?: string;
 }
 
 type Found = { source: string; home?: CredentialHome } & (SignIn | { locked: true; account?: Account | null });
@@ -126,15 +132,15 @@ export class UsageHttpError extends Error {
   }
 }
 
-type Json = Record<string, unknown>;
-const record = (value: unknown): Json => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
-const text = (value: unknown): string | null => typeof value === "string" && value.trim() ? value.trim() : null;
+export type Json = Record<string, unknown>;
+export const record = (value: unknown): Json => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
+export const text = (value: unknown): string | null => typeof value === "string" && value.trim() ? value.trim() : null;
 /** a number, or a proto-JSON int64 (sent as a string) */
-const number = (value: unknown): number | null => {
+export const number = (value: unknown): number | null => {
   const parsed = typeof value === "string" && value.trim() ? Number(value) : value;
   return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : null;
 };
-const percent = (value: number): number => Math.round(Math.min(100, Math.max(0, value)) * 10) / 10;
+export const percent = (value: number): number => Math.round(Math.min(100, Math.max(0, value)) * 10) / 10;
 const extras = (from: { resets?: UsageResets | null; credits?: UsageCredits | null }): { resets?: UsageResets; credits?: UsageCredits } =>
   ({ ...(from.resets ? { resets: from.resets } : {}), ...(from.credits ? { credits: from.credits } : {}) });
 
@@ -166,12 +172,12 @@ function keychainOrFile(keychain: SignIn | "locked" | null, file: SignIn | null,
   return file ? [{ ...file, account: file.account ?? account, source }] : keychainFound(keychain, source, account);
 }
 
-function parseJson(source: string | null): unknown {
+export function parseJson(source: string | null): unknown {
   if (source === null) return null;
   try { return JSON.parse(source); } catch { return null; }
 }
 
-function readText(path: string): string | null {
+export function readText(path: string): string | null {
   let fd: number | undefined;
   try {
     fd = openSync(path, "r");
@@ -205,7 +211,7 @@ async function readCapped(stream: ReadableStream<Uint8Array> | null): Promise<st
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function isoTime(value: unknown): string | null {
+export function isoTime(value: unknown): string | null {
   const n = number(value);
   if (n !== null && n > 0) return new Date(n < 1e12 ? n * 1000 : n).toISOString();
   const s = text(value);
@@ -214,7 +220,7 @@ function isoTime(value: unknown): string | null {
   return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
 }
 
-function epochMs(value: unknown): number | null {
+export function epochMs(value: unknown): number | null {
   const iso = isoTime(value);
   return iso === null ? null : Date.parse(iso);
 }
@@ -253,7 +259,7 @@ function retryAfter(header: string | null): number | null {
   return Number.isNaN(at) ? null : Math.max(0, at - Date.now());
 }
 
-async function requestJson(ctx: UsageContext, url: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Json> {
+export async function requestJson(ctx: UsageContext, url: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Json> {
   const host = new URL(url).host;
   // the time allowed ran out (AbortSignal.timeout), else the connection itself failed (DNS, refused, dropped)
   const unreachable = (error: unknown) => error instanceof UsageFailed ? error : new UsageFailed(
@@ -953,7 +959,104 @@ const opencode: UsageProvider = {
   },
 };
 
-export const USAGE_PROVIDERS: readonly UsageProvider[] = [claude, codex, cursor, copilot, grok, antigravity, opencode];
+// ---- Devin CLI: credentials.toml under <XDG data>/devin or <Roaming AppData>/devin ----
+
+/** Where the seat-management endpoint lives when credentials.toml names no `api_server_url`. */
+const DEVIN_API_SERVER = "https://server.codeium.com";
+/** the client version reported in the request's metadata, the one OpenUsage converged on */
+const DEVIN_CLIENT_VERSION = "1.108.2";
+const DEVIN_DAY_SECONDS = 24 * 3600;
+const DEVIN_WEEK_SECONDS = 7 * 24 * 3600;
+
+/**
+ * `devin auth login` writes credentials.toml with a Windsurf-family API key
+ * (`devin-session-token$…`) and the seat-management endpoint it belongs to. The sign-in names no
+ * account: the GetUserStatus answer does (its email and user id).
+ */
+function devinSignIn(source: string | null): SignIn | null {
+  let parsed: unknown;
+  try { parsed = source === null ? null : Bun.TOML.parse(source); } catch { parsed = null; }
+  const credentials = record(parsed);
+  const token = text(credentials["windsurf_api_key"]);
+  if (!token) return null;
+  if (!Object.hasOwn(credentials, "api_server_url")) return { token, expiresAt: null };
+  const base = text(credentials["api_server_url"]);
+  // URL parsing alone treats https:///tenant as a host, not a missing authority.
+  if (base === null || !/^https:\/\/[^/\\?#\s]/i.test(base)) return null;
+  const url = URL.parse(base);
+  if (url === null || url.protocol !== "https:" || url.hostname === "") return null;
+  return { token, expiresAt: null, devinServer: url.origin + url.pathname.replace(/\/+$/, "") };
+}
+
+/**
+ * One quota window from the seat-management answer. Devin reports the share each window has LEFT,
+ * which the meter inverts into used. Proto3 JSON omits zero-valued fields, so a window whose reset
+ * is present but whose share is absent has nothing left; a share present but unreadable is a schema
+ * change, and the window is left out rather than reported at a made-up number.
+ */
+function devinWindow(planStatus: Json, remainingKey: string, resetKey: string, seconds: number, kind: UsageWindow["kind"]): UsageWindow | null {
+  const resetsAt = isoTime(planStatus[resetKey]);
+  const remaining = number(planStatus[remainingKey]);
+  if (remaining === null && (Object.hasOwn(planStatus, remainingKey) || resetsAt === null)) return null;
+  return { kind, scope: null, used_percent: percent(100 - (remaining ?? 0)), resets_at: resetsAt, starts_at: startOf(resetsAt, seconds) };
+}
+
+/**
+ * The account a GetUserStatus answer names: the user id keys the row (it survives an email change),
+ * the email labels it.
+ */
+function devinAccount(user: Json): Account | null {
+  const email = text(user["email"]);
+  const id = text(user["userId"]) ?? email;
+  return id === null ? null : { id, label: email ?? text(user["name"]) };
+}
+
+const devin: UsageProvider = {
+  id: "devin",
+  async signIns(ctx) {
+    const data = ctx.platform === "win32"
+      ? ctx.env["APPDATA"] || join(ctx.home, "AppData", "Roaming")
+      : ctx.env["XDG_DATA_HOME"] || join(ctx.home, ".local", "share");
+    const dir = join(data, "devin");
+    const signIn = devinSignIn(readText(join(dir, "credentials.toml")));
+    return signIn === null ? [] : [{ ...signIn, source: dir }];
+  },
+  async read(ctx, signIn) {
+    // the Connect-protocol call Devin's own tooling makes for account status: the API key travels
+    // inside the request's metadata envelope, not an Authorization header
+    const body = await requestJson(ctx, `${signIn.devinServer ?? DEVIN_API_SERVER}/exa.seat_management_pb.SeatManagementService/GetUserStatus`, {
+      method: "POST",
+      redirect: "error",
+      headers: { "content-type": "application/json", "connect-protocol-version": "1", accept: "application/json", "user-agent": USER_AGENT },
+      body: JSON.stringify({ metadata: {
+        apiKey: signIn.token, ideName: "devin", ideVersion: DEVIN_CLIENT_VERSION,
+        extensionName: "devin", extensionVersion: DEVIN_CLIENT_VERSION, locale: "en",
+      } }),
+    });
+    const user = body["userStatus"];
+    if (!isJsonObject(user)) throw new UsageFailed("bad_response", "Devin answered without a user status object");
+    const planStatus = record(user["planStatus"]);
+    const planInfo = record(planStatus["planInfo"]);
+    const daily = devinWindow(planStatus, "dailyQuotaRemainingPercent", "dailyQuotaResetAtUnix", DEVIN_DAY_SECONDS, "day");
+    const weekly = devinWindow(planStatus, "weeklyQuotaRemainingPercent", "weeklyQuotaResetAtUnix", DEVIN_WEEK_SECONDS, "week");
+    // A plan that hides its daily window still meters it: with no weekly window the daily share is
+    // shown as the weekly one — without its reset, which would read as the week's own.
+    const hideDaily = planInfo["hideDailyQuota"] === true;
+    const visibleWeekly = planInfo["hideWeeklyQuota"] === true ? null
+      : weekly ?? (hideDaily && daily !== null ? { ...daily, kind: "week" as const, resets_at: null, starts_at: null } : null);
+    const windows = [hideDaily ? null : daily, visibleWeekly].filter((window): window is UsageWindow => window !== null);
+    // the extra-usage wallet is a dollar balance with no window: a balance in USD major units,
+    // negative when the account owes (proto3 drops an absent field, so only a present one is shown)
+    const micros = number(planStatus["overageBalanceMicros"]);
+    return {
+      plan: text(planInfo["planName"]), windows,
+      credits: micros === null ? null : { kind: "balance", balance: micros / 1_000_000, unlimited: false, currency: "USD" },
+      account: devinAccount(user),
+    };
+  },
+};
+
+export const USAGE_PROVIDERS: readonly UsageProvider[] = [claude, codex, cursor, copilot, grok, antigravity, opencode, devin, kimiUsage];
 
 /** Keychain services whose read hung (an access prompt nobody answered): not asked again. */
 const promptedServices = new Set<string>();
@@ -1525,7 +1628,16 @@ export async function homeSignIn(ctx: UsageContext, provider: "claude" | "codex"
 
 export async function handleUsageRequest(request: Request, url: URL, service: Pick<UsageService, "report">): Promise<Response> {
   if (request.method !== "GET") return jsonResponse({ error: { code: "method_not_allowed", message: "Use GET /api/usage" } }, 405, { allow: "GET" });
-  return jsonResponse(await service.report(url.searchParams.get("refresh") === "1"), 200, { "cache-control": "no-store" });
+  const known = knownUsageProviders(url.searchParams);
+  const { providers, removed, missing_commands, ...report } = await service.report(url.searchParams.get("refresh") === "1");
+  const visibleRemoved = removed?.filter(({ id }) => known.has(id));
+  const visibleMissing = missing_commands?.filter(({ provider }) => known.has(provider));
+  return jsonResponse({
+    ...report,
+    providers: providers.filter(({ id }) => known.has(id)),
+    ...(visibleRemoved?.length ? { removed: visibleRemoved } : {}),
+    ...(visibleMissing?.length ? { missing_commands: visibleMissing } : {}),
+  } satisfies UsageReport, 200, { "cache-control": "no-store" });
 }
 
 /**
