@@ -1012,12 +1012,18 @@ describe("the hosted front page", () => {
         }
       });
 
-      it("believes the account service over a WebView that says offline: its answer takes the line away and a row opens, asked again on each open", async () => {
-        // a Galaxy Z Flip6's WebView said navigator.onLine === false all along on working Wi-Fi (app 1.0.7)
-        const meta = document.createElement("meta");
-        meta.setAttribute("name", "ovis-account-service");
-        meta.setAttribute("content", "https://account.example");
-        document.head.append(meta);
+      // a Galaxy Z Flip6's WebView said navigator.onLine === false all along on working Wi-Fi (app 1.0.7); a shell built
+      // with no account service (OVIS_ACCOUNT_SERVICE_URL=off) asks its own origin instead, under /api/, which no worker answers
+      for (const [asked, service, url] of [
+        ["the account service", "https://account.example", "https://account.example/v1/providers"],
+        ["its own origin, with no account service,", null, "https://app.ovis.sh/api/health"],
+      ] as const) it(`believes ${asked} over a WebView that says offline: its answer takes the line away and a row opens, asked again on each open`, async () => {
+        if (service !== null) {
+          const meta = document.createElement("meta");
+          meta.setAttribute("name", "ovis-account-service");
+          meta.setAttribute("content", service);
+          document.head.append(meta);
+        }
         const asks: { readonly url: string; readonly answer: ReturnType<typeof Promise.withResolvers<Response>> }[] = [];
         const realFetch = globalThis.fetch;
         globalThis.fetch = Object.assign(async (input: Request | string | URL): Promise<Response> => {
@@ -1028,7 +1034,8 @@ describe("the hosted front page", () => {
         const settle = async (ask: { readonly answer: ReturnType<typeof Promise.withResolvers<Response>> }, answered: boolean): Promise<void> => {
           await act(async () => {
             if (answered) ask.answer.resolve(new Response(null, { status: 200 }));
-            else ask.answer.reject(new TypeError("Failed to fetch"));
+            // no answer within CHECK_NETWORK_MS: the ask's own timeout ends it
+            else ask.answer.reject(new DOMException("The operation timed out.", "TimeoutError"));
             await ask.answer.promise.catch(() => undefined);
             for (let turn = 0; turn < 3; turn++) await Promise.resolve();
           });
@@ -1040,7 +1047,7 @@ describe("the hosted front page", () => {
           offline(true);
           await mount(offlinePage());
           // the screen asks on its own as it starts watching; no answer: the device is offline, as before
-          expect(asks.map((ask) => ask.url)).toEqual(["https://account.example/v1/providers"]);
+          expect(asks.map((ask) => ask.url)).toEqual([url]);
           await settle(asks[0]!, false);
           expect(alerts()).toEqual(["This device is not connected to the internet. Try again"]);
           // Try again asks again, and its answer takes the line away
@@ -1066,19 +1073,32 @@ describe("the hosted front page", () => {
       });
 
       it("says this device, in a browser, and opens nothing while it is offline", async () => {
+        // no network at all: even the page's own origin does not answer
+        const asked: string[] = [];
+        const realFetch = globalThis.fetch;
+        globalThis.fetch = Object.assign(async (input: Request | string | URL): Promise<Response> => {
+          asked.push(String(input));
+          throw new TypeError("Failed to fetch");
+        }, { preconnect: realFetch.preconnect });
+        const assigned: string[] = [];
+        (window.location as unknown as { assign: (href: string) => void }).assign = (href) => { assigned.push(href); };
         offline(true);
         try {
           await mount(offlinePage());
+          await act(async () => { for (let turn = 0; turn < 3; turn++) await Promise.resolve(); });
           expect(alerts()).toEqual(["This device is not connected to the internet. Try again"]);
           let held = 0;
           await act(async () => { if (clickLink(element<HTMLAnchorElement>("a", element('li[data-pc-way="relay"]')))) held++; });
+          await act(async () => { for (let turn = 0; turn < 3; turn++) await Promise.resolve(); });
           expect(held).toBe(1);
           expect(alerts()).toContain("Connect this device to the internet to open the PC.");
+          expect([new Set(asked), assigned]).toEqual([new Set(["https://app.ovis.sh/api/health"]), []]);
           // online, a row opens its page as before
           await act(async () => { offline(false); });
           await act(async () => { if (clickLink(element<HTMLAnchorElement>("a", element('li[data-pc-way="relay"]')))) held++; });
           expect(held).toBe(1);
         } finally {
+          globalThis.fetch = realFetch;
           (navigator as { onLine?: boolean }).onLine = true;
         }
       });
