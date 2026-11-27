@@ -391,7 +391,8 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
   const awayReason = away === null ? null
     : machine.kind === "ssh" ? sshWords
     : away === "unresponsive" ? t("{name} answered but did not finish connecting in time. It may be busy or restarting. Try again; if it keeps happening, restart Ovis on {name}.", { name: machine.name })
-    : away === "off" ? outOfReachReason({ displayState: "offline", last_seen_at: null }, t)
+    // the relay said it had nobody for this PC (RELAY_PC_SILENT)
+    : away === "off" ? outOfReachReason({ displayState: "offline", last_seen_at: null, check: { kind: "offline", reason: "pc" } }, t)
     // the relay's own words: #4230's reasons for it name the viewing device's network, and this is this server's
     : machineErrorText(machine.error!, t);
   const nextStep = !noticed && machine.kind === "local" && machine.error !== null && saysHerdrAway(machine.error) ? t("Start herdr on this PC, or check HERDR_SOCKET.")
