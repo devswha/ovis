@@ -39,6 +39,7 @@ function fakeGh(scenario: Record<string, Answer>): { gh: string[]; calls: () => 
 }
 
 const HEAD = "f91f1ecc94f500a3be476b918d6f1fd6c1d8b276";
+const UNKNOWN_GITHUB_HOST = "none of the git remotes configured for this repository point to a known GitHub host.\nTo tell gh about a new GitHub host, please use `gh auth login`\n";
 const prJson = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   number: 12, title: "Fix the thing", url: "https://github.com/acme/widgets/pull/12", state: "OPEN", isDraft: false,
   headRefName: "fix/thing", baseRefName: "main", headRefOid: HEAD, mergeStateStatus: "BLOCKED",
@@ -107,10 +108,12 @@ describe("reading a branch's pull request through gh", () => {
     expect(performance.now() - started).toBeLessThan(2_000);
   });
 
-  it("says why there is nothing to show: no gh, signed out, no pull request", async () => {
+  it("distinguishes a missing GitHub remote from missing gh, signed out, and no pull request", async () => {
     const cases: [string[], string, number][] = [
       [[join(scratch, "no-such-gh")], "gh_missing", 409],
-      [fakeGh({ "pr view": { code: 4, stderr: "To get started with GitHub CLI, please run:  gh auth login\n" } }).gh, "gh_signed_out", 409],
+      [fakeGh({ "pr view": { code: 4 } }).gh, "gh_signed_out", 409],
+      [fakeGh({ "pr view": { code: 1, stderr: "To get started with GitHub CLI, please run:  gh auth login\n" } }).gh, "gh_signed_out", 409],
+      [fakeGh({ "pr view": { code: 1, stderr: UNKNOWN_GITHUB_HOST } }).gh, "no_github_remote", 409],
       [fakeGh({ "pr view": { code: 1, stderr: "no pull requests found for branch \"fix/thing\"\n" } }).gh, "no_pull_request", 404],
     ];
     for (const [gh, code, status] of cases) {
@@ -122,6 +125,11 @@ describe("reading a branch's pull request through gh", () => {
 });
 
 describe("a failing check's log", () => {
+  it("reports an unknown GitHub host when gh cannot expand the repository path", async () => {
+    const fake = fakeGh({ log: { code: 1, stderr: `unable to expand placeholder in path: ${UNKNOWN_GITHUB_HOST}` } });
+    await expect(pullRequestLog(scratch, "7", "github.com", { gh: fake.gh })).rejects.toMatchObject({ code: "no_github_remote", status: 409 });
+  });
+
   it("keeps the last lines without GitHub's timestamps or colour codes", async () => {
     const lines = Array.from({ length: 200 }, (_, index) => `2026-11-05T08:52:40.${String(index).padStart(7, "0")}Z \u001b[31mline \u001b]8;;https://e.example\u0007${index}\u001b]8;;\u0007\u001b(B\u001b[0m`);
     const fake = fakeGh({ log: { stdout: `\uFEFF${lines.join("\n")}\n` } });

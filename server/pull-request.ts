@@ -73,8 +73,10 @@ async function runGh(cwd: string, args: string[], options: PullRequestOptions, k
   try {
     const [out, err, code] = await Promise.race([Promise.all([readCapped(proc.stdout, keepTail ? LOG_KEEP_BYTES : MAX_JSON_BYTES, keepTail).then((read) => { if (read.overflow && !keepTail) proc.kill(); return read; }), readCapped(proc.stderr, MAX_STDERR_BYTES, true), proc.exited]), deadline]);
     if (out.overflow && !keepTail) throw new PullRequestError("gh_failed", "gh answered more than this view reads", 502);
+    // gh also suggests `gh auth login` when no remote points to a recognized GitHub host.
+    const unknownHost = /^(?:unable to expand placeholder in path: )?none of the git remotes configured for this repository point to a known GitHub host\./im.test(err.text);
     // gh exits 4 when it needs a sign-in; older releases only say so
-    if (code === 4 || /gh auth login/.test(err.text)) throw new PullRequestError("gh_signed_out", "gh on this PC is not signed in to GitHub", 409);
+    if (code === 4 || (!unknownHost && /gh auth login/.test(err.text))) throw new PullRequestError("gh_signed_out", "gh on this PC is not signed in to GitHub", 409);
     return { code, stdout: out.text, stderr: err.text, overflow: out.overflow };
   } finally {
     clearTimeout(timer);
