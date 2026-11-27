@@ -21,7 +21,7 @@ describe("sign-in methods", () => {
   it("reads valid history and drops unknown or malformed history entries", async () => {
     const { store } = await setup();
     const add = { kind: "add", provider: "github", at: AT, device_no: 2 } as const;
-    const remove = { kind: "remove", provider: "apple", at: "2026-11-27T09:42:00Z", device_no: null } as const;
+    const remove = { kind: "remove", provider: "apple", at: "2026-11-27T09:42:00.000Z", device_no: null } as const;
     const merge = { kind: "merge_in", provider: "google", at: AT, device_no: 1 } as const;
     const identities = [{ provider: "github" as const, added_at: AT }];
     const service = new AccountService({ store, fetch: async () => Response.json({ identities, history: [

@@ -19,8 +19,6 @@ export interface AccountIdentityList {
   readonly history: AccountIdentityChange[];
 }
 
-const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
-
 export function identityAnswer(body: unknown): AccountIdentityList {
   const answer = typeof body === "object" && body !== null ? body : {};
   const identities: readonly unknown[] = "identities" in answer && Array.isArray(answer.identities) ? answer.identities : [];
@@ -36,7 +34,7 @@ export function identityAnswer(body: unknown): AccountIdentityList {
       const { kind, at, device_no } = entry;
       const provider = ACCOUNT_PROVIDERS.find((each) => each === entry.provider);
       if (provider === undefined || (kind !== "add" && kind !== "remove" && kind !== "merge_in")) return [];
-      if (typeof at !== "string" || !ISO_TIMESTAMP.test(at) || !Number.isFinite(Date.parse(at)) || !isIsoTime(`${at.slice(0, 10)}T00:00:00.000Z`)) return [];
+      if (typeof at !== "string" || !isIsoTime(at)) return [];
       if (device_no !== null && (typeof device_no !== "number" || !Number.isSafeInteger(device_no) || device_no < 1)) return [];
       return [{ kind, provider, at, device_no }];
     }),
