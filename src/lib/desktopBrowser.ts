@@ -59,6 +59,7 @@ interface Bridge {
   navigate?(id: number, url: string): Promise<boolean>;
   go?(id: number, step: "back" | "forward" | "reload" | "stop"): void;
   hold?(id: number, held: boolean): void;
+  onOpened?(listener: (id: unknown) => void): () => void;
 }
 
 function bridge(): Bridge | undefined {
@@ -161,6 +162,13 @@ export function hasDesktopBrowser(): boolean {
 export async function openBrowserTab(url: string): Promise<number | null> {
   const open = bridge()?.open;
   return typeof open === "function" ? open(url).catch(() => null) : null;
+}
+
+/** Hears each web link main opened in a tab of the person's own (Settings → Browser for links), by the tab's id; returns the unsubscribe. */
+export function onBrowserTabOpened(listener: (id: number) => void): () => void {
+  const onOpened = bridge()?.onOpened;
+  if (typeof onOpened !== "function") return () => undefined;
+  return onOpened((id) => { if (typeof id === "number" && Number.isSafeInteger(id)) listener(id); });
 }
 
 /** has main draw the tab over `bounds` of the window, in the page's CSS pixels */

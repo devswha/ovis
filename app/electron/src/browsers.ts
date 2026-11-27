@@ -12,6 +12,8 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, relative, sep } from "node:path";
 
+import { BUILT_IN_LINK_BROWSER } from "../../../shared/browser-policy.ts";
+
 export interface LinkBrowser {
   id: string;
   name: string;
@@ -403,6 +405,18 @@ export async function findBrowsers(platform: NodeJS.Platform = process.platform,
   return program === null ? found : { ...found, browsers: [...found.browsers, agentBrowser(program)] };
 }
 
+/** What Settings lists: the browsers found, and Ovis's own built-in browser after them while its setting is on (the page names it in its language). */
+export function linkBrowserChoices(found: readonly LinkBrowser[], builtIn: boolean): { id: string; name: string }[] {
+  const listed = found.map(({ id, name }) => ({ id, name }));
+  return builtIn ? [...listed, { id: BUILT_IN_LINK_BROWSER, name: "Ovis" }] : listed;
+}
+
+/** Whether Settings may choose `id`: the system default (null), a browser found, or the built-in one while it is on. */
+export function choosableLinkBrowser(id: unknown, found: readonly LinkBrowser[], builtIn: boolean): id is string | null {
+  if (id === null) return true;
+  if (id === BUILT_IN_LINK_BROWSER) return builtIn;
+  return typeof id === "string" && found.some((browser) => browser.id === id);
+}
 
 export function readLinkBrowser(path: string): string | null {
   try {

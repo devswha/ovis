@@ -15,7 +15,7 @@ import { desktopLocale, desktopText } from "./text.ts";
 import { hideWindow } from "./windowClose.ts";
 import { argvLinkQuery, LINK_SCHEME, openLinkQuery, tellsLink } from "./openLink.ts";
 import { openOutside } from "./openOutside.ts";
-import { findBrowsers, readLinkBrowser, webAddress, writeLinkBrowser, type FoundBrowsers, type LinkBrowser } from "./browsers.ts";
+import { choosableLinkBrowser, findBrowsers, linkBrowserChoices, readLinkBrowser, webAddress, writeLinkBrowser, type FoundBrowsers, type LinkBrowser } from "./browsers.ts";
 import { BrowserTabs, type BrowserBounds } from "./browserTabs.ts";
 import { debuggingSwitch, ownAddresses, readBrowserState } from "./browserState.ts";
 import { homedir, networkInterfaces } from "node:os";
@@ -23,6 +23,7 @@ import { commandState, installCommand, READ_TERMINAL_PATH, SHELL_PATH_SCRIPT, sh
 import { BrowserBroker, brokerPath } from "./browserBroker.ts";
 import { readStagingProfile } from "./stagingProfile.ts";
 import { BROWSER_TOKENS_DIR } from "../../../shared/browser-broker.ts";
+import { BUILT_IN_LINK_BROWSER } from "../../../shared/browser-policy.ts";
 
 type StepState = "pending" | "ok" | "failed";
 export interface Status {
@@ -409,6 +410,7 @@ async function openWebLink(url: string): Promise<void> {
   const address = webAddress(url);
   const chosen = linkBrowser;
   if (address === null || chosen === null) return openOutside(url);
+  if (chosen === BUILT_IN_LINK_BROWSER) return openInBuiltIn(address);
   const browser = (await browsers()).browsers.find((found) => found.id === chosen);
   if (browser === undefined) return openInstead(null, address);
   const [program, ...args] = browser.command(address);
@@ -428,6 +430,20 @@ async function openWebLink(url: string): Promise<void> {
   } catch {
     fail();
   }
+}
+
+/**
+ * A web link in a tab of the person's own in the built-in browser, which the page then shows beside the pane. With
+ * the browser turned off since, or an address its policy refuses (an Ovis server), the system browser opens it.
+ */
+function openInBuiltIn(address: string): void {
+  const id = browser?.open(address, "mine") ?? null;
+  const contents = window?.webContents;
+  if (id === null || !contents || !serverPage(contents.mainFrame)) {
+    if (id !== null) browser?.close(id);
+    return openOutside(address);
+  }
+  contents.send("ovis:tabs-opened", id);
 }
 
 function openInstead(browser: LinkBrowser | null, address: string): void {
@@ -822,11 +838,11 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle("ovis:browsers", async (event) => {
     if (!serverPage(event.senderFrame)) return null;
     const found = await browsers(true);
-    return { browsers: found.browsers.map(({ id, name }) => ({ id, name })), systemDefault: found.systemDefault, chosen: linkBrowser };
+    return { browsers: linkBrowserChoices(found.browsers, browser !== null), systemDefault: found.systemDefault, chosen: linkBrowser };
   });
   ipcMain.handle("ovis:browser-choose", async (event, id: unknown) => {
     if (!serverPage(event.senderFrame)) throw new Error("Choosing a browser is not offered here");
-    if (id !== null && (typeof id !== "string" || !(await browsers()).browsers.some((browser) => browser.id === id))) throw new Error("That browser is not on this computer");
+    if (!choosableLinkBrowser(id, (await browsers()).browsers, browser !== null)) throw new Error("That browser is not on this computer");
     writeLinkBrowser(linkBrowserPath, id);
     linkBrowser = id;
   });

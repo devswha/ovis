@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Compass } from "lucide-react";
 
+import { BUILT_IN_LINK_BROWSER } from "../../shared/browser-policy.ts";
 import { linkBrowsers, type LinkBrowserChoices } from "../lib/externalLink.ts";
 import { useT } from "../lib/i18n.ts";
 import { SettingsRow, SettingsSelect } from "./SettingsControls.tsx";
@@ -40,7 +41,7 @@ export function LinkBrowserRow() {
       onReset={chosen === SYSTEM_DEFAULT ? undefined : () => choose(SYSTEM_DEFAULT)}>
       <SettingsSelect id="settings-link-browser" value={chosen} onChange={(event) => choose(event.target.value)}>
         <option value={SYSTEM_DEFAULT}>{choices.systemDefault === null ? t("System default") : t("System default ({name})", { name: choices.systemDefault })}</option>
-        {choices.browsers.map((browser) => <option key={browser.id} value={browser.id}>{browser.name}</option>)}
+        {choices.browsers.map((browser) => <option key={browser.id} value={browser.id}>{browser.id === BUILT_IN_LINK_BROWSER ? t("Built-in browser") : browser.name}</option>)}
       </SettingsSelect>
     </SettingsRow>
   );

@@ -99,6 +99,9 @@ export function blockedSite(entry: string): string | null {
 
 export const BLOCKED_SITES_MAX = 200;
 
+/** Settings → Browser for links: the id that names this built-in browser beside the browsers the PC has (app/electron/src/browsers.ts) */
+export const BUILT_IN_LINK_BROWSER = "ovis";
+
 /** the block list as the shared setting `browserBlockedSites` keeps it: entries as `blockedSite` reads them, distinct, at most BLOCKED_SITES_MAX */
 export function browserBlockedSites(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
