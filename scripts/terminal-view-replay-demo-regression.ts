@@ -1,3 +1,7 @@
+/**
+ * A hidden recent tab's view, parsed on its return, is history: a query in it is not answered into
+ * the pane and a copy request in it does not write the clipboard.
+ */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,6 +10,7 @@ import { chromium, type Browser } from "playwright-core";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { pickTab } from "./tab-pick.ts";
+import { serveDemo } from "./demo-server.ts";
 
 interface Fixture {
   copies: string[];
@@ -57,17 +62,7 @@ try {
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n<script>(${installViewFixture.toString()})()</script>\n<script type="module"`));
   const prefix = "/herdr-web-ui/demo/app/";
-  server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  server = serveDemo(app, { prefix });
   const url = `http://127.0.0.1:${server.port}${prefix}`;
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   for (const width of [1280, 390]) {
@@ -106,6 +101,7 @@ try {
       await pickTab(page, tabA!);
       await page.waitForFunction((pane) => document.querySelector(`[data-layout-pane="${pane}"] .xterm`)?.classList.contains("enable-mouse-events"), a, { timeout: 10_000 });
       await page.waitForFunction(({ pane, start }) => window.viewFixture.sent.slice(start).some((sent) => sent.type === "attach" && sent.pane_id === pane), { pane: a, start: back }, { timeout: 10_000 });
+      // the reply xterm would type is sent as the view parses: the attach's own output, parsed after it, settles that
       await frame(a).locator("[data-pane-content]").waitFor();
       const after = await sentSince(back);
       const replies = after.filter((sent) => (sent.type === "input" || sent.type === "keys") && /\x1b\[\d+;\d+R/.test(String(sent.text ?? "")));
@@ -119,6 +115,9 @@ try {
       console.log(`PASS ${width}: a hidden tab's view is drawn on return without answering its queries or copying`);
       if (phone) continue;
 
+      // A hidden page drops a recent tab's view, and the terminal reset it began with. Back on that
+      // tab before its next view frame, the attach starts from a reset, as any tab's does: a mode the
+      // old screen set (mouse tracking, which the replay's clear keeps) does not outlive it.
       await page.evaluate((pane) => {
         for (const socket of window.viewFixture.sockets) socket.push({ type: "pty-data", pane_id: pane, data: "\x1b[?1000h" });
       }, a);

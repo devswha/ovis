@@ -35,6 +35,7 @@ const KINDS: readonly (readonly [string, UnsentKind])[] = [
   [CARD_TEXT_PREFIX, "message"], [REPLY_COMMENTS_PREFIX, "message"],
 ];
 const LEASE_PREFIX = "ovis:composer-sending:";
+export const COMMAND_PREFIX = "ovis:composer-command:";
 const VIEW_PREFIX = "ovis:view:";
 /** a message box's agent-only mark (lib/composerDraft.ts), which goes with its draft */
 const AGENT_ONLY_PREFIX = "ovis:composer-agent-only:";
@@ -48,8 +49,9 @@ const carriedKey = (): string => `ovis:pane-carried:${typeof location === "undef
 type PaneStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 export function paneStateKey(key: string): { machineId: string; paneId: string; kind: UnsentKind | null } | null {
-  const lease = key.startsWith(LEASE_PREFIX);
-  const rest = lease ? key.slice(LEASE_PREFIX.length) : key;
+  const marker = [LEASE_PREFIX, COMMAND_PREFIX].find((prefix) => key.startsWith(prefix));
+  const lease = marker !== undefined;
+  const rest = marker ? key.slice(marker.length) : key;
   const draft = KINDS.find(([prefix]) => rest.startsWith(prefix));
   const prefix = draft?.[0] ?? (lease ? null : [VIEW_PREFIX, AGENT_ONLY_PREFIX].find((other) => rest.startsWith(other)) ?? null);
   if (prefix === null) return null;
@@ -99,7 +101,11 @@ function texts(kind: UnsentKind, value: string | null, now: number, marked = fal
     const data: unknown = JSON.parse(value ?? "null");
     const messages = typeof data === "object" && data !== null && "messages" in data && Array.isArray(data.messages) ? data.messages as unknown[] : null;
     if (messages === null) return [{ text: value ?? "", agentOnly: false }];
+    // a dismissed ID is saved while a live connection still holds its row, never as text to recover
+    const listed = (data as { dismissed?: unknown }).dismissed;
+    const dismissed = new Set(Array.isArray(listed) ? listed as unknown[] : []);
     return messages.flatMap((message) => typeof message === "object" && message !== null && "text" in message && typeof message.text === "string"
+      && !("id" in message && dismissed.has(message.id))
       ? [{ text: message.text, agentOnly: "agent_only" in message && message.agent_only === true }] : []);
   } catch { return [{ text: value ?? "", agentOnly: false }]; }
 }
@@ -287,17 +293,20 @@ export class PaneLifetimes {
   /**
    * The app is replacing this page (PAGE_LEAVING_EVENT): the pane state it keeps in memory alone waits
    * in storage for the next page of this address (takeCarried), with any an earlier page left there.
-   * Nothing of it is sent. Storage that refuses it leaves it with this page, as before. Two pages of one
-   * origin would overwrite each other's carry for the same pane: the Android app, the only one to send
-   * the event, shows one page at a time.
+   * Nothing of it is sent. Storage that refuses it leaves it with this page, as before, and the answer
+   * is false: true says it is in storage, or that this page held none. Two pages of one origin would
+   * overwrite each other's carry for the same pane: a page carries only as it is replaced (the Android
+   * app leaving it, a PC page moving to another PC, a page the phone app restored loading again,
+   * lib/pageRestore.ts), one page at a time.
    */
-  carry(): void {
-    if (this.memory.size === 0) return;
+  carry(): boolean {
+    if (this.memory.size === 0) return true;
     try {
       const storage = this.storage();
       const carried = this.live([...Object.entries(readCarried(storage.getItem(carriedKey()))), ...this.memory]);
       storage.setItem(carriedKey(), JSON.stringify(Object.fromEntries(carried)));
-    } catch {}
+      return true;
+    } catch { return false; }
   }
 
   private takeCarried(machineId: string): boolean {
@@ -358,12 +367,14 @@ export class PaneLifetimes {
   private archive(storage: Storage | null, machineId: string, paneId: string, kind: UnsentKind, values: readonly Unsent[], titles: ReadonlyMap<string, string>, own = false): string[] {
     const title = titles.get(paneId);
     const ids: string[] = [];
+    // a record kept before this call stands for one of these texts at most: two messages with the same words keep two (#3990)
+    const earlier = own ? [] : [...this.unsent()];
     for (const { text, agentOnly } of values) {
       if (text.trim() === "") continue;
       // the input line's key is never written down, by an earlier release's storage either (#2523)
       if (kind === "line" && looksLikeKey(text)) continue;
-      const same = own ? undefined : this.unsent().find((item) => item.machine_id === machineId && item.pane_id === paneId && item.kind === kind && item.text === text && (item.agent_only === true) === agentOnly);
-      if (same !== undefined) { ids.push(same.id); continue; }
+      const same = earlier.findIndex((item) => item.machine_id === machineId && item.pane_id === paneId && item.kind === kind && item.text === text && (item.agent_only === true) === agentOnly);
+      if (same >= 0) { ids.push(earlier.splice(same, 1)[0]!.id); continue; }
       const record: UnsentText = { id: this.newId(), machine_id: machineId, pane_id: paneId, ...(title && title !== paneId ? { pane_title: title } : {}), kind, text, at: this.now(), ...(agentOnly ? { agent_only: true as const } : {}) };
       const { id, ...stored } = record;
       try {

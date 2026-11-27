@@ -381,7 +381,7 @@ export function SettingsRow({ label, description, keywords, held = false, htmlFo
   const label_ = htmlFor !== undefined ? <label className="settings-label" htmlFor={htmlFor}>{label}</label> : <span className="settings-label">{label}</span>;
   return (
     <div ref={sentence.row} className={`settings-row${wide ? " is-wide" : ""}${sentence.opened ? " is-explained" : ""}`} data-setting="" {...sentence.rowEvents}>
-      <div className="settings-row-text">
+      <div className={`settings-row-text${Icon !== undefined ? " has-icon" : ""}`}>
         {changed || Icon !== undefined ? (
           <span className="settings-label-line">
             {Icon !== undefined && <Icon className="settings-row-icon" aria-hidden="true" />}
@@ -453,12 +453,12 @@ export function Segmented<T extends string>({ label, value, options, onChange, d
   );
 }
 
-export function ChipToggles({ label, chips }: { label: string; chips: readonly { label: string; title?: string; icon?: LucideIcon; on: boolean; onChange: (on: boolean) => void }[] }) {
+export function ChipToggles({ label, chips, disabled }: { label: string; disabled?: boolean; chips: readonly { label: string; title?: string; icon?: LucideIcon; on: boolean; onChange: (on: boolean) => void }[] }) {
   const sentence = useContext(SettingsRowSentence);
   return (
     <div className="settings-chips" role="group" aria-label={label} aria-describedby={sentence}>
       {chips.map((chip) => (
-        <button key={chip.label} type="button" className="settings-chip" aria-pressed={chip.on} title={chip.title} onClick={() => chip.onChange(!chip.on)}>{chip.icon && <chip.icon aria-hidden="true" />}{chip.label}</button>
+        <button key={chip.label} type="button" className="settings-chip" aria-pressed={chip.on} title={chip.title} disabled={disabled} onClick={() => chip.onChange(!chip.on)}>{chip.icon && <chip.icon aria-hidden="true" />}{chip.label}</button>
       ))}
     </div>
   );

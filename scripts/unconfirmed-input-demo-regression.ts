@@ -1,3 +1,11 @@
+/**
+ * Typing the socket accepted just before its connection closes (#2587), on the real client over the
+ * demo's fixture transport: the frames leave the page but never reach the server (a relay carrier that
+ * stopped before the mux wrote them, or a socket gone half-open), then the connection closes. Nothing
+ * confirmed them, so the text comes back as held input for the user to send or discard, and nothing is
+ * sent on its own after the reconnect. Held text that looks like a key stays on screen but is never
+ * written to storage.
+ */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +15,7 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { shownRows } from "./shown-rows.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const SETTINGS_KEY = "ovis:settings";
 const PREFIX = "/herdr-web-ui/demo/app/";
@@ -73,15 +82,7 @@ try {
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${LOSSY}\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(PREFIX)) return new Response("not found", { status: 404 });
-    let file = decodeURIComponent(path.slice(PREFIX.length));
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: PREFIX });
   const origin = `http://127.0.0.1:${server.port}${PREFIX}`;
   const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   const scenario = async (text: string): Promise<{ held: string | null; swallowed: string; resent: string; stored: string[] }> => {

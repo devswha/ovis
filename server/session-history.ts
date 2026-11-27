@@ -28,6 +28,7 @@ import type { SessionHistoryAgent, SessionHistoryRow } from "../shared/protocol.
 import { agyUserText } from "./agy.ts";
 import { claudeProjectDir } from "./claude-store.ts";
 import { cmdSlug } from "./cmd.ts";
+import { codexIndexedNames, codexStoredLabels } from "./codex-session-labels.ts";
 import { grokSessionGroups } from "./grok-store.ts";
 import { directoryKey, interactiveCodexRollout, storedCwds, withoutVerbatimPrefix } from "./codex.ts";
 import { hermesHome } from "./hermes-home.ts";
@@ -38,7 +39,13 @@ import { defaultPiSessionReader, PI_CACHE_ENTRIES, PI_HEADER_DEADLINE_MS, PiMeta
 import type { PiLabel } from "./pi-session-label.ts";
 
 export const HEAD_BYTES = 64 * 1024;
+/**
+ * A check is one session file's resolution with its stat (spent even when the resolution fails or
+ * lands outside the store), or one resolution or stat of a store, a folder or a database.
+ */
 export const MAX_STATS = 400;
+const CODEX_METADATA_STATS = 8;
+/** Bun's opendirSync still reads a whole folder from the kernel before any of it. */
 export const MAX_ENTRIES = 16384;
 export const MAX_WALK = 65536;
 export const MAX_ROWS = 50;
@@ -59,6 +66,7 @@ export interface SessionHistoryOptions {
   opencodeDb?: string;
   hermesHome?: string;
   piReader?: PiSessionReader;
+  /** Reads at most `max` bytes from the start of a checked non-Pi file (tests count bytes): descriptor only. */
   readHead?: (fd: number, max: number) => Buffer;
   stat?: (path: string, bigint?: boolean) => Stats | BigIntStats;
   resolve?: (path: string) => string;
@@ -73,6 +81,7 @@ export interface SessionHistoryOptions {
   tmpdir?: string;
 }
 
+/** A session id safe to put after a flag: it cannot be read as another option. */
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/;
 
 const RESUME: Record<SessionHistoryAgent, (id: string) => string[]> = {
@@ -103,6 +112,7 @@ const RESUME: Record<SessionHistoryAgent, (id: string) => string[]> = {
   grok: (id) => ["grok", "--resume", id],
   // https://antigravity.google/docs/cli/commands/resume: "agy --conversation <conversation-id>"
   agy: (id) => ["agy", "--conversation", id],
+  // server/conversation.ts:1455-1459 (devinSessionForPane reads `--resume <id>` / `--resume=<id>`)
   devin: (id) => ["devin", "--resume", id],
 };
 
@@ -210,9 +220,14 @@ class Budget {
     readonly fstatOf: (fd: number, bigint?: boolean) => Stats | BigIntStats = defaultFstat,
     private readonly opendirOf: (dir: string) => Dir = opendirSync,
     readonly onOpened: (path: string, immutable: boolean, db: Database) => void = () => {},
+    private readonly maxStats = MAX_STATS,
   ) {}
 
-  get exhausted(): boolean { return this.used >= MAX_STATS; }
+  get exhausted(): boolean { return this.used >= this.maxStats; }
+
+  withStatLimit(maxStats: number): Budget {
+    return new Budget(this.statOf, this.platform, this.resolveOf, this.lstatOf, this.fstatOf, this.opendirOf, this.onOpened, maxStats);
+  }
 
   stat(path: string): Stats | null {
     if (this.exhausted) return null;
@@ -234,6 +249,7 @@ class Budget {
     try { return this.resolveOf(path); } catch { return null; }
   }
 
+  /** The check is spent whatever the resolution finds (a dangling or outside link costs it too). */
   file(path: string, root: string): { real: string; stat: Stats | BigIntStats } | null {
     if (this.exhausted) return null;
     this.used++;
@@ -282,7 +298,7 @@ class Budget {
     if (directoryKey(left) === directoryKey(right)) return true;
     // one Windows folder in two spellings needs no file IDs; the letter case still does (#587)
     if (this.platform === "win32" && windowsFolder(left) === windowsFolder(right)) return true;
-    if (this.platform !== "win32" || this.used + 2 > MAX_STATS) return false;
+    if (this.platform !== "win32" || this.used + 2 > this.maxStats) return false;
     this.used += 2;
     try {
       const a = this.statOf(left, true);
@@ -297,6 +313,7 @@ class Scan {
 
   get exhausted(): boolean { return this.budget.exhausted; }
 
+  /** The file at this path, resolved, when it is a regular file inside the store. */
   file(path: string): Found | null {
     const checked = this.budget.file(path, this.root);
     if (checked === null || !checked.stat.isFile()) return null;
@@ -346,6 +363,11 @@ function newestEntries(budget: Budget, dirs: readonly string[], keep: (entry: Di
 
 type Found = { real: string; mtimeMs: number; size: number; dev: bigint; ino: bigint };
 
+/**
+ * The `.jsonl` files directly in these directories (subagent folders beside them are not read), newest
+ * first. They are ordered by their own times before any is checked, so the checks go to the newest:
+ * a name (Claude's is a random id) says nothing of when a session was written.
+ */
 function sessionFiles(scan: Scan, dirs: readonly string[]): Found[] {
   const found = new Map<string, Found>();
   for (const path of newestEntries(scan.budget, [...new Set(dirs)], (entry) => entry.name.endsWith(".jsonl"))) {
@@ -365,6 +387,11 @@ function rowsOf(files: readonly Found[], read: (file: Found) => Row | null): Row
   }
   return rows;
 }
+
+/* ---------------------------------------------------------------------------------------------
+ * pi and its descendants (omp, gjc, omo, Command Code): a `session` header with id, timestamp and
+ * cwd (gjc may put a `title` line before it), then `message` lines.
+ * ------------------------------------------------------------------------------------------- */
 
 /** pi's folder for a cwd (pi-coding-agent 0.86.0 dist/core/session-manager.js:248), which senpi (omo) keeps. */
 export function piSessionFolder(cwd: string, platform: NodeJS.Platform = process.platform): string {
@@ -455,6 +482,8 @@ async function piSessions(sessions: string, folders: readonly string[], cwds: re
       const header = label?.header;
       if (label && header) {
         rows.push(row("pi", header.id, { title: label.title, firstMessage: label.firstMessage, startedAt: iso(header.timestamp), updatedAt: new Date(file.mtimeMs).toISOString() }));
+        // A row already labelled is complete; rescanning it would spend the label deadline
+        // ahead of the unfinished rows after it on every open.
         if (label.title === null && label.firstMessage === null) selected.push({ index: rows.length - 1, file, header });
       } else if (label) { incomplete = true; unfinishedHeaders++; }
       else rejected = !retainedHeaderless;
@@ -466,11 +495,14 @@ async function piSessions(sessions: string, folders: readonly string[], cwds: re
     }
   }
   if (rows.length === 0 && incomplete) throw new PiMetadataBusy();
+  // A slow header pass must not starve labels on every open: keep a quarter of the listing
+  // deadline for label reads, so each listing still makes bounded progress.
   const labelDeadline = Math.max(deadline, performance.now() + reader.listingDeadlineMs / 4);
   for (const { index, file, header: checked } of selected) {
     try {
       const label = await reader.read((checkActive) => openPiChecked(budget, file, checkActive), labelDeadline, { path: file.real, scope });
       const header = label?.header;
+      // A changed identity must not replace that established row during this listing.
       if (!label || !header || header.id !== checked.id || header.cwd !== checked.cwd || header.version !== checked.version) continue;
       rows[index] = row("pi", header.id, { title: label.title, firstMessage: label.firstMessage, startedAt: iso(header.timestamp), updatedAt: new Date(file.mtimeMs).toISOString() });
     } catch (error) {
@@ -488,7 +520,12 @@ function piFamily(agent: SessionHistoryAgent, sessions: string, folders: readonl
   return rowsOf(files, (file) => piFamilyRow(agent, scan, file, cwds, idFromName));
 }
 
+/* ---------------------------------------------------------------------------------------------
+ * Claude Code: `<config dir>/projects/<project>/<session uuid>.jsonl` (claude-store.ts).
+ * ------------------------------------------------------------------------------------------- */
+
 const CLAUDE_SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** What Claude Code records as a user line that is no prompt: a slash command's echo, its output, a caveat. */
 const CLAUDE_NOT_PROMPT = /^<(?:command-|local-command-)|^Caveat: /;
 
 function claudeRow(scan: Scan, file: Found, cwds: readonly string[]): Row | null {
@@ -520,8 +557,13 @@ function claudeSessions(cwds: readonly string[], home: string, env: Record<strin
   return rowsOf(sessionFiles(scan, cwds.map((cwd) => join(projects, claudeProjectDir(cwd)))), (file) => claudeRow(scan, file, cwds));
 }
 
+/* ---------------------------------------------------------------------------------------------
+ * Codex: `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<time>-<uuid>.jsonl`, a `session_meta` first line.
+ * ------------------------------------------------------------------------------------------- */
+
 function codexRow(scan: Scan, file: Found, cwds: readonly string[]): Row | null {
   const { lines, cut } = scan.head(file);
+  // a header the read cut is not listed: a child marker past the read could not be checked
   if (cut && lines.length < 2) return null;
   const records = cut ? lines.slice(1, -1) : lines.slice(1);
   let header: Json;
@@ -545,10 +587,8 @@ function codexRow(scan: Scan, file: Found, cwds: readonly string[]): Row | null 
   return row("codex", id, { firstMessage, startedAt, updatedAt: new Date(file.mtimeMs).toISOString() });
 }
 
-function codexSessions(cwds: readonly string[], codexHome: string, budget: Budget, read: SessionHistoryOptions["readHead"]): Row[] {
-  const sessions = join(codexHome, "sessions");
-  const scan = scanOf(budget, sessions, read);
-  if (scan === null) return [];
+function codexRolloutRows(scan: Scan, sessions: string, cwds: readonly string[]): Row[] {
+  const { budget } = scan;
   const desc = (dir: string) => budget.list(dir, (entry) => /^\d+$/.test(entry.name)).map((entry) => entry.name).sort().reverse();
   const files: Found[] = [];
   walk: for (const year of desc(sessions)) {
@@ -561,6 +601,42 @@ function codexSessions(cwds: readonly string[], codexHome: string, budget: Budge
   }
   files.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return rowsOf(files, (file) => codexRow(scan, file, cwds));
+}
+
+function codexSessions(cwds: readonly string[], codexHome: string, budget: Budget, read: SessionHistoryOptions["readHead"]): Row[] {
+  const sessions = join(codexHome, "sessions");
+  const scan = scanOf(budget, sessions, read);
+  if (scan === null) return [];
+  const listed = codexRolloutRows(scan, sessions, cwds);
+  if (listed.length === 0) return listed;
+  // Looking up optional labels cannot displace rollouts or lose labels when the rollout budget is full.
+  const labelsBudget = budget.withStatLimit(CODEX_METADATA_STATS);
+  const index = scanOf(labelsBudget, codexHome, undefined)?.file(join(codexHome, "session_index.jsonl")) ?? null;
+  let names: ReadonlyMap<string, string> | undefined;
+  if (index !== null) {
+    try {
+      const fd = openChecked(labelsBudget, index);
+      try { names = codexIndexedNames(fd, index.size, HEAD_BYTES); } finally { closeSync(fd); }
+    } catch { /* An unavailable index does not hide the rollout. */ }
+  }
+  const metadata = withDatabase(labelsBudget, codexHome, join(codexHome, "state_5.sqlite"), (db) =>
+    codexStoredLabels(db, listed.map(({ id }) => id), { title: TITLE_CHARS * 4, message: MESSAGE_CHARS * 4 }));
+  return listed.map((entry) => {
+    const id = entry.id.toLowerCase();
+    const stored = metadata?.get(id);
+    const storedPrompt = stored?.firstMessage ?? null;
+    const legacyTitle = clip(stored?.legacyTitle ?? null, TITLE_CHARS);
+    const repeatsPrompt = legacyTitle === clip(storedPrompt, TITLE_CHARS) || legacyTitle === clip(entry.firstMessage, TITLE_CHARS);
+    const indexedName = names?.get(id);
+    const title = indexedName === undefined
+      ? clip(stored?.name ?? null, TITLE_CHARS) ?? (repeatsPrompt ? null : legacyTitle)
+      : clip(indexedName, TITLE_CHARS);
+    return {
+      ...entry,
+      title,
+      firstMessage: entry.firstMessage ?? clip(storedPrompt, MESSAGE_CHARS),
+    };
+  });
 }
 
 /* ---------------------------------------------------------------------------------------------
@@ -624,6 +700,9 @@ function grokSessions(cwds: readonly string[], home: string, env: Record<string,
   };
   const encoded = new Set(cwds.map((spelling) => encodeURIComponent(spelling)));
   for (const group of encoded) readGroup(group);
+  // a hashed group (a long cwd) is known only by what its sessions record: another folder's
+  // URI-encoded group is skipped by name, and a hashed one is read only once a session in it
+  // names this cwd, so no other folder's sessions spend the budget
   for (const group of grokSessionGroups(grokHome)?.groups ?? []) {
     if (scan.exhausted) break;
     if (encoded.has(group) || cwds.every((spelling) => otherFolder(group, spelling, budget.platform))) continue;
@@ -672,6 +751,15 @@ function grokGroupCwd(scan: Scan, dirs: readonly string[], cwds: readonly string
   return false;
 }
 
+/* ---------------------------------------------------------------------------------------------
+ * SQLite stores: OpenCode, Hermes, Devin, Antigravity. Read-only, at most MAX_ROWS sessions, text cut
+ * to HEAD_BYTES in the query.
+ * ------------------------------------------------------------------------------------------- */
+
+/**
+ * Reads a database of the store at `storeDir`, as files are read: the store resolved, the database
+ * and its folder resolved inside it (a link out of the store is refused), opened read-only.
+ */
 function withDatabase<T>(budget: Budget, storeDir: string, path: string, read: (db: Database) => T): T | null {
   const root = storeRoot(budget, storeDir);
   if (root === null) return null;
@@ -684,9 +772,13 @@ function withDatabase<T>(budget: Budget, storeDir: string, path: string, read: (
   let fd: number | undefined;
   let db: Database | undefined;
   try {
+    // the checked file itself, opened: a link put in its place is refused (O_NOFOLLOW), and the
+    // descriptor must be the checked file (a file swapped in and back between two looks at the path
+    // is not; nor is a folder above it swapped for a link)
     fd = openSync(real, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0));
     const opened = budget.fstatOf(fd, true);
     if (!opened.isFile() || bigintOf(opened.dev) !== checked.dev || bigintOf(opened.ino) !== checked.ino) return null;
+    // a -wal there before the first read (a restored store's) is no writer; one appearing after is
     const logBefore = budget.modified(`${real}-wal`) !== null;
     const first = openDatabase(budget, real, fd, checked, true);
     if (first === null) return null;
@@ -849,6 +941,7 @@ const HERMES_CHILD_COLUMNS = ["parent_session_id", "model_config", "source", "se
 const HERMES_RESET_END_REASONS = ["session_reset", "session_switch", "idle", "daily", "suspended", "resume_pending_expired"];
 const hermesConfig = "(CASE WHEN json_valid(s.model_config) THEN s.model_config ELSE NULL END)";
 const hermesMarker = (name: string) => `json_type(${hermesConfig}, '$.${name}')`;
+/** a root, or a child Hermes lists as a branch or a reset of its parent */
 const HERMES_ADMITTED = `(s.parent_session_id IS NULL OR (coalesce(s.source, '') != 'tool' AND EXISTS (
   SELECT 1 FROM sessions p WHERE p.id = s.parent_session_id AND (
     (${hermesMarker("_delegate_from")} IS NULL AND (
@@ -860,6 +953,7 @@ const HERMES_ADMITTED = `(s.parent_session_id IS NULL OR (coalesce(s.source, '')
         OR (p.end_reason IN (${HERMES_RESET_END_REASONS.map((reason) => `'${reason}'`).join(", ")})
           AND coalesce(s.session_key, '') != '' AND s.session_key = p.session_key))))
 )))`;
+/** a root, or a child `hermes --resume` opens as itself: no compression continuation to follow, and nothing past it in the walk has messages */
 const HERMES_RESUMES_ITSELF = `(s.parent_session_id IS NULL OR NOT EXISTS (
   WITH RECURSIVE walk(id, depth) AS (
     SELECT s.id, 0
@@ -934,6 +1028,11 @@ function devinSessions(cwds: readonly string[], dbPath: string, budget: Budget):
   }) ?? [];
 }
 
+/**
+ * Antigravity CLI: `~/.gemini/antigravity-cli/conversation_summaries.db` names each conversation's
+ * workspace folders (`workspace_uris`, file URIs), and its first prompt is the first USER_INPUT step
+ * of `brain/<id>/.system_generated/logs/transcript_full.jsonl`.
+ */
 function agySessions(cwds: readonly string[], home: string, budget: Budget, read: SessionHistoryOptions["readHead"]): Row[] {
   const base = join(home, ".gemini", "antigravity-cli");
   const listed = withDatabase(budget, base, join(base, "conversation_summaries.db"), (db) => {
@@ -984,6 +1083,7 @@ export function listSessions(agent: SessionHistoryAgent, cwd: string, options: S
   const canonical = budget.canonical(cwd, realpath);
   const cwds = [...new Set([cwd, canonical])];
   const keys = (key: (cwd: string) => string | readonly string[]) => [...new Set(cwds.flatMap(key))];
+  // omp and gjc key by paths relative to home and the temp dir, each canonical as omp resolves it
   const spellings = (path: string) => [...new Set([path, budget.canonical(path, realpath)])];
   const ompFolders = () => ompSessionFolders(cwds, spellings(home), spellings(options.tmpdir ?? tmpdir()), budget.platform);
   const rows = ((): Row[] | Promise<Row[]> => {
@@ -1000,6 +1100,8 @@ export function listSessions(agent: SessionHistoryAgent, cwd: string, options: S
         return piFamily("omo", join(dir, "sessions"), keys((spelling) => piSessionFolder(spelling, budget.platform)), cwds, budget, read);
       }
       case "omp": {
+        // the store omp started with this environment writes to (XDG roots, PI_CONFIG_DIR, a profile);
+        // a flat session directory of its own or a store it cannot prove keeps the default
         const environ = Object.entries({ ...env, HOME: home }).flatMap(([key, value]) => value === undefined ? [] : [`${key}=${value}`]);
         const layout = ompStoreLayout(["omp"], environ, budget.platform);
         const sessions = layout?.depth === 2 ? layout.sessions : join(home, ".omp", "agent", "sessions");
@@ -1008,6 +1110,7 @@ export function listSessions(agent: SessionHistoryAgent, cwd: string, options: S
       case "gjc": return piFamily("gjc", join(env["GJC_CODING_AGENT_DIR"] || join(home, ".gjc", "agent"), "sessions"), ompFolders(), cwds, budget, read);
       case "cmd": return piFamily("cmd", join(home, ".commandcode", "projects"), keys(cmdSlug), cwds, budget, read, true);
       case "opencode": {
+        // a database the user named (OPENCODE_DB, the server's option) is its own store; else OpenCode's data dir
         const named = options.opencodeDb ?? (env["OPENCODE_DB"] ? opencodeDatabasePath(env, home) : null);
         const data = join(env["XDG_DATA_HOME"] || join(home, ".local", "share"), "opencode");
         return opencodeSessions(cwds, named ? dirname(named) : data, named ?? opencodeDatabasePath(env, home), budget);

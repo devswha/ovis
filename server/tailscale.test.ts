@@ -1,6 +1,6 @@
 import { describe, expect, it, spyOn } from "bun:test";
 import { decideAccess, type AccessInput } from "./access.ts";
-import { HTTPS_PORTS, httpsPorts, parseSoleTailnetLogin, parseTailscale, parseTailscaleIp, TailnetIdentitySource, type TailnetIdentity } from "./tailscale.ts";
+import { HTTPS_PORTS, httpsPorts, parseSoleTailnetLogin, parseTailscale, parseTailscaleIp, TailnetIdentitySource, tailscaleWhois, type TailnetIdentity } from "./tailscale.ts";
 
 const status = (state = "Running", dns = "pc.example.ts.net.") => JSON.stringify({ BackendState: state, Self: { DNSName: dns } });
 /** a `tailscale serve status --json` document: listeners by port, and one "/" proxy per host:port */
@@ -32,7 +32,9 @@ describe("parseSoleTailnetLogin", () => {
     expect(parseSoleTailnetLogin(tailnet([42, undefined], [[42, undefined], [43, undefined]]))).toBeNull();
     expect(parseSoleTailnetLogin(tailnet([42, undefined], [[42, undefined], [42, ["tag:ci"]]]))).toBeNull();
     expect(parseSoleTailnetLogin(tailnet([42, ["tag:server"]], [[42, undefined]]))).toBeNull();
+    // two logins whose ids round to the same double are still two logins
     expect(parseSoleTailnetLogin(bigIds(NEXT_ID))).toBeNull();
+    // a peer the status names no owner for is not proof of anything
     expect(parseSoleTailnetLogin(JSON.stringify({ BackendState: "Running", Self: { UserID: 42 }, Peer: { k: { DNSName: "p.example.ts.net." } } }))).toBeNull();
   });
 
@@ -46,6 +48,7 @@ describe("parseSoleTailnetLogin", () => {
   });
 });
 
+/** the access decision for a no-login request that `tailscale serve` forwarded, with the operator's serve-only switch on */
 const HOST = "pc.example.ts.net";
 const serveRequest = (identity: TailnetIdentity, host: string | null = HOST) => {
   const input: AccessInput = { loopback: true, forwarded: true, funnel: false, tailscaleLogin: null, host, tokenMatched: false, device: null, ...identity, serveOnly: true, tokenConfigured: false, gated: false };
@@ -163,6 +166,7 @@ describe("loginIdentity", () => {
     const s = source([booting, booting, tailnet([42, undefined])]);
     try {
       expect((await s.identities.loginIdentity()).owner).toBeNull();
+      // within two seconds of a read, requests answer from it: nothing can keep the CLI spawning
       for (let i = 0; i < 20; i++) await s.identities.loginIdentity();
       expect(s.reads()).toBe(1);
       s.later(2_000);
@@ -305,5 +309,31 @@ describe("httpsPorts", () => {
     expect(httpsPorts(" 9443 ")).toEqual([9443]);
     expect(httpsPorts("65535")).toEqual([65535]);
     for (const value of ["0", "65536", "abc", "94.43", "-443", "443x"]) expect(httpsPorts(value)).toEqual([]);
+  });
+});
+
+describe("tailscale whois", () => {
+  it("is never the real CLI under bun test: a source with only a status reader spawns nothing for a node", async () => {
+    const spawn = spyOn(Bun, "spawn");
+    try {
+      expect(await tailscaleWhois.read("100.64.0.9")).toBeNull();
+      expect(await new TailnetIdentitySource(async () => null).node("100.64.0.9")).toBeNull();
+      expect(spawn).not.toHaveBeenCalled();
+    } finally { spawn.mockRestore(); }
+  });
+
+  it("asks a WhoIs that named nothing again only after five seconds", async () => {
+    let reads = 0;
+    const source = new TailnetIdentitySource(async () => null, async () => { reads++; return null; });
+    const start = Date.now();
+    const clock = spyOn(Date, "now").mockImplementation(() => start);
+    try {
+      await source.node("100.64.0.9");
+      await source.node("100.64.0.9");
+      expect(reads).toBe(1);
+      clock.mockImplementation(() => start + 5_000);
+      await source.node("100.64.0.9");
+      expect(reads).toBe(2);
+    } finally { clock.mockRestore(); }
   });
 });

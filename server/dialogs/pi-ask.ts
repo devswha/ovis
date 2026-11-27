@@ -1,6 +1,6 @@
 import type { DialogReader } from "./registry.ts";
 import { piAskTabs } from "./pi-ask-tabs.ts";
-import { ANSI_RE, KEY, type AnswerStep, type OmoAsk, type ParsedPrompt, cleanLine, findLastIndex, finishPrompt, keySteps, navigationKeys, normalizeText, own } from "./shared.ts";
+import { ANSI_RE, KEY, type AnswerStep, type OmoAsk, type ParsedPrompt, cleanLine, findLastIndex, finishPrompt, keySteps, navigationKeys, normalizeText, own, toggleMultiSelectKeys } from "./shared.ts";
 
 // rpiv-ask-user-question uses ui.custom, not Pi's native select widget. Its numbered
 // rows are cursor positions, NOT numeric shortcuts.
@@ -35,6 +35,8 @@ function frame(screen: string): Frame | null {
   const bottom = findLastIndex(lines.slice(0, hintIndex), line => RULE_RE.test(line));
   const top = findLastIndex(lines.slice(0, bottom), line => RULE_RE.test(line));
   if (top < 0 || bottom < 0) return null;
+  // Notes editors add their own rules; side-by-side previews add a second column. Neither
+  // is a complete, unambiguous row list in a plain screen mirror.
   if (lines.slice(top + 1, bottom).some(line => /[│┌┐└┘]|^\s*(?:Notes:|Global note:|Note for this answer:)/.test(line))) return null;
   return { lines, rawLines, hint: lines[hintIndex]!.trim(), top, bottom, hintIndex };
 }
@@ -117,20 +119,13 @@ function question(frame: Frame, expected?: OmoAsk): ParsedPrompt | null {
       can_step_next: navigable && tabs.steps[tabs.index! + 1]?.can_navigate === true } : {}),
   }, {
     ...(navigable ? { piAskForm: { identity: `${expected?.id ?? ""}\0${tabs!.identity}`, index: tabs!.index! } } : {}),
-    ...(typing ? { piAskTyping: true as const } : {}),
+    ...(typing ? { piAskTyping: true as const, piAskDraft: other.label.trim() } : {}),
     responder: "pi-ask-question", menuLabels: [...options.map(option => option.label), OTHER, ...(next ? [next.label] : [])],
     selectedIndex, checkedOptionIndices: checked, customMenuIndex: multi ? null : custom, rejectWithEscapeIndex: null,
     ...(!multi ? { customSteps: (text: string): AnswerStep[] => [
       ...keySteps(navigationKeys(custom - selectedIndex)), ...keySteps(["ctrl+u"]), { text }, ...keySteps([KEY.enter]),
     ] } : { multiSteps: (choices: number[]): AnswerStep[] => {
-      const desired = new Set(choices);
-      const keys: string[] = [];
-      let cursor = selectedIndex;
-      for (let index = 0; index < options.length; index += 1) {
-        if (desired.has(index) === checked.includes(index)) continue;
-        keys.push(...navigationKeys(index - cursor), KEY.space);
-        cursor = index;
-      }
+      const { keys, cursor } = toggleMultiSelectKeys(options.length, selectedIndex, checked, choices);
       keys.push(...navigationKeys(rows.length - cursor), KEY.enter);
       return keySteps(keys);
     } }),

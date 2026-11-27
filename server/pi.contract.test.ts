@@ -171,6 +171,7 @@ it("offers a tool's own picture over the image endpoint", async () => {
 it("resolves pi's context window from the agent dir pi reads its models from", async () => {
   writeFileSync(transcript, turns("Check chat", "Answer one"));
   expect((await read()).metadata?.context?.window).toBeNull();
+  // the window is nowhere in the transcript: pi's own catalog is the only disk answer for it
   const agentDir = join(root, "agent-dir");
   mkdirSync(agentDir, { recursive: true });
   writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { test: { models: [{ id: "pi-contract-model", contextWindow: 200_000 }] } } }));
@@ -236,6 +237,8 @@ it("counts the turns a /tree left behind, over HTTP", async () => {
     { type: "message", id: "a-live", parentId: "u2", timestamp: "2026-09-30T00:00:04Z", message: { role: "assistant", content: "the answer in play" } },
   ]));
   const branched = await read();
+  // pi moved its leaf and wrote nothing, so the page is built from the live branch alone; the
+  // count is the only thing that can tell the reader the file holds more than this
   expect(JSON.stringify(branched.turns)).not.toContain("abandoned");
   expect(branched.abandoned).toEqual({ count: 2, branches: 1, summary: null });
 
@@ -259,6 +262,7 @@ it("answers a session pi has not written yet as an empty conversation, then foll
   const fresh = join(slug, "fresh.jsonl");
   await reportSession(fresh, target);
   expect(await read(target)).toMatchObject({ source: "pi-transcript", turns: [], cursor: null, history_id: "unwritten:fresh" });
+  // a cursor from another conversation is refused, whichever way it points
   for (const cursor of ["before", "since", "from"]) {
     const stale = await fetch(`http://127.0.0.1:${server.port}/api/pane/conversation?pane_id=${encodeURIComponent(target)}&${cursor}=${encodeURIComponent("other:0")}`);
     expect(stale.status).toBe(409);
@@ -301,6 +305,44 @@ it("distinguishes unwritten sessions with the same filename in different folders
   symlinkSync(other, alias, "dir");
   await reportSession(join(alias, "shared-name.jsonl"), target);
   expect(await read(target)).toEqual({ source: "scrollback", turns: [], unavailable: "unreadable" });
+});
+
+it.skipIf(process.platform !== "linux")("serves the chat of a pane herdr labels gentle-shell from the pi it runs (#4198)", async () => {
+  // gentle-shell runs its bundled pi with a home of its own and reports to herdr under its own name
+  const home = join(root, ".gentle-shell", "agent");
+  const file = join(home, "sessions", `--${root.replaceAll("/", "-")}--`, "2026-11-17T14-06-52-131Z_01a1e9d4-fce1-73a2-82b6-11a1ac60faa8.jsonl");
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, turns("Gentle prompt", "Gentle answer"));
+  const cli = join(root, "gentle-shell", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js");
+  mkdirSync(dirname(cli), { recursive: true });
+  writeFileSync(cli, "setInterval(() => {}, 1 << 30);\n");
+  const created = await workspaceCreate({ cwd: root, label: "ovis-test-pi-gentle-shell" });
+  workspaces.push(created.workspace.workspace_id);
+  const target = created.root_pane.pane_id;
+  await herdrRpc("pane.send_text", { pane_id: target, text: `PI_CODING_AGENT_DIR='${home}' exec node '${cli}'\n` });
+  let pid: number | undefined;
+  for (const deadline = Date.now() + 10_000; pid === undefined;) {
+    const info = await herdrRpc("pane.process_info", { pane_id: target });
+    pid = info.process_info?.foreground_processes?.find((entry) => entry.argv?.[1] === cli)?.pid;
+    if (Date.now() > deadline) throw new Error("gentle-shell's pi fixture did not start");
+    if (pid === undefined) await Bun.sleep(50);
+  }
+  await herdrRpc("pane.report_agent", { pane_id: target, source: "gentle-shell", agent: "gentle-shell", state: "idle", seq: nextSeq() });
+  await herdrRpc("pane.report_agent_session", { pane_id: target, source: "gentle-shell", agent: "gentle-shell", seq: nextSeq(), agent_session_path: file, session_start_source: "startup" });
+  const labelled = (await sessionSnapshot()).panes.find((pane) => pane.pane_id === target);
+  expect([labelled?.agent, labelled?.agent_session ?? null]).toEqual(["gentle-shell", null]);
+
+  // herdr keeps no session for that source: only the web UI's extension, in gentle-shell's home, names it
+  expect(await read(target)).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
+  mkdirSync(join(home, "herdr-web-ui-ask"), { mode: 0o700 });
+  const extension = Bun.serve({ unix: join(home, "herdr-web-ui-ask", `${pid}.sock`), fetch: () => Response.json({ version: 1, flows: [], openCalls: [], pid, sessionFile: file }) });
+  try {
+    const chat = await read(target);
+    expect(chat.source).toBe("pi-transcript");
+    expect(chat.turns).toMatchObject([{ role: "user", parts: [{ kind: "text", text: "Gentle prompt" }] }, { role: "assistant", parts: [{ kind: "text", text: "Gentle answer" }] }]);
+  } finally {
+    await extension.stop(true);
+  }
 });
 
 it("falls back to the scrollback when the reported path leaves the store", async () => {

@@ -7,14 +7,17 @@ import { useSettings } from "../lib/settings.ts";
 import { announcesUpdate, readAnnounced, readOfferClosed, summaryFor, watchAnnounced, watchOfferClosed, writeAnnounced, writeOfferClosed } from "../lib/updateNotes.ts";
 import { describeUpdate } from "../lib/updateProgress.ts";
 import type { UpdatesModel } from "../lib/updates.ts";
-import type { DesktopUpdateLine } from "../lib/desktopUpdate.ts";
+import { useDesktopAppUpdate, type DesktopAppUpdate, type DesktopUpdateLine } from "../lib/desktopUpdate.ts";
+import { usePreviewAppUpdate } from "../lib/previewAppUpdate.ts";
 import { lazyChunkFailed, onLazyChunkFailure } from "../lib/lazyChunk.ts";
 import { Markdown } from "./Markdown.tsx";
+import { ProgressLine } from "./ProgressBar.tsx";
 import { RenderBoundary } from "./RenderBoundary.tsx";
 import { SettingsBare, SettingsRow } from "./SettingsControls.tsx";
 import "./Machines.css";
 import "./UpdateControls.css";
 import { useLocale, useT, type Translate } from "../lib/i18n.ts";
+import { ExternalLink } from "../lib/externalLink.ts";
 
 const BLOCKED_REASONS: ReadonlyArray<{ is: (reason: string) => boolean; words: (t: Translate) => string }> = [
   { is: (reason) => reason === "Start with bun run start or the herdr plugin to enable updates.", words: (t) => t("Start with bun run start or the herdr plugin to enable updates.") },
@@ -47,7 +50,7 @@ function ReleaseNotes({ notes, label }: { notes: Pick<UpdateNotes, "releases" | 
       {notes.releases.map((release) => {
         const summary = summaryFor(release, resolvedLanguage);
         const section = <div className="update-changelog" role="region" aria-label={t("Full changelog")} tabIndex={0}>
-          <RenderBoundary resetKey={release.notes} fallback={() => <p className="settings-hint">{t("These notes could not be shown.")} <a href={CHANGELOG} target="_blank" rel="noopener noreferrer">{t("Full changelog")}</a></p>}>
+          <RenderBoundary resetKey={release.notes} fallback={() => <p className="settings-hint">{t("These notes could not be shown.")} <ExternalLink kind="link" href={CHANGELOG}>{t("Full changelog")}</ExternalLink></p>}>
             <Markdown>{release.notes}</Markdown>
           </RenderBoundary>
         </div>;
@@ -67,7 +70,7 @@ function ReleaseNotes({ notes, label }: { notes: Pick<UpdateNotes, "releases" | 
           </>}
         </section>;
       })}
-      {notes.omitted > 0 && <p className="settings-hint">{t("Earlier releases not shown here: {count}.", { count: notes.omitted })} <a href={CHANGELOG} target="_blank" rel="noopener noreferrer">{t("Full changelog")}</a></p>}
+      {notes.omitted > 0 && <p className="settings-hint">{t("Earlier releases not shown here: {count}.", { count: notes.omitted })} <ExternalLink kind="link" href={CHANGELOG}>{t("Full changelog")}</ExternalLink></p>}
     </div>
   </>;
 }
@@ -76,16 +79,53 @@ function UpdateProgress({ status, fallback }: { status: UpdateStatus | null; fal
   const t = useT();
   const view = describeUpdate(status);
   const label = view ? t(view.label) : fallback;
-  return <div className="bridge-progress update-progress">
-    <p className="bridge-progress-step"><span>{label}</span>{view && <span className="bridge-progress-count">{view.step}</span>}</p>
-    <div className="bridge-progress-bar" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} {...(view ? { "aria-valuenow": view.percent } : {})}>
-      <span className={view ? "" : "is-indeterminate"} style={view ? { width: `${view.percent}%` } : undefined} />
+  return <ProgressLine className="update-progress" label={label} count={view?.step ?? null} percent={view?.percent ?? null} />;
+}
+
+/** The app's own version and check, in About's row (desktop app): the app downloads updates by itself, and this checks now */
+function AppUpdateRow({ app }: { app: DesktopAppUpdate }) {
+  const t = useT();
+  const { state } = app;
+  const update = state.update ?? "";
+  const line = ((): string | null => {
+    switch (state.phase) {
+      case "off": return t("This build of the app does not update itself.");
+      case "idle": case "failed": return null;
+      case "checking": return t("Checking for updates…");
+      case "latest": return t("Up to date.");
+      case "downloading": return state.percent === null ? t("Downloading Ovis {version}…", { version: update }) : t("Downloading Ovis {version}… {percent}%", { version: update, percent: state.percent });
+      case "ready": return t("Ovis {version} is ready.", { version: update });
+    }
+  })();
+  // one line: the updater's errors run to several (an HTTP answer's headers), the first says what went wrong
+  const error = state.phase === "failed" ? t("The update did not go through: {error}", { error: (state.error ?? "").split("\n")[0] ?? "" }) : null;
+  const busy = state.phase === "checking" || state.phase === "downloading";
+  return <>
+    <span className="settings-fact">{t("Running {version}", { version: `v${state.version}` })}</span>
+    {error !== null ? <span className="settings-hint update-app-error" role="alert" title={state.error ?? undefined}>{error}</span>
+      : line !== null && <span className="settings-hint" role="status">{line}</span>}
+    {state.phase === "ready" ? <button type="button" className="btn btn-primary" disabled={app.installing} onClick={app.install}>{t("Restart to Update")}</button>
+      : state.phase !== "off" && <button type="button" className="btn" disabled={busy} onClick={app.check}>{t("Check for updates")}</button>}
+  </>;
+}
+
+/** The phone's preview app itself, above the PC's own updates: shown only in the Android preview build */
+export function PreviewAppUpdate() {
+  const t = useT();
+  const preview = usePreviewAppUpdate();
+  if (!preview) return null;
+  return <section className="settings-section settings-updates" data-section="preview-app-update" aria-label="Ovis Preview">
+    <div className="settings-card">
+      <SettingsRow label="Ovis Preview" description={t("This phone's preview app. A check downloads a newer preview, and Restart to Update installs it.")} icon={Info}>
+        <AppUpdateRow app={preview} />
+      </SettingsRow>
     </div>
-  </div>;
+  </section>;
 }
 
 export function UpdateControls({ updates, bridgesFollow = false }: { updates: UpdatesModel; bridgesFollow?: boolean }) {
   const t = useT();
+  const app = useDesktopAppUpdate();
   const { status, error, busy, needsReload, reload, notes, installed, request, failure, offered } = updates;
   const locale = useLocale();
   const installing = busy && (status?.phase === "building" || status?.phase === "restarting");
@@ -95,18 +135,22 @@ export function UpdateControls({ updates, bridgesFollow = false }: { updates: Up
     : status?.blocked_reason ? blockedReasonWords(status.blocked_reason, t) : null;
   const blocked = restart && status?.blocked_reason === CHECKOUT_CHANGED_REASON ? null : reason;
   const bare = useContext(SettingsBare);
-  if (bare && !installing && !needsReload && failure === null && !error && !status?.error && !blocked && !tabVersion) {
+  // the desktop app's own server: the app's row, with its own check, in place of the sentence that updates come with the app
+  const desktop = status?.blocked_reason === DESKTOP_APP_UPDATES ? app : null;
+  if (bare && !installing && !needsReload && failure === null && !error && !status?.error && (!blocked || desktop) && !tabVersion) {
     const state = busy ? t("Checking for updates…") : status?.available ? t("Version {version} is available.", { version: versionLabel(status.latest_version, status.latest_revision) ?? "" }) : status?.checked_at ? t("Up to date.") : null;
     return <section className="settings-section settings-updates" data-section="updates" tabIndex={-1} aria-labelledby="settings-updates-title">
       <h3 id="settings-updates-title" className="visually-hidden">{t("Updates")}</h3>
       <div className="settings-card">
-        <SettingsRow label="Ovis" description={t("The version of Ovis running on this PC. Update and restart installs the release shown and then restarts Ovis.")} icon={Info}>
+        {desktop ? <SettingsRow label="Ovis" description={t("The version of the Ovis app on this PC. The app downloads updates by itself, and Restart to Update installs one.")} icon={Info}>
+          <AppUpdateRow app={desktop} />
+        </SettingsRow> : <SettingsRow label="Ovis" description={t("The version of Ovis running on this PC. Update and restart installs the release shown and then restarts Ovis.")} icon={Info}>
           <span className="settings-fact">{t("Running {version}", { version: runningAppVersion(status, __APP_VERSION__) })}</span>
           {state && <span className="settings-hint" role="status">{state}</span>}
           {status?.managed && (status.available
             ? <button type="button" className="btn btn-primary" disabled={busy || offered === null} onClick={() => { if (offered) void request({ command: "install", expected_revision: offered }); }}>{t("Update and restart")}</button>
             : <button type="button" className="btn" disabled={busy} onClick={() => void request({ command: "check" })}>{t("Check for updates")}</button>)}
-        </SettingsRow>
+        </SettingsRow>}
         {notes && <div className="settings-item"><ReleaseNotes notes={notes} label={t("What's new")} /></div>}
         {installed && installed.releases.length > 0 && <div className="settings-item"><ReleaseNotes notes={installed} label={t("What the last update brought")} /></div>}
       </div>
@@ -118,7 +162,7 @@ export function UpdateControls({ updates, bridgesFollow = false }: { updates: Up
     <p className="settings-hint">{t("Running {version}", { version: runningAppVersion(status, __APP_VERSION__) })}</p>
     {tabVersion && reload !== "restart" && <p className="settings-hint">{t("This tab still runs {version} until it is reloaded.", { version: tabVersion })}</p>}
     {installing && !error ? <div role="status"><UpdateProgress status={status} fallback={t(status?.phase === "building" ? "Installing dependencies and building…" : "Restarting the bridge…")} /></div> : <p className="settings-hint" role={error || status?.error || failure ? "alert" : "status"}>
-      {(failure === "offer-changed" ? t("A newer release was published after you chose this update, so nothing was installed. Check again to review it.") : null) ?? error ?? status?.error ?? (restart ? <><span>{t("Ovis was updated on this PC. Restart it there to load the update.")}</span> <a className="settings-link" href={RESTART_HELP} target="_blank" rel="noreferrer">{t("How to restart")}</a></> : null) ?? blocked ?? (busy ? t("Checking for updates…") :
+      {(failure === "offer-changed" ? t("A newer release was published after you chose this update, so nothing was installed. Check again to review it.") : null) ?? error ?? status?.error ?? (restart ? <><span>{t("Ovis was updated on this PC. Restart it there to load the update.")}</span> <ExternalLink kind="link" className="settings-link" href={RESTART_HELP}>{t("How to restart")}</ExternalLink></> : null) ?? blocked ?? (busy ? t("Checking for updates…") :
         status?.available ? t("Version {version} is available.", { version: versionLabel(status.latest_version, status.latest_revision) ?? "" }) : status?.checked_at ? t("Up to date.") : t("Waiting for an update check…"))}
     </p>}
     {restart && !error && !status?.error && blocked && <p className="settings-hint">{blocked}</p>}
@@ -130,7 +174,7 @@ export function UpdateControls({ updates, bridgesFollow = false }: { updates: Up
       <div className="update-actions">
         <button type="button" className="btn" disabled={busy} onClick={() => void request({ command: "check" })}>{t("Check for updates")}</button>
         <button type="button" className="btn btn-primary" disabled={busy || offered === null || failure !== null} onClick={() => { if (offered) void request({ command: "install", expected_revision: offered }); }}>{t("Update and restart")}</button>
-        {!installing && failure === "restart" && <a className="btn" href={RESTART_HELP} target="_blank" rel="noreferrer">{t("How to restart")}</a>}
+        {!installing && failure === "restart" && <ExternalLink kind="link" className="btn" href={RESTART_HELP}>{t("How to restart")}</ExternalLink>}
       </div>
     </>}
     {status?.checked_at && <p className="settings-hint">{t("Last checked {when}", { when: new Date(status.checked_at).toLocaleString(locale) })}</p>}
@@ -217,7 +261,7 @@ export function UpdateNotice({ updates, onOpen }: { updates: UpdatesModel; onOpe
   if (needsReload) {
     if (reload === "restart") return <div className="update-notice is-line is-warning" role="status">
       <span>{t("Ovis was updated on this PC. Restart it there to load the update.")}</span>
-      <a className="btn" href={RESTART_HELP} target="_blank" rel="noreferrer">{t("How to restart")}</a>
+      <ExternalLink kind="link" className="btn" href={RESTART_HELP}>{t("How to restart")}</ExternalLink>
     </div>;
     const text = reload === "updated" ? t("App updated. Save unsent drafts before reloading.") : t("Part of the app could not load. Save unsent drafts, then reload.");
     return <div className="update-notice is-line is-warning" role="status">
@@ -228,7 +272,7 @@ export function UpdateNotice({ updates, onOpen }: { updates: UpdatesModel; onOpe
   // a server that cannot install by revision is sent no install: the line says to restart it
   if (failure === "restart") return <div className="update-notice is-line is-warning" role="status">
     <span>{t("Restart Ovis on this PC to update from here: the server running now cannot install exactly the release shown.")}</span>
-    <a className="btn" href={RESTART_HELP} target="_blank" rel="noreferrer">{t("How to restart")}</a>
+    <ExternalLink kind="link" className="btn" href={RESTART_HELP}>{t("How to restart")}</ExternalLink>
   </div>;
   // A release that replaced the one asked for is looked at again too, never installed from here unseen.
   const install = failure === null ? offered : null;

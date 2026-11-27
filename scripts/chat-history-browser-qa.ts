@@ -1,3 +1,4 @@
+/** No herdr panes are touched. */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,7 +8,6 @@ import { VOICE_DEFAULTS, type VoiceStatus } from "../shared/voice.ts";
 import type { HerdrUiConfig } from "../shared/protocol.ts";
 import type {} from "./chat-history-fixture.tsx";
 import { parseAgyTranscript } from "../server/agy.ts";
-import { buildXtermSource, xtermSourcePlugin } from "./build-xterm.ts";
 import { chromePath } from "./chrome-path.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-history-browser-"));
@@ -27,12 +27,12 @@ function nextRoute(name: string): Promise<void> {
 }
 try {
   // the app's own xterm, as Vite aliases it: the patched source, not the package's minified build
-  const xterm = buildXtermSource(join(import.meta.dir, ".."));
-  const build = await Bun.build({ entrypoints: ["scripts/chat-history-fixture.tsx"], outdir: root, target: "browser", define: { "process.env.NODE_ENV": '"development"' }, plugins: [xtermSourcePlugin(xterm)] });
+  const build = await Bun.build({ entrypoints: ["scripts/chat-history-fixture.tsx"], outdir: root, target: "browser", define: { "process.env.NODE_ENV": '"development"' } });
   assert.ok(build.success, String(build.logs));
   server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request) {
     const path = new URL(request.url).pathname;
     if (path === "/ws") return new Response(null, { status: 404 });
+    // Product connection failures report only metadata; this fictional server consumes it locally.
     if (path === "/api/connection-diagnostics") return new Response(null, { status: 204 });
     // the terminal reads herdr's copy_on_select as it mounts
     if (path === "/api/herdr-ui") return Response.json({ copy_on_select: true } satisfies HerdrUiConfig, { headers: { "cache-control": "no-store" } });
@@ -46,6 +46,8 @@ try {
     // a count asks the server whether counting is on; this fictional server has no telemetry, and a page not answered
     // counts nothing (src/lib/usageCounters.ts). Served from the folder, it would throw ENOENT as above
     if (path === "/api/telemetry") return new Response(null, { status: 404 });
+    // the terminal's libghostty module, which the app fetches beside its own files
+    if (path === "/shared/ghostty/ghostty-vt.wasm") return new Response(Bun.file(join(import.meta.dir, "../shared/ghostty/ghostty-vt.wasm")));
     return path === "/" ? new Response('<html><head><link rel="stylesheet" href="/chat-history-fixture.css"></head><body><div id="root"></div><script type="module" src="/chat-history-fixture.js"></script></body></html>', { headers: { "Content-Type": "text/html" } }) : new Response(Bun.file(join(root, path.slice(1))));
   } });
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -239,6 +241,7 @@ try {
   await page.locator(".work-row-head").click();
   assert.equal(await page.getByText("STALE TOOL OUTPUT", { exact: true }).count(), 0);
   assert.equal(await page.locator(".chat-tool-more").count(), 1);
+  // A remote PC with the same pane/tool id is a distinct target too.
   await page.locator(".chat-tool-more").click();
   const remoteIndex = await page.evaluate(() => window.qa.requests.length - 1);
   await page.evaluate(() => window.qa.chat("a", "remote-pc"));
@@ -306,6 +309,8 @@ try {
   assert.deepEqual(errors, []);
   console.log("PASS reused tool ids after clear, machine switch and unmount cancellation; no browser errors");
 
+  // An authoritative refusal must hide stale history even if the second, terminal read fails.
+  // This is the DB/export mismatch path: the reader returns scrollback, not a transport error.
   for (const terminalFailure of [false, true]) {
     epoch = `refusal-${terminalFailure}`; newest = `discarded newest ${terminalFailure}`; before = `${epoch}:100`;
     await refresh();
@@ -374,15 +379,24 @@ try {
   await page.getByText(newest, { exact: true }).waitFor();
   console.log("PASS hidden chat cancels its held read; visible return paints a fresh answer before the abandoned read is released");
 
+  // Keep the existing scrollback change detector: clearing the signature on every fallback
+  // poll would suppress the New messages chip while the reader is scrolled up.
   unavailable = true;
   terminalText = Array.from({ length: 100 }, (_, i) => `Fictional terminal line ${i}`).join("\n");
   await refresh();
   await page.getByText(/Fictional terminal line 99/).waitFor();
-  await page.getByRole("log").evaluate((node) => { node.scrollTop = 0; node.dispatchEvent(new Event("scroll")); });
+  await page.waitForFunction(() => {
+    const log = document.querySelector(".chat-view[role=log]");
+    return log !== null && log.scrollTop > 0 && log.scrollHeight - log.clientHeight - log.scrollTop <= 1;
+  });
+  await page.getByRole("log").hover();
+  await page.mouse.wheel(0, -10_000);
+  // The read checks stickToBottom, so changing scrollTop alone is not the handoff.
+  await page.getByRole("button", { name: "Jump to latest", exact: true }).waitFor();
   terminalText += "\nFictional terminal appended line";
   await refresh();
   await page.getByText(/Fictional terminal appended line/).waitFor();
-  await page.locator(".chat-new-messages").waitFor();
+  await page.getByRole("button", { name: "New messages", exact: true }).waitFor();
   unavailable = false;
   console.log("PASS changing terminal fallback retains the New messages indicator while scrolled up");
 
@@ -450,11 +464,13 @@ try {
   await page.getByText("Summarize the last three fictional commits.", { exact: true }).waitFor();
   await page.getByText("Synthetic Agy answer", { exact: true }).waitFor();
   await page.locator(".work-block-head").click();
-  assert.equal(await page.locator(".work-row-head").count(), 2, "Agy planner call and independent result remain separate");
-  await page.locator(".work-row-head").last().click();
+  assert.equal(await page.locator(".work-row-head").count(), 1, "Agy's result is drawn in the planner call it answers, not as a row of its own");
+  await page.locator(".work-row-head").click();
   await page.getByText("Fictional commit log", { exact: true }).waitFor();
   assert.equal(await page.getByText("Synthetic Claude prompt", { exact: true }).count(), 0);
-  console.log("PASS Agy native parser output renders user/assistant text and independent expandable tool results");
+  console.log("PASS Agy native parser output renders user/assistant text and its tool call with the result it returned");
+  // A press reads a chat before its pick renders (#2562). herdr moves the pane to another session after
+  // that read answered and before the click lands: the chat opened shows the new session, never the old one.
   await page.evaluate(() => { window.qa.session("switch", "a"); window.qa.press("switch"); });
   await page.waitForFunction(() => window.qa.answered.includes("local/switch"));
   switchSession = "B";

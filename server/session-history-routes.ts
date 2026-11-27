@@ -15,7 +15,7 @@
  * the environment a new tab inherits exports none either (claude-store.ts herdrLaunchSource).
  */
 import type { SessionHistoryResponse, SessionResumeResponse, SessionSnapshot } from "../shared/protocol.ts";
-import { claudeRecordOnlyIn, claudeStoreOf, herdrLaunchSource, isClaudeProcess, paneClaudeSource, processLaunchSource, windowsShellClaude, type ClaudeSource, type PaneProcess } from "./claude-store.ts";
+import { AmbiguousClaudeStore, claudeRecordOnlyIn, claudeStoreOf, herdrLaunchSource, hintedClaudeSource, isClaudeProcess, paneClaudeSource, processLaunchSource, windowsShellClaude, type ClaudeSource, type PaneProcess } from "./claude-store.ts";
 import { coreConnection } from "./herdr-core/runtime.ts";
 import { capabilities } from "./runtime/capabilities.ts";
 import { agentLaunch } from "./agent-launch.ts";
@@ -57,6 +57,7 @@ const launchKeepsAbsence = async (options: StoreOptions): Promise<boolean> =>
 /** herdr's server hands a new tab its environment; on herdr-core the core process does, not this server. */
 async function defaultLaunchSource(): Promise<ClaudeSource> {
   if (capabilities().spawner === "server") return herdrLaunchSource(herdrSocketPath());
+  // hc not answering: no proof of what a new terminal gets, so no resume offered from it
   const status = await coreConnection().call("server.status", {}).catch(() => null);
   return typeof status?.pid === "number" ? processLaunchSource(status.pid) : { state: "unreadable" };
 }
@@ -79,9 +80,10 @@ export function workspaceFolder(snapshot: Snapshot, workspaceId: string): string
 
 const isClaude = (entry: PaneProcess) => isClaudeProcess({ name: entry.name ?? undefined, argv0: entry.argv0 ?? undefined, argv: entry.argv ?? undefined });
 
-async function paneStore(paneId: string, options: StoreOptions): Promise<{ store: NonNullable<Awaited<ReturnType<typeof claudeStoreOf>>>; claude: boolean; pid: number | null } | null> {
+async function paneStore(paneId: string, options: StoreOptions, { reportedClaude = false, started = false } = {}): Promise<{ store: NonNullable<Awaited<ReturnType<typeof claudeStoreOf>>>; claude: boolean; wrapped: boolean; pid: number | null } | null> {
   let processes: PaneProcesses | undefined;
   try { processes = await (options.paneProcesses ?? herdrPaneProcesses)(paneId); } catch { return null; }
+  // only processes herdr reported say there is no Claude: an answer without them is no answer
   let foreground = processes?.foreground_processes;
   if (processes === undefined || !Array.isArray(foreground) || foreground.length === 0) return null;
   const platform = options.platform ?? process.platform;
@@ -95,10 +97,19 @@ async function paneStore(paneId: string, options: StoreOptions): Promise<{ store
     if (below === null) return null;
     foreground = below;
   }
-  const source = await paneClaudeSource(foreground, home, platform, table);
-  const store = await claudeStoreOf(source, home, options.stores?.env ?? process.env);
-  const claude = foreground.filter(isClaude);
-  return store === null ? null : { store, claude: source !== null, pid: claude.length === 1 ? claude[0]!.pid : null };
+  let wrapper: Awaited<ReturnType<typeof hintedClaudeSource>> = null;
+  if (platform === "linux" && capabilities().foreground === "job") {
+    // The snapshot's agent can lag the foreground job, and its argv can say "claude" even for a wrapper.
+    try { wrapper = await hintedClaudeSource(foreground, { requireReadable: reportedClaude && !foreground.some(isClaude) }); }
+    catch (error) { if (error instanceof AmbiguousClaudeStore) return null; throw error; }
+  }
+  const observed = wrapper === null ? foreground : foreground.filter(({ pid }) => !wrapper.pids.includes(pid));
+  const claude = observed.filter(isClaude);
+  // A source lists the wrapper's store, but a new tab must prove where its actual Claude writes.
+  const selectedWrapper = started ? null : wrapper;
+  const source = selectedWrapper === null ? await paneClaudeSource(observed, home, platform, table) : selectedWrapper.source;
+  const store = await claudeStoreOf(source, selectedWrapper?.home ?? home, options.stores?.env ?? process.env);
+  return store === null ? null : { store, claude: claude.length > 0, wrapped: wrapper !== null, pid: claude.length === 1 ? claude[0]?.pid ?? null : null };
 }
 
 /**
@@ -116,7 +127,7 @@ async function startedStore(paneId: string, listedDir: string, options: StoreOpt
   let landed: Awaited<ReturnType<typeof paneStore>> = null;
   for (;;) {
     if (stopped()) return null;
-    const found = await paneStore(paneId, options);
+    const found = await paneStore(paneId, options, { started: true });
     if (found?.claude) {
       landed = found;
       if (platform === "linux" || platform === "darwin") return { store: found.store, writesListed: true };
@@ -150,8 +161,10 @@ export async function handleSessionHistoryRequest(request: Request, url: URL, op
   if (!snapshot.workspaces.some((entry) => entry.workspace_id === workspaceId)) {
     return jsonResponse({ error: { code: "workspace_not_found", message: "no such workspace" } }, 404);
   }
+  // the pane is checked before any store is read: a pane of another workspace lists nothing, and a
+  // pane that is gone is a stale source, as the resume route answers it
+  const pane = paneId === null ? undefined : snapshot.panes.find((entry) => entry.pane_id === paneId);
   if (paneId !== null) {
-    const pane = snapshot.panes.find((entry) => entry.pane_id === paneId);
     if (pane === undefined) return refuse(409, "stale_source", "the pane the list was asked for is gone: list the sessions again");
     if (pane.workspace_id !== workspaceId) return badRequest("pane_not_in_workspace", "pane_id must name a pane of the workspace");
   }
@@ -159,12 +172,14 @@ export async function handleSessionHistoryRequest(request: Request, url: URL, op
   if (cwd === null) return jsonResponse({ error: { code: "no_folder", message: "the workspace has no folder to list sessions for" } }, 409);
   let sessions;
   if (agent === "claude" && paneId !== null) {
-    const found = await paneStore(paneId, options);
+    const found = await paneStore(paneId, options, { reportedClaude: pane?.agent === "claude" });
     if (found === null) return storeUnknown();
     const { store } = found;
-    const repeatable = store.env !== null || await launchKeepsAbsence(options);
+    // a store whose choice cannot be repeated in a new tab is listed without a source: its Resume is withheld
+    const repeatable = !found.wrapped && (store.env !== null || await launchKeepsAbsence(options));
     const source = repeatable ? { pane_id: paneId, store_key: store.key } : null;
-    sessions = listSessions("claude", cwd, inStore(options.stores, store.dir)).map((row) => row.resume === null || source === null ? row : { ...row, resume: { ...row.resume, source } });
+    sessions = listSessions("claude", cwd, inStore(options.stores, store.dir)).map((row) =>
+      found.wrapped ? { ...row, resume: null } : row.resume === null || source === null ? row : { ...row, resume: { ...row.resume, source } });
   } else {
     try { sessions = await listSessions(agent, cwd, options.stores); }
     catch (error) {
@@ -197,6 +212,11 @@ function reportsSession(pane: Snapshot["panes"][number], id: string): boolean {
 export const RESUME_BUDGET_S = 150;
 const RESUME_ANSWER_MS = (RESUME_BUDGET_S - 10) * 1000;
 const timedOut = () => refuse(504, "resume_timed_out", "the resume took too long, so it was stopped; a tab it started is closed once its start ends");
+/**
+ * The resumes whose work still runs, answered or not, by workspace, session and store folder: another
+ * resume of the same session waits for it to end (409 resume_in_progress) rather than opening, or
+ * starting beside, a tab that work may still close.
+ */
 const resumesRunning = new Set<string>();
 const inProgress = () => refuse(409, "resume_in_progress", "this session is still being resumed: try again once that ends");
 
@@ -214,12 +234,17 @@ const inProgress = () => refuse(409, "resume_in_progress", "this session is stil
  * Claude's store is read back, and one on another store has its tab closed and is 409
  * launch_store_changed; one that does not say its store in time is closed too, 409
  * launch_store_unknown.
+ *
+ * `holdOpen` asks the server to keep the request open for a number of seconds, counted from its
+ * start: Bun 1.4 sets a request's deadline at its start plus the last timeout given once its body is
+ * in, so asking again for the same time moves nothing.
  */
 export async function handleSessionResumeRequest(request: Request, options: { readOnly: boolean; holdOpen?: (seconds: number) => void; deadline?: Promise<void> } & StoreOptions): Promise<Response> {
   if (request.method !== "POST") return badRequest("method_not_allowed", "use POST");
   if (options.readOnly) return jsonResponse({ error: { code: "read_only", message: "this device can only watch" } }, 403);
   const body = await readJsonObject<{ workspace_id?: unknown; pane_id?: unknown; agent?: unknown; session_id?: unknown; store_key?: unknown }>(request);
   if (body instanceof Response) return body;
+  // after the body is read: a timeout given before it is dropped as it is read
   options.holdOpen?.(RESUME_BUDGET_S);
   if (typeof body.workspace_id !== "string" || body.workspace_id === "") return badRequest("missing_workspace_id", "workspace_id is required");
   if (typeof body.pane_id !== "string" || body.pane_id === "") return badRequest("invalid_pane_id", "pane_id must name the pane the list came from");
@@ -248,20 +273,22 @@ async function resumeIn(
   if (source.workspace_id !== workspaceId) return badRequest("pane_not_in_workspace", "pane_id must name a pane of the workspace");
   const cwd = workspaceFolder(snapshot, workspaceId);
   if (cwd === null) return refuse(409, "no_folder", "the workspace has no folder to list sessions for");
-  const found = await paneStore(paneId, options);
+  const found = await paneStore(paneId, options, { reportedClaude: source.agent === "claude" });
   if (found === null) return storeUnknown();
   const { store } = found;
   if (store.key !== storeKey) return refuse(409, "stale_source", "the pane's Claude store changed since the list: list the sessions again");
   if (!listSessions("claude", cwd, inStore(options.stores, store.dir)).some((row) => row.id === sessionId && row.resume !== null)) {
     return refuse(404, "session_not_found", "no such session in this folder's store");
   }
+  // a resume of this session whose work still runs may close the pane that now shows it
   const running = `${workspaceId}\0${sessionId}\0${store.place}`;
   if (resumesRunning.has(running)) return inProgress();
   for (const pane of snapshot.panes) {
     if (pane.workspace_id !== workspaceId || !reportsSession(pane, sessionId)) continue;
-    const showing = pane.pane_id === paneId ? found : await paneStore(pane.pane_id, options);
+    const showing = pane.pane_id === paneId ? found : await paneStore(pane.pane_id, options, { reportedClaude: pane.agent === "claude" });
     if (showing?.store.place === store.place) return jsonResponse({ action: "opened", workspace_id: workspaceId, pane_id: pane.pane_id } satisfies SessionResumeResponse);
   }
+  if (found.wrapped) return refuse(409, "launch_wrapped", "a new tab cannot resume this Claude session through its wrapper");
   if (store.env === null && !await launchKeepsAbsence(options)) return refuse(409, "launch_unsupported", "a new tab here would not start Claude in the same store");
   const tabs = options.tabs ?? { create: tabCreate, start: agentLaunch, close: tabClose };
   if (run.late) return timedOut();

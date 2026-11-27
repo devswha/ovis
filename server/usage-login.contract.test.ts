@@ -45,7 +45,11 @@ if (provider === "claude" && home.endsWith("-private")) {
   for await (const line of console) { await Bun.write(join(home, "pasted-code"), line); break; }
 }
 if (provider === "claude") {
-  await Bun.write(join(home, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "fixture-local-token:" + home } }));
+  // A simultaneous re-login must see the old credential or its replacement, never a truncated fixture file.
+  const path = join(home, ".credentials.json");
+  const temporary = path + "." + process.pid + ".tmp";
+  await Bun.write(temporary, JSON.stringify({ claudeAiOauth: { accessToken: "fixture-local-token:" + home } }));
+  renameSync(temporary, path);
   // signing in again keeps the account the home already names
   if (!await Bun.file(join(home, ".claude.json")).exists()) await Bun.write(join(home, ".claude.json"), JSON.stringify({ oauthAccount: { accountUuid: "local-work", emailAddress: "work@example.test" } }));
 } else if (provider === "codex") {
@@ -191,11 +195,14 @@ it("follows a sign-in in the server's own terminal: no herdr pane, on any device
   const panes = (await herdr.sessionSnapshot()).panes;
   const screens = await Promise.all(panes.map((pane) => herdr.paneRead({ paneId: pane.pane_id, source: "recent_unwrapped", lines: 500 }).then((read) => read.text, () => "")));
   expect(screens.filter((text) => text.includes(state!))).toEqual([]);
-  const sent = await fetch(`http://127.0.0.1:${server.port}/api/usage/login/code`, { method: "POST", headers: { "content-type": "application/json", ...signIn }, body: JSON.stringify({ login, code: "fixture-code#fixture-state" }) });
-  expect(sent.status).toBe(204);
+  // two codes sent at once (two tabs, a double click): the CLI is typed one of them, not both on one line each
+  const codes = ["fixture-code#fixture-state", "second-code#fixture-state"];
+  const sent = await Promise.all(codes.map((code) => fetch(`http://127.0.0.1:${server.port}/api/usage/login/code`, { method: "POST", headers: { "content-type": "application/json", ...signIn }, body: JSON.stringify({ login, code }) })));
+  const typed = codes.filter((_, index) => sent[index]!.status === 204);
+  expect(typed).toHaveLength(1);
   await loginEvent(usageLogin.settled(login));
   expect((await prompt())["ended"]).toBe(true);
-  expect(readFileSync(join(root, ".claude-private", "pasted-code"), "utf8")).toBe("fixture-code#fixture-state");
+  expect(readFileSync(join(root, ".claude-private", "pasted-code"), "utf8")).toBe(typed[0]!);
 });
 
 it("binds prompt, code and cancel to the paired device even after another driver reads the lock file", async () => {
@@ -324,6 +331,7 @@ for (const [provider, dir] of [["claude", ".claude-team"], ["claude", ".claude"]
       const error = new Error(`sign-in again did not finish: receipt ${existsSync(join(root, receipt)) ? "written" : "missing"}`);
       written.reject(error); ended.reject(error); connected.reject(error);
     }, 10_000);
+    // the tab's shell inherits another account's home, as one started from a profile that exports it
     const inherited = join(root, `.${provider}-inherited`);
     const realCreate = herdr.tabCreate;
     const create = spyOn(herdr, "tabCreate").mockImplementation((options: Parameters<typeof realCreate>[0]) =>
@@ -337,6 +345,8 @@ for (const [provider, dir] of [["claude", ".claude-team"], ["claude", ".claude"]
       openedPanes.push(opened.pane_id);
       await written.promise;
       if (!exits.has(opened.pane_id)) await ended.promise;
+      // Then: the official login ran against that account's home (the default one with no variable
+      // at all), the inherited home was left alone, and no new home was made
       expect(JSON.parse(readFileSync(join(root, receipt), "utf8"))).toEqual({
         argv: provider === "claude" ? ["auth", "login"] : ["login", "--device-auth"], home: join(root, dir),
         configured: dir === ".claude" ? null : join(root, dir),
@@ -465,6 +475,7 @@ it("starts one sign-in again when two arrive at once for an account, also once i
     const pane = (await raced.find((response) => response.status === 200)!.json() as UsageLoginStarted).pane_id;
     openedPanes.push(pane);
     expect(await statusAndCode(await start({ provider: "claude", account: key }))).toEqual([409, "login_in_progress"]);
+    // When its tab moves to another workspace, the same sign-in runs on under a new pane ID
     const moved = (await herdr.paneMoveToNewTab(pane, elsewhere, null)).pane.pane_id;
     openedPanes.push(moved);
     expect(moved).not.toBe(pane);
@@ -570,6 +581,7 @@ it("starts one sign-in when two servers on one state dir are asked for one home 
 for (const damage of ["corrupt", "unreadable"] as const) {
   // root reads any file, and Windows has no mode that refuses its owner
   it.skipIf(damage === "unreadable" && (process.platform === "win32" || process.getuid?.() === 0))(`refuses a sign-in while the state file of running sign-ins is ${damage}, rather than reading it as empty`, async () => {
+    // Given: a state file that may name a sign-in still running, which does not parse or may not be read
     const stateDir = mkdtempSync(join(root, `${damage}-state-`));
     const saved = join(stateDir, "usage-logins.json");
     writeFileSync(saved, damage === "corrupt" ? "{broken" : JSON.stringify({ logins: [] }));
@@ -682,6 +694,7 @@ it("frees a home after a restart when its sign-in ended while no server ran, eve
 for (const alias of [false, true]) {
   it(`refuses Sign in again while Add account's sign-in into that home is still open${alias ? ", reached through a symlinked CODEX_HOME" : ""}`, async () => {
     const home = mkdtempSync(join(root, "one-login-"));
+    // through an alias, Sign in again names the home by another path than Add account made it at
     const homeCtx = { ...ctx, home, env: alias ? { CODEX_HOME: join(home, "alias") } : {} };
     const local = new UsageLoginService(home, { ...process.env, PATH: bin }, homeCtx);
     const post = (body: unknown) => local.handle(new Request("http://localhost/api/usage/login", { method: "POST", body: JSON.stringify(body) }));
@@ -725,6 +738,8 @@ it("refuses to sign in again to one account signed in in two credential homes, r
 });
 
 it("refuses a sign-in when it cannot tell which credential home it would write", async () => {
+  // Given: Add account's login is open in ~/.codex-new, and Sign in again names that home through a
+  // symlinked CODEX_HOME whose real path cannot be read
   const home = mkdtempSync(join(root, "unreadable-"));
   const homeCtx = { ...ctx, home, env: { CODEX_HOME: join(home, "alias") } };
   const local = new UsageLoginService(home, { ...process.env, PATH: bin }, homeCtx);
@@ -782,6 +797,7 @@ it("refuses to sign in again to an account this PC does not list, without openin
   const shown = await listed(true);
   const key = shown.find((usage) => usage.account === "refuse@example.test")!.key;
   const stale = shown.find((usage) => usage.account === "before@example.test")!.key;
+  // that home holds another account since the list was read; the server's list is not read again
   expiredHome("claude", ".claude-swap", "after@example.test");
   const before = readdirSync(root).sort();
   const create = spyOn(herdr, "tabCreate");
@@ -855,6 +871,7 @@ it("preserves credentials written before a sign-in launch fails", async () => {
     const response = await local.handle(new Request("http://localhost/api/usage/login", {
       method: "POST", body: JSON.stringify({ provider: "claude", name: "preserve" }),
     }));
+    // Then: cleanup must not delete a nonempty home or replace the launch error.
     expect(response.status).toBe(500);
     expect(readFileSync(credentials, "utf8")).toBe("fixture-existing-credentials");
   } finally { create.mockRestore(); }

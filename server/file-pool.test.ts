@@ -63,26 +63,29 @@ describe("file threads", () => {
   });
 
   it("refuses a task at its deadline, and keeps its thread taken until the call returns", async () => {
-    setUp({ workers: 1, waiting: 1, deadlineMs: 200 });
+    // the task after the release is a folder walk, with the long deadline: one with the short one
+    // would race the thread's answer and its own turn on it against 200 ms
+    setUp({ workers: 1, waiting: 1, deadlineMs: 200, longDeadlineMs: 30_000 });
     const hold = gate();
     await expect(fileTask(held({ op: "info", path: file }, hold.buffer))).rejects.toBeInstanceOf(FileBusyError);
     await expect(fileTask({ op: "info", path: file })).rejects.toBeInstanceOf(FileBusyError);
     expect(filePoolSize()).toEqual({ threads: 1, idle: 0, waiting: 0 });
-    const next = fileTask<FileInfo | null>({ op: "info", path: file });
+    const next = fileTask<string[]>({ op: "walk", cwd: root });
     hold.release();
-    expect(await next).toMatchObject({ size: 5 });
+    expect([...await next].sort()).toEqual(["big.bin", "notes.txt"]);
     expect(filePoolSize()).toEqual({ threads: 1, idle: 1, waiting: 0 });
   });
 
   it("closes a descriptor a late answer opened, and frees its thread for the next task", async () => {
-    setUp({ workers: 1, waiting: 1, deadlineMs: 300 });
+    // only the held task has the short deadline; the next one, a folder walk, has the long one
+    setUp({ workers: 1, waiting: 1, deadlineMs: 300, longDeadlineMs: 30_000 });
     const hold = gate();
     await expect(fileTask<OpenedFile | null>(held({ op: "open", path: big, get: whole, fastDiskMs: -1 }, hold.buffer))).rejects.toBeInstanceOf(FileBusyError);
     const fd = await hold.ran();
     expect(fd).toBeGreaterThanOrEqual(0);
-    const next = fileTask<FileInfo | null>({ op: "info", path: file });
+    const next = fileTask<string[]>({ op: "walk", cwd: root });
     hold.release();
-    expect(await next).toMatchObject({ size: 5 });
+    expect([...await next].sort()).toEqual(["big.bin", "notes.txt"]);
     expect(() => fstatSync(fd)).toThrow();
   });
 
@@ -303,10 +306,12 @@ describe("file threads", () => {
     expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
     const hold = gate();
     const describing = fileTask({ op: "describe", path: file, folder: root, authorizeGate: { cells: hold.buffer, fifo } } as FileTask);
+    // the thread holds the file open inside its check, blocked in a system call ending it cannot cut short
     const fd = await hold.ran();
     expect(fstatSync(fd).size).toBe(5);
     setFilePoolOptions();
     await expect(describing).rejects.toThrow("replaced");
+    // the call returns (a write that never waits: the thread opened the FIFO before it said it ran), the thread is gone, and what it opened is closed
     const writer = openSync(fifo, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK);
     writeSync(writer, "x");
     closeSync(writer);
@@ -322,13 +327,16 @@ describe("file threads", () => {
     const release = holdFilePool();
     const hold = gate();
     const reading = fileTask<OpenedFile | null>({ op: "open", path: file, get: whole, readGate: { cells: hold.buffer, fifo } } as FileTask);
+    // the thread is inside the read of `file`, blocked in a system call ending it cannot cut short
     const fd = await hold.ran();
     release();
     await expect(reading).rejects.toThrow("stopped");
+    // the request is answered, but the read still uses the descriptor: it stays open, and its number is not handed out again
     expect(fstatSync(fd).size).toBe(5);
     const other = openSync(big, "r");
     expect(other).not.toBe(fd);
     closeSync(other);
+    // the read returns (a write that never waits: the thread opened the FIFO before it said it ran), the thread is gone, and only then is its descriptor closed
     const writer = openSync(fifo, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK);
     writeSync(writer, "x");
     closeSync(writer);

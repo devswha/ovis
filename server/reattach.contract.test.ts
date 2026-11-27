@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { createServer } from "./index.ts";
 import { herdrRpc, sessionSnapshot } from "./herdr/client.ts";
 import type { ClientMessage, ServerMessage } from "../shared/protocol.ts";
+import { ownProcesses } from "../scripts/own-processes.ts";
 import { testShellEnv } from "../scripts/test-shell.ts";
 
 /**
@@ -70,6 +71,7 @@ async function startSession(): Promise<void> {
   }
 }
 
+// registered before the server starts, so a start that fails still cleans up after itself
 afterAll(async () => {
   for (const ws of sockets) ws.close();
   if (handoffs) {
@@ -95,6 +97,7 @@ if (process.env["HERDR_TEST_MODE"] !== "unit" && process.platform !== "win32" &&
 
 beforeAll(() => {
   if (!handoffs) return;
+  // the attach, the RPCs and the status collector all read HERDR_SOCKET when they start
   previousSocket = process.env["HERDR_SOCKET"];
   process.env["HERDR_SOCKET"] = socket;
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: root });
@@ -129,12 +132,12 @@ async function terminalOf(paneId: string): Promise<string | undefined> {
   return (found as { terminal_id?: string } | undefined)?.terminal_id;
 }
 
-async function attaches(terminalId: string): Promise<number> {
-  const proc = Bun.spawn(["pgrep", "-f", `^[^ ]*herdr terminal attach ${terminalId}$`], { stdout: "pipe", stderr: "ignore" });
-  const out = await new Response(proc.stdout).text();
-  await proc.exited;
-  return out.split("\n").filter(Boolean).length;
-}
+/**
+ * The attaches this test's servers run, never another session's. The program may be a wrapper's (`herdr-real`), and the
+ * PTY host that runs it, whose own command line ends the same way, is not one.
+ */
+const attachesOf = (terminalId: string): number[] => ownProcesses(new RegExp(`^[^ ]*herdr[^ ]* terminal attach ${terminalId}$`));
+const attaches = (terminalId: string): number => attachesOf(terminalId).length;
 
 async function attached(port: number, paneId: string) {
   const client = connect(port, paneId);
@@ -153,9 +156,9 @@ describe.skipIf(!handoffs)("a pane herdr hands off to a new server", () => {
     // a stopped herdr still accepts connections on its socket, and answers none of them
     process.kill(serverPid, "SIGSTOP");
     try {
-      const killed = Bun.spawn(["pkill", "-f", `^[^ ]*herdr terminal attach ${terminal}$`]);
-      await killed.exited;
+      for (const pid of attachesOf(terminal!)) process.kill(pid, "SIGTERM");
       const startedAt = Date.now();
+      // the 1 s window, not the RPC's own 10 s
       await until(() => client.state.exits === 1, "pty-exit once the relookup window ran out", 6_000);
       expect(Date.now() - startedAt).toBeLessThan(4_000);
     } finally {

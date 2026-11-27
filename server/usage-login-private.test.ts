@@ -5,7 +5,6 @@ import { join } from "node:path";
 
 import * as herdr from "./herdr/client.ts";
 import * as ptyHost from "./pty/host.ts";
-import * as ptySidecar from "./pty/sidecar.ts";
 import { readProcessBirth } from "./process-owner.ts";
 import * as usage from "./usage.ts";
 import { UsageLoginService } from "./usage-login.ts";
@@ -137,9 +136,9 @@ describe("a sign-in the browser follows", () => {
     expect((await (await read(service, login)).json() as { ended: boolean }).ended).toBe(true);
   });
 
-  it("offers terminal fallback when neither out of process PTY host exists", async () => {
+  it("offers terminal fallback when there is no PTY host", async () => {
     noHerdr();
-    spies.push(spyOn(ptyHost, "rustSidecar").mockReturnValue(null), spyOn(ptySidecar, "nodeSidecarAvailable").mockReturnValue(false));
+    spies.push(spyOn(ptyHost, "rustSidecar").mockReturnValue(null));
     const service = new UsageLoginService(root, { PATH: `${bin}:/usr/bin:/bin` });
     const response = await start(service, { provider: "codex", name: `no-host-${++names}` });
     expect(response.status).toBe(409);
@@ -302,7 +301,6 @@ describe("a sign-in the browser follows", () => {
 
   it("stops a launcher's children with it, so no second CLI is left writing the home", async () => {
     noHerdr();
-    spies.push(spyOn(ptyHost, "rustSidecar").mockReturnValue(null));
     const launcherBin = join(root, "launcher-bin");
     mkdirSync(launcherBin, { recursive: true });
     const childPid = join(root, "launcher-child.pid");
@@ -334,7 +332,7 @@ wait
       expect((await within(post(service, "cancel", { login }))).status).toBe(204);
       await within(closed.promise);
     } finally {
-      if (existsSync(childPid)) { try { process.kill(Number(readFileSync(childPid, "utf8")), "SIGKILL"); } catch { } }
+      if (existsSync(childPid)) { try { process.kill(Number(readFileSync(childPid, "utf8")), "SIGKILL"); } catch { /* already stopped */ } }
       listener.stop(true);
     }
   }, 15_000);
@@ -390,6 +388,7 @@ exec sleep 600
     noHerdr();
     const claudeBin = join(root, "claude-init-bin");
     mkdirSync(claudeBin, { recursive: true });
+    // Claude writes its config into the new home as soon as it starts, before any sign-in
     writeFileSync(join(claudeBin, "claude"), `#!/bin/sh\ncase "$*" in *--help*) echo "auth login"; exit 0;; esac\necho '{}' > "$CLAUDE_CONFIG_DIR/.claude.json"\ncat "${join(fixtures, "claude.pty")}"\nexec sleep 600\n`, { mode: 0o755 });
     const service = new UsageLoginService(root, { PATH: `${claudeBin}:/usr/bin:/bin` });
     const name = `init-${++names}`;

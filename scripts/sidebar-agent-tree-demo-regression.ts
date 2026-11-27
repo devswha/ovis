@@ -6,7 +6,9 @@ import { chromium, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
+// Only this disposable demo fixture is rewritten; no live session is read.
 const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-agent-tree-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const REVIEW = "w1C:p2";
@@ -64,15 +66,7 @@ try {
   writeFileSync(join(app, "sidebar-agent-tree.js"), patch);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script src="./sidebar-agent-tree.js"></script><script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    let file: string;
-    try { file = decodeURIComponent(path.slice(1)); } catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: "/" });
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -136,7 +130,7 @@ try {
           assert.equal(await checkout.getAttribute("aria-expanded"), "false");
           assert.equal((await group(page, "workstation").locator('.workspace-group[data-workspace="w1C"] .workspace-fold-count').textContent())?.trim(), "+3", "the row counts what it put away: its two agents and the worktree not selected, one fold for both");
           assert.equal(await page.evaluate(() => sessionStorage.getItem("ovis:selection")), where, "folding opened nothing");
-          if (phone) assert.equal(await page.locator('button[aria-controls="workspace-drawer"]').getAttribute("aria-expanded"), "true", "the drawer stays open");
+          if (phone) assert.equal(await page.locator('#drawer-toggle').getAttribute("aria-expanded"), "true", "the drawer stays open");
           if (evidence) await page.locator(".sidebar-shell").screenshot({ path: join(evidence, `agent-tree-folded-${phone ? "390" : "1280"}-${theme}.png`) });
           await open();
           assert.deepEqual((await tree(page, "workstation"))[0], ["w1C"], "the fold is kept on this device");

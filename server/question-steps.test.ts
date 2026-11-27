@@ -7,13 +7,18 @@ import type { InteractivePrompt, PromptAnswer } from "../shared/protocol.ts";
 import { handlePromptRequest, KeyRefused, type OmpLookups, OpenCodePromptState, parseInteractivePrompt, type PromptRequestOptions, shownPromptText } from "./prompt.ts";
 import { sessionSnapshot } from "./herdr/client.ts";
 
+/** A deadline a move that cannot finish reaches at once, so no test waits out the real 4 s */
 const SHORT: PromptRequestOptions = { answerDeadlineMs: 300 };
 import { omoAskOf } from "./omo-questions.ts";
 import { ANSI_RE, type OmoAsk, parsedByPublicPrompt } from "./dialogs/shared.ts";
 import * as conversation from "./conversation.ts";
-import { ConversationUnavailable } from "./conversation-shared.ts";
+import { ConversationNotStarted, ConversationUnavailable } from "./conversation-shared.ts";
+
+// The card moves between a form's questions without answering, as the agent's own keys do: OmO's
+// Tab and Shift+Tab, Codex's ←/→, Hermes's Tab and Shift+Tab.
 
 const fixture = (name: string): string => readFileSync(join(import.meta.dir, "fixtures", `question-steps-${name}`), "utf8");
+// omo 5.1.51 and Codex 0.166 as captured in a 120x40 herdr pane (fixtures/question-steps-captures.md)
 const OMO_SCREENS = ["q1", "q2", "q3", "review"].map((state) => fixture(`omo-5.1.51-${state}.txt`));
 const omo = (at: number): string => OMO_SCREENS[at]!;
 const OMO_TYPING = fixture("omo-5.1.51-q1-typing.txt");
@@ -25,6 +30,7 @@ const HERMES_HINT = "answered · ↑/↓ select · Enter confirm and continue ·
 const HERMES: readonly (readonly [string, readonly string[]])[] = [["Pick a colour", ["Red", "Blue"]], ["Pick a size", ["Small", "Large"]], ["Pick a shape", ["Circle", "Square"]]];
 const HERMES_OPEN: readonly (readonly [string, readonly string[]])[] = [["Pick a colour", ["Red", "Blue"]], ["Name a fruit", []], ["Pick a shape", ["Circle", "Square"]]];
 
+/** Hermes's clarify batch (ui-tui prompts.tsx): `✓` answered, `▸` the open one expanded, `·` waiting. */
 function hermes(at: number, answered: number[] = [], questions = HERMES, typing = false): string {
   const lines = questions.flatMap(([question, choices], index) => [
     ` ${answered.includes(index) ? "✓" : index === at ? "▸" : "·"} ${question}`,
@@ -72,6 +78,7 @@ describe("omp Ask question steps", () => {
       expect(prompt).not.toBeNull();
       expect(prompt?.steps?.map(step => step.label)).toEqual(["Color", "Size", "Shape", "Submit"]);
       expect(prompt?.steps?.findIndex(step => step.current)).toBe(at);
+      // the review (Submit) is never a step to go to: nothing on it names the call
       expect(navigable(prompt)).toEqual([0, 1, 2, 3].map(index => index !== at && index < 3));
       expect(prompt?.can_step_back ?? false).toBe(at > 0);
       expect(prompt?.can_step_next ?? false).toBe(at < 2);
@@ -102,6 +109,7 @@ describe("OmO's form: the card goes to another question as Tab and Shift+Tab do"
     const second = omoCard(omo(1));
     expect(second).toMatchObject({ title: "Question 2 of 3", can_step_back: true, can_step_next: true });
     expect(navigable(second)).toEqual([true, false, true]);
+    // Next on the last question goes on to the review, as Tab does
     expect(omoCard(omo(2))).toMatchObject({ can_step_back: true, can_step_next: true });
   });
 
@@ -157,6 +165,7 @@ describe("Hermes's clarify batch: the card goes to another open question as Tab 
     const prompt = parseInteractivePrompt("hermes", hermes(0));
     expect(prompt?.question).toBe("Pick a colour");
     expect(prompt?.steps?.map((step) => [step.label, step.answered, step.current])).toEqual([["Pick a colour", false, true], ["Pick a size", false, false], ["Pick a shape", false, false]]);
+    // one key at a time: Hermes draws no options for the questions past the next one, so nothing names them
     expect(navigable(prompt)).toEqual([false, true, false]);
     expect(prompt).toMatchObject({ can_step_next: true });
     expect(prompt?.can_step_back ?? false).toBe(false);
@@ -196,23 +205,24 @@ describe("Hermes's open-ended question in a batch", () => {
   });
 });
 
-interface Pane { agent: string; screen: string; sent: string[]; visible?: string; ompCall?: (id: string, changed?: "question" | "option") => void; onSent?: (key: string) => void; onRpc?: (method: string) => number | void; cwd?: string; omo?: { pid: number; path: string } }
+interface Pane { agent: string; screen: string; sent: string[]; visible?: string; foreground?: string; ompCall?: (id: string, changed?: "question" | "option") => void; onSent?: (key: string) => void; onRpc?: (method: string) => number | void; cwd?: string; omo?: { pid: number; path: string } }
 
-async function withPane(agent: string, screen: string, run: (pane: Pane) => Promise<void>, questions = QUESTIONS): Promise<void> {
+async function withPane(agent: string, screen: string, run: (pane: Pane) => Promise<void>, questions = QUESTIONS, formHtml?: string): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "question-steps-"));
   const path = join(root, "herdr.sock");
   const pane: Pane = { agent, screen, sent: [] };
   const transcript = join(root, "session.jsonl");
   if (agent === "omp") {
     pane.ompCall = (id, changed) => appendFileSync(transcript, JSON.stringify({ type: "message", message: { role: "user", content: "Ask again" } }) + "\n" + JSON.stringify({
-      type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name: "ask", arguments: {
+      type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name: "ask", arguments: formHtml === undefined ? {
         questions: questions.map(([header, question, options], index) => ({ id: header, header,
           question: changed === "question" && index === 0 ? "A different question?" : question,
           options: options.map((label, option) => ({ label: changed === "option" && index === 0 && option === 0 ? "Orange" : label })) })),
-      } }] },
+      } : { html: formHtml } }] },
     }) + "\n");
     pane.ompCall("initial");
   }
+  // Session authorization is not under test; the real reader still consumes each call record.
   const resolveTranscript = agent === "omp" ? spyOn(conversation, "ompTranscriptPath").mockResolvedValue({ path: transcript, blobs: null }) : null;
   const sockets = new Set<Socket>();
   const server = createServer((socket) => {
@@ -233,7 +243,7 @@ async function withPane(agent: string, screen: string, run: (pane: Pane) => Prom
       if (request.method === "session.snapshot") return answer({ snapshot: { panes: [{ pane_id: "p_1", agent: pane.agent, agent_status: "blocked", cwd: pane.cwd ?? (pane.agent === "omp" ? root : undefined), ...(pane.omo ? { agent_session: { agent: "omo", kind: "path", value: pane.omo.path } } : {}) }], layouts: [] } });
       if (request.method === "pane.read") return answer({ read: { text: pane.agent === "omp" ? request.params.format === "ansi" ? pane.visible ?? pane.screen : pane.screen.replace(ANSI_RE, "") : pane.screen } });
       if (request.method === "pane.get") return answer({ pane: { pane_id: "p_1", scroll: { offset_from_bottom: 0 } } });
-      if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: pane.omo ? [{ pid: pane.omo.pid, argv: ["omo"] }] : ["codex", "omp"].includes(pane.agent) ? [{ pid: 2147483647, argv: [`/usr/bin/${pane.agent}`] }] : [] } });
+      if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: pane.omo ? [{ pid: pane.omo.pid, argv: ["omo"] }] : ["codex", "omp"].includes(pane.agent) ? [{ pid: 2147483647, argv: [`/usr/bin/${pane.foreground ?? pane.agent}`] }] : [] } });
       if (request.method === "agent.get") return answer({ agent: {} });
       if (request.method !== "pane.send_keys" && request.method !== "pane.send_text") throw new Error(`unexpected fixture RPC: ${request.method}`);
       for (const sent of request.params.keys ?? [`text:${request.params.text}`]) {
@@ -256,6 +266,10 @@ async function withPane(agent: string, screen: string, run: (pane: Pane) => Prom
   }
 }
 
+/**
+ * An omo pane whose session holds the call behind omo(): an inert child gives the pane a real process environment
+ * (OMO_CODING_AGENT_DIR), read through /proc as for a live omo, so Linux only.
+ */
 async function withOmoPane(screen: string, run: (pane: Pane) => Promise<void>, record = OMO_SESSION_CALL): Promise<void> {
   await withPane("pi", screen, async (pane) => {
     const root = mkdtempSync(join(tmpdir(), "question-steps-omo-"));
@@ -297,9 +311,13 @@ describe("a prompt watch's read of a blocked pane", () => {
   });
 });
 
-async function card(): Promise<InteractivePrompt> {
+async function currentCard(): Promise<InteractivePrompt | null> {
   const url = new URL("http://127.0.0.1/api/pane/prompt?pane_id=p_1");
-  const prompt = ((await (await handlePromptRequest(new Request(url), url, {}))!.json()) as { prompt: InteractivePrompt | null }).prompt;
+  return ((await (await handlePromptRequest(new Request(url), url, {}))!.json()) as { prompt: InteractivePrompt | null }).prompt;
+}
+
+async function card(): Promise<InteractivePrompt> {
+  const prompt = await currentCard();
   expect(prompt).not.toBeNull();
   return prompt!;
 }
@@ -319,6 +337,122 @@ function follows(pane: Pane, draw: (at: number) => string, count: number, next: 
     pane.screen = draw(at);
   };
 }
+
+const ompForm = (name: string): string => readFileSync(new URL(`./fixtures/omp-form-19.1.0-${name}.txt`, import.meta.url), "utf8");
+const ompNotesHtml = "<form><label>Notes<textarea name=\"notes\"></textarea></label></form>";
+const ompTargetsHtml = `<form><fieldset><legend>Q2 · Targets</legend>${["Desktop", "Phone", "Tablet"].map((name) => `<label><input type="checkbox" name="target">${name}</label>`).join("")}</fieldset></form>`;
+function ompNotesDraft(screen: string, lines: readonly string[]): string {
+  let row = 0;
+  return screen.replace(/│   │ {3}/gu, (prefix) => {
+    const line = lines[row++];
+    return line === undefined ? prefix : `│   │ ${line}`;
+  });
+}
+
+test.skipIf(process.platform === "win32")("omp form: a multiline draft cannot be confirmed when the final read sees the shell in front", async () => {
+  const screen = ompForm("textarea-100");
+  await withPane("omp", screen, async pane => {
+    const prompt = await card();
+    pane.onSent = (key) => {
+      if (!key.startsWith("text:")) return;
+      pane.screen = ompNotesDraft(screen, ["line 1", "line 2"]);
+      pane.onRpc = (method) => {
+        if (method === "pane.read") pane.foreground = "bash";
+      };
+    };
+    const result = await move(prompt.id, { custom_text: "line 1\nline 2" });
+    expect({ result, sent: pane.sent }).toEqual({
+      result: { status: 409, code: "prompt_changed" },
+      sent: ["ctrl+k", "ctrl+u", "text:\u001b[200~line 1\nline 2\u001b[201~"],
+    });
+  }, QUESTIONS, ompNotesHtml);
+});
+
+test("omp form: a scrolled Contact card cannot answer another Contact field", async () => {
+  const screen = ompForm("required-60");
+  const rows = screen.split("\n");
+  const box = rows.findIndex((row) => row.startsWith("╭─ Ask"));
+  const field = rows.findIndex((row) => row.includes("❯ Project name"));
+  const bottom = rows.findIndex((row) => row.startsWith("╰─"));
+  const frame = (draft: string) => [
+    rows[box]?.replace("2 of 4 answered", "0 of 2 answered"),
+    rows[field]?.replace("Project name *", "Contact       ").replace(/  │$/u, "│ │"),
+    rows[field + 1]?.replace(" my-app", draft).replace(/  │$/u, "█ │"),
+    ...rows.slice(bottom),
+  ].join("\n");
+  const html = "<form><label>Contact<input name=\"first\"></label><label>Contact<input name=\"second\"></label></form>";
+  await withPane("omp", frame(" first "), async pane => {
+    const first = await card();
+    expect(first.question).toBe("Contact");
+    pane.screen = frame(" second");
+    expect(await move(first.id, { custom_text: "new contact" })).toEqual({ status: 409, code: "prompt_changed" });
+    expect(pane.sent).toEqual([]);
+  }, QUESTIONS, html);
+});
+
+test.each([
+  { fixture: "number-100", input: "7", changed: false, draw: (screen: string) => screen.replace("│   │ 30 ", "│   │ 7  ") },
+  { fixture: "number-100", input: "7", changed: true, draw: (screen: string) => screen.replace("│   │ 30 ", "│   │ 71 ") },
+  { fixture: "textarea-100", input: "line 1\nline 2", changed: false, draw: (screen: string) => ompNotesDraft(screen, ["line 1", "line 2"]) },
+  { fixture: "textarea-100", input: "line 1\nline 2", changed: true, draw: (screen: string) => ompNotesDraft(screen, ["line 1", "different"]) },
+])("omp form: confirms the pasted draft only if it matches ($fixture, changed=$changed)", async ({ fixture, input, changed, draw }) => {
+  const screen = ompForm(fixture);
+  const html = fixture === "textarea-100" ? ompNotesHtml : "<form><label>Session lifetime (days)<input type=\"number\" name=\"days\"></label></form>";
+  await withPane("omp", screen, async pane => {
+    const prompt = await card();
+    pane.onSent = (key) => {
+      if (key.startsWith("text:")) pane.screen = draw(screen);
+    };
+    const result = await move(prompt.id, { custom_text: input });
+    expect({ status: result.status, sent: pane.sent }).toEqual({
+      status: changed ? 409 : 200,
+      sent: ["ctrl+k", "ctrl+u", `text:\u001b[200~${input}\u001b[201~`, ...(changed ? [] : ["enter"])],
+    });
+  }, QUESTIONS, html);
+});
+
+test.each([{ extra: false }, { extra: true }])("omp form: confirms only the requested checkboxes (extra tick=$extra)", async ({ extra }) => {
+  const screen = ompForm("checkbox-100");
+  await withPane("omp", screen, async pane => {
+    const prompt = await card();
+    pane.onSent = (key) => {
+      if (key === "down") pane.screen = pane.screen.replace("❯ ☐ Desktop", "  ☐ Desktop").replace("  ☐ Phone", "❯ ☐ Phone");
+      if (key === "space" && pane.screen.includes("❯ ☑ Desktop")) pane.screen = pane.screen.replace("❯ ☑ Desktop", "❯ ☐ Desktop");
+      else if (key === "space") {
+        pane.screen = pane.screen.replace("❯ ☐ Phone", "❯ ☑ Phone");
+        if (extra) pane.screen = pane.screen.replace("  ☐ Desktop", "  ☑ Desktop");
+      }
+    };
+    const result = await move(prompt.id, { option_indices: [1] });
+    expect({ status: result.status, sent: pane.sent }).toEqual({
+      status: extra ? 409 : 200,
+      sent: ["space", "down", "space", ...(extra ? [] : ["enter"])],
+    });
+  }, QUESTIONS, ompTargetsHtml);
+});
+
+test.each([{ edge: "top" }, { edge: "bottom" }])("omp form: leaves checkboxes to the terminal when options are offscreen ($edge)", async ({ edge }) => {
+  const screen = ompForm("checkbox-100");
+  const rows = screen.split("\n");
+  const top = rows.findIndex((row) => row.startsWith("╭─ Ask"));
+  const desktop = rows.findIndex((row) => row.includes("❯ ☑ Desktop"));
+  const bottom = rows.findIndex((row) => row.startsWith("╰─"));
+  // The checked Desktop can be above the viewport, or later choices can be below it.
+  const visible = edge === "top" ? rows.slice(desktop + 1, bottom) : rows.slice(top + 1, desktop + 1);
+  const clipped = [
+    ...rows.slice(0, top + 1),
+    ...visible.map((row) => row.replace("  ☐ Phone", "❯ ☐ Phone").replace(/  │$/u, "│ │")),
+    ...rows.slice(bottom),
+  ].join("\n");
+  await withPane("omp", screen, async pane => {
+    const full = await card();
+    expect(full.multi_select).toBe(true);
+    pane.screen = clipped;
+    expect(await currentCard()).toBeNull();
+    expect((await move(full.id, { option_indices: [1] })).status).toBe(409);
+    expect(pane.sent).toEqual([]);
+  }, QUESTIONS, ompTargetsHtml);
+});
 
 describe("the answer route moves between questions, one key at a time, each seen", () => {
   test.each(["question", "option"] as const)("omp: a call whose %s differs from the displayed question offers no moves", async changed => {
@@ -387,6 +521,7 @@ describe("the answer route moves between questions, one key at a time, each seen
       const lookup = conversation.ompTranscriptPath as unknown as { mockRejectedValueOnce: (error: Error) => void };
       lookup.mockRejectedValueOnce(failure());
       expect((await card()).id).toBe(bound.id);
+      // the read whose lookup failed authorizes no key
       lookup.mockRejectedValueOnce(failure());
       expect(await move(bound.id, { option_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual([]);
@@ -405,9 +540,173 @@ describe("the answer route moves between questions, one key at a time, each seen
         lookup.mockRejectedValueOnce(new Error("busy"));
         await watch();
       }
+      // the lookups still fail when the card is answered: the tap reads the call it was bound to as unproved
       (conversation.ompTranscriptPath as unknown as { mockRejectedValue: (error: Error) => void }).mockRejectedValue(new Error("busy"));
       expect(await move(bound.id, { option_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual([]);
+    });
+  });
+
+  describe("an omp 19 form", () => {
+    // the spy withPane installs on the session lookup
+    interface LookupSpy { mockRejectedValue: (error: Error) => void; mockResolvedValue: (value: { path: string; blobs: null }) => void }
+    const formScreen = readFileSync(new URL("./fixtures/omp-form-19.1.0-radio-100.txt", import.meta.url), "utf8");
+
+    /** a pane showing the form, whose session holds its one open `{ html }` ask call */
+    async function withForm(
+      run: (pane: Pane, lookup: LookupSpy, path: string) => Promise<void>,
+      { screen = formScreen, html = "<form></form>" } = {},
+    ): Promise<void> {
+      await withPane("omp", screen, async pane => {
+        const root = mkdtempSync(join(tmpdir(), "question-steps-form-"));
+        const path = join(root, "session.jsonl");
+        writeFileSync(path, JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "form-call", name: "ask", arguments: { html } }] } }) + "\n");
+        const lookup = conversation.ompTranscriptPath as unknown as LookupSpy;
+        lookup.mockResolvedValue({ path, blobs: null });
+        try { await run(pane, lookup, path); } finally { rmSync(root, { recursive: true, force: true }); }
+      });
+    }
+
+    test("answers under its one open call", async () => {
+      await withForm(async pane => {
+        // the form follows its keys: Down puts the cursor on the second option, Enter moves on to the next field
+        pane.onSent = key => {
+          if (key === "down") pane.screen = formScreen.replace("❯ ◉ SQLite", "  ◉ SQLite").replace("  ○ Redis", "❯ ○ Redis");
+          if (key === "enter") pane.screen = readFileSync(new URL("./fixtures/omp-form-19.1.0-checkbox-100.txt", import.meta.url), "utf8");
+        };
+        expect(await move((await card()).id, { option_index: 1 })).toEqual({ status: 200, code: undefined });
+        expect(pane.sent).toEqual(["down", "enter"]);
+      });
+    });
+
+    test("picks a radio option that scrolls into view while the cursor moves", async () => {
+      const before = readFileSync(new URL("./fixtures/omp-form-19.1.1-cut-46.txt", import.meta.url), "utf8");
+      const after = readFileSync(new URL("./fixtures/omp-form-19.1.1-cut-down-46.txt", import.meta.url), "utf8");
+      const html = readFileSync(new URL("./fixtures/omp-form-19.1.1-cut.html", import.meta.url), "utf8");
+      await withForm(async pane => {
+        pane.onSent = key => {
+          if (key === "down") pane.screen = after;
+          if (key === "enter") pane.screen = "";
+        };
+        expect(await move((await card()).id, { option_index: 1 })).toEqual({ status: 200, code: undefined });
+        expect(pane.sent).toEqual(["down", "enter"]);
+      }, { screen: before, html });
+    });
+
+    test("an old clipped card cannot answer a different option after the session lookup recovers", async () => {
+      const screen = readFileSync(new URL("./fixtures/omp-form-19.1.1-cut-top-46.txt", import.meta.url), "utf8");
+      const html = readFileSync(new URL("./fixtures/omp-form-19.1.1-cut-top.html", import.meta.url), "utf8");
+      await withForm(async (pane, lookup, path) => {
+        lookup.mockRejectedValue(new Error("busy"));
+        const clipped = await card();
+        expect(clipped.options[2]?.label).toStartWith("South America");
+        lookup.mockResolvedValue({ path, blobs: null });
+        const restored = await card();
+        expect(restored.options[2]?.label).toStartWith("Asia Pacific");
+        expect(await move(clipped.id, { option_index: 2 })).toEqual({ status: 409, code: "prompt_changed" });
+        expect(pane.sent).toEqual([]);
+      }, { screen: screen.replace("❯ ○ South America", "  ○ South America").replace("  ○ Asia Pacific", "❯ ○ Asia Pacific"), html });
+    });
+
+    test("an old card cannot answer a different form field drawn alike", async () => {
+      const open = ["Region", "❯ ◉ North", "  ○ South", "  ○ Other: type your own"];
+      const folded = ["✓ Region", "   ✓ North   South"];
+      const screen = (first: boolean): string => [
+        "╭─ Ask · 2 of 2 answered ─────────╮",
+        ...(first ? [...open, "", ...folded] : [...folded, "", ...open]).concat(["", "  Submit"]).map(row => `│ ${row.padEnd(30)} │`),
+        "╰────────────────────────────────╯",
+      ].join("\n");
+      await withForm(async pane => {
+        const first = await card();
+        pane.screen = screen(false);
+        expect(await move(first.id, { option_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
+        expect(pane.sent).toEqual([]);
+      }, { screen: screen(true) });
+    });
+
+    test("a fixed option called Other is selected with arrows and Enter, not typed into", async () => {
+      const screen = formScreen.replace("Other: type your own", "Other: archive      ");
+      const html = '<form><label><input type="radio" name="store">SQLite: one file, no new service</label><label><input type="radio" name="store">Redis: shared across instances</label><label><input type="radio" name="store">Other: archive</label></form>';
+      await withForm(async pane => {
+        const shown = await card();
+        expect(shown.options[2]?.label).toBe("Other: archive");
+        expect(shown.custom_option_index).toBeNull();
+        let downs = 0;
+        pane.onSent = key => {
+          if (key === "down") {
+            downs += 1;
+            pane.screen = screen.replace("❯ ◉ SQLite", "  ◉ SQLite")
+              .replace(downs === 1 ? "  ○ Redis" : "  ○ Other", downs === 1 ? "❯ ○ Redis" : "❯ ○ Other");
+          }
+          if (key === "enter") pane.screen = "";
+        };
+        expect(await move(shown.id, { option_index: 2 })).toEqual({ status: 200, code: undefined });
+        expect(pane.sent).toEqual(["down", "down", "enter"]);
+      }, { screen, html });
+    });
+
+    test.each(["before paste", "before Enter"] as const)("takes no more editor keys when another field takes focus %s", async (when) => {
+      const number = readFileSync(new URL("./fixtures/omp-form-19.1.0-number-100.txt", import.meta.url), "utf8");
+      const notes = readFileSync(new URL("./fixtures/omp-form-19.1.0-textarea-100.txt", import.meta.url), "utf8");
+      const paste = "text:\u001b[200~7\u001b[201~";
+      await withForm(async pane => {
+        pane.onSent = key => {
+          if (key === "ctrl+u") pane.screen = when === "before paste" ? notes : number.replace("│ 30", "│   ");
+          if (key === paste) pane.screen = notes;
+        };
+        expect(await move((await card()).id, { custom_text: "7" })).toEqual({ status: 409, code: "prompt_changed" });
+        expect(pane.sent).toEqual(when === "before paste" ? ["ctrl+k", "ctrl+u"] : ["ctrl+k", "ctrl+u", paste]);
+      }, { screen: number });
+    });
+
+    test("a pasted multiline draft can still be confirmed on its own textarea", async () => {
+      const screen = readFileSync(new URL("./fixtures/omp-form-19.1.0-textarea-100.txt", import.meta.url), "utf8");
+      const paste = "text:\u001b[200~line one\nline two\u001b[201~";
+      await withForm(async pane => {
+        pane.onSent = key => {
+          if (key === paste) {
+            let line = 0;
+            pane.screen = screen.replace(/^(│   │) {9}/gmu, (row, prefix: string) => {
+              if (line >= 2) return row;
+              line += 1;
+              return `${prefix} line ${line === 1 ? "one" : "two"}`;
+            });
+          }
+          if (key === "enter") pane.screen = "";
+        };
+        expect(await move((await card()).id, { custom_text: "line one\nline two" })).toEqual({ status: 200, code: undefined });
+        expect(pane.sent).toEqual(["ctrl+k", "ctrl+u", paste, "enter"]);
+      }, { screen });
+    });
+
+    test("takes no key while the session lookups keep failing, with a cached lookup, after it is dropped, and with none", async () => {
+      await withForm(async (pane, lookup) => {
+        const shown = await card();
+        lookup.mockRejectedValue(new Error("busy"));
+        // reads 1 and 2 keep the cache; the 3rd drops it; the rest find none
+        for (let read = 0; read < 6; read++) {
+          expect(await move(shown.id, { option_index: 1 }), `read ${read}`).toEqual({ status: 409, code: "prompt_changed" });
+          expect(pane.sent).toEqual([]);
+        }
+      });
+    });
+
+    test("takes no key from a pane whose runtime names no session", async () => {
+      await withForm(async (pane, lookup) => {
+        const shown = await card();
+        lookup.mockRejectedValue(new ConversationNotStarted("no session"));
+        expect(await move(shown.id, { option_index: 1 })).toEqual({ status: 409, code: "prompt_changed" });
+        expect(pane.sent).toEqual([]);
+      });
+    });
+
+    test("takes no key from a pane that reports no working directory", async () => {
+      await withForm(async pane => {
+        const shown = await card();
+        pane.cwd = "";
+        expect(await move(shown.id, { option_index: 1 })).toEqual({ status: 409, code: "prompt_changed" });
+        expect(pane.sent).toEqual([]);
+      });
     });
   });
 
@@ -460,6 +759,7 @@ describe("the answer route moves between questions, one key at a time, each seen
   });
 
   test("omp: a question clipped to a prefix the open call shares binds nothing", async () => {
+    // omp cut the shown question at four rows; the open call asks a longer question that starts the same way
     const clipped = "Should the export button │\n│ wait for the running │\n│ export to finish before │\n│ it starts another …";
     const open = [["Export", "Should the export button wait for the running export to finish before it starts another one, or cancel it?", ["Red", "Blue"]], ["Size", "Which size?", ["Small", "Large"]], ["Shape", "Which shape?", ["Circle", "Square"]]] as const;
     const shown = [["Export", clipped, ["Red", "Blue"]], ...open.slice(1)] as const;
@@ -513,6 +813,7 @@ describe("the answer route moves between questions, one key at a time, each seen
       const cut = omp(0, false, [["Deploy", "Which deployment │\n│ should we choose │\n│ for the production │\n│ environment today …", ["Red", "Blue"]], ...QUESTIONS.slice(1)])
         .replace("⏎ select · ", "⏎ select · ctrl+e expand · ");
       await withPane("omp", cut, async () => {
+        // the card says what the terminal shows, not words of a call whose question only starts the same way
         expect((await card()).question).not.toBe(long);
       }, open);
     });
@@ -677,6 +978,7 @@ describe("the answer route moves between questions, one key at a time, each seen
       pane.onSent = (key) => {
         if (key === "tab") at += 1;
         pane.screen = omo(at);
+        // omo settles the call and asks again, appending to its session as it always does
         if (at === 1) appendFileSync(pane.omo!.path, `${JSON.stringify({ type: "custom", customType: "ask-user:settlement", data: { requestId: CALL_ID } })}\n${changed}\n`);
       };
       expect(await move((await card()).id, { step_index: 2 })).toEqual({ status: 409, code: "prompt_changed" });
@@ -693,6 +995,7 @@ describe("the answer route moves between questions, one key at a time, each seen
   test.skipIf(process.platform !== "linux")("OmO: a guard that outlasts the request's deadline sends no further key", async () => {
     await withOmoPane(omo(0), async (pane) => {
       follows(pane, omo, 4, "tab", "shift+tab");
+      // the second key's look never comes back (herdr holding its reply): the deadline ends it, 300 ms here, 4 s in the server
       let looks = 0;
       const beforeKey = (): Promise<void> => ++looks === 2 ? new Promise<void>(() => undefined) : Promise.resolve();
       expect(await move((await card()).id, { step_index: 2 }, { ...SHORT, beforeKey })).toEqual({ status: 409, code: "prompt_changed" });
@@ -782,6 +1085,7 @@ describe("the answer route moves between questions, one key at a time, each seen
   test("a card with no keys of its own to move by refuses Next", async () => {
     const one = `\n ask 1 question\n ▸ Pick a colour\n   ▸ 1. Red\n     2. Blue\n     3. Other (type your answer)\n 0/1 ${HERMES_HINT}\n`;
     await withPane("hermes", one, async (pane) => {
+      // with an answer in the same body, too: Next is never read as that answer
       expect(await move((await card()).id, { step_next: true, option_index: 0 })).toEqual({ status: 400, code: "invalid_answer" });
       expect(await move((await card()).id, { step_next: true })).toEqual({ status: 400, code: "invalid_answer" });
       expect(pane.sent).toEqual([]);
@@ -852,6 +1156,7 @@ describe("the answer route moves between questions, one key at a time, each seen
       expect(await move((await card()).id, { custom_text: "deno\ntest" })).toEqual({ status: 200, code: undefined });
       expect(pane.sent).toEqual(["down", "down", "enter", "text:deno test", "enter"]);
 
+      // If the write-in editor closes before Enter submits, the final Enter is refused.
       pane.sent.length = 0;
       at = 0;
       cursor = 0;
@@ -866,6 +1171,7 @@ describe("the answer route moves between questions, one key at a time, each seen
       expect(await move((await card()).id, { custom_text: "deno test" })).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual(["down", "down", "enter", "text:deno test"]);
 
+      // A write-in editor that opens holding text (typed in the terminal or from another device) takes none of the answer.
       pane.sent.length = 0;
       cursor = 0;
       writeIn = null;
@@ -880,6 +1186,7 @@ describe("the answer route moves between questions, one key at a time, each seen
       expect(await move((await card()).id, { custom_text: "bar" })).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual(["down", "down", "enter"]);
 
+      // And one that swallowed the typed text is not submitted empty.
       pane.sent.length = 0;
       cursor = 0;
       writeIn = null;

@@ -9,6 +9,7 @@ import { MAX_LABEL_CHARS } from "../shared/labels.ts";
 import { MAX_INVENTORY_WORKSPACES, type WorktreeInventoryEntry } from "../shared/workspace-lifecycle.ts";
 import { hasNoControlCharacters, firstMessageFault } from "../shared/launch-rules.ts";
 import type { DirectoryCreated, PendingMessage, ServerMessage, TabMoved, TabMovedToWorkspace, WorkspaceMoved } from "../shared/protocol.ts";
+import type { FirstMessageAsk } from "./pending-input.ts";
 import type { MoveReceipt } from "./order-sequence.ts";
 import { agentFault, agentLaunch, type AgentPayload } from "./agent-launch.ts";
 import { createDirectory, expandedDirectory, listDirectories } from "./directories.ts";
@@ -58,6 +59,7 @@ function envFault(env: unknown): string | null {
   if (entries.length > MAX_ENV_VARS) return `env may set at most ${MAX_ENV_VARS} variables`;
   let bytes = 0;
   for (const [name, value] of entries) {
+    // the name is quoted and cut: before this check it may hold anything
     if (!ENV_NAME.test(name)) return `env name ${JSON.stringify(name.slice(0, 64))} must be letters, digits and _, not starting with a digit`;
     if (typeof value !== "string" || !hasNoControlCharacters(value)) return `env.${name} must be a string without control characters`;
     bytes += Buffer.byteLength(name) + Buffer.byteLength(value);
@@ -71,9 +73,16 @@ const notQueued = (error: unknown): { error: { code: string; message: string } }
   return { error: typeof own === "string" ? { code: own, message: error instanceof Error ? error.message : String(error) } : requestFault(error, "first_message_not_queued") };
 };
 
+/** server/core/pending.ts askFirstMessage and queueFirstMessage */
+export interface FirstMessages {
+  ask: (requester: string | null) => FirstMessageAsk;
+  queue: (paneId: string, text: string, kind: string, requester: FirstMessageAsk, launchedPid: number | null) => Promise<PendingMessage>;
+}
+
 export async function handleWorkspaceRequest(request: Request, url: URL, pathname: string, bunServer: Pick<ServerContext, "timeout">, broadcastAll: (message: ServerMessage) => void,
-  queueFirstMessage: (paneId: string, text: string, kind: string, requester: string | null, launchedPid: number | null) => Promise<PendingMessage>,
+  firstMessages: FirstMessages,
   workspaceMoved: () => MoveReceipt, shellAgents?: ShellAgentLocator,
+  /** false: the folders are another machine's, which hc checks as it starts the shell there */
   localFolders = true): Promise<Response | null> {
   if (pathname === "/api/workspace/directories" && request.method === "POST") {
     setRequestRoute(pathname);
@@ -97,6 +106,7 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     let base: string | undefined;
     if (paneId) {
       try { base = (await paneContext(paneId)).cwd; } catch {}
+      // a relative path whose pane is gone has no folder to be read from: not the server's own
       const path = (url.searchParams.get("path") ?? "").trim();
       if (base === undefined && path !== "" && path !== "~" && !path.startsWith("~/") && !isAbsolute(path)) return badRequest("invalid_cwd", "the pane a relative path belongs to is gone");
     }
@@ -107,6 +117,7 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
   if (pathname === "/api/workspace/diff/files" || pathname === "/api/workspace/diff/file" || pathname === "/api/workspace/diff/refs") {
     setRequestRoute(pathname);
     if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
+    // file contents, like /api/fs/file: this app reads them, another site's page does not
     if (request.headers.get("sec-fetch-site") === "cross-site") return jsonResponse({ error: { code: "cross_site", message: "A repository's changes are read from this app" } }, 403);
     const cwd = await routeFolder(url.searchParams.get("pane_id"), (url.searchParams.get("directory") ?? "").trim());
     if (cwd instanceof Response) return cwd;
@@ -123,10 +134,12 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     return repoLogResponse(pathname.endsWith("/log") ? "log" : pathname.endsWith("/branches") ? "branches" : "show", cwd, url.searchParams);
   }
 
+  // The branch's pull request, through this PC's own gh sign-in: read like the changes, merged only on a POST
   if (pathname === "/api/workspace/pr" || pathname === "/api/workspace/pr/log" || pathname === "/api/workspace/pr/merge") {
     setRequestRoute(pathname);
     const merging = pathname.endsWith("/merge");
     if (request.method !== (merging ? "POST" : "GET")) return badRequest("method_not_allowed", merging ? "use POST" : "use GET");
+    // review comments and job logs are the repository's contents: this app reads them, another site's page does not
     if (request.headers.get("sec-fetch-site") === "cross-site") return jsonResponse({ error: { code: "cross_site", message: "A pull request is read from this app" } }, 403);
     let paneId = url.searchParams.get("pane_id");
     let directory = (url.searchParams.get("directory") ?? "").trim();
@@ -171,6 +184,7 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     const envProblem = envFault(payload.env);
     if (envProblem !== null) return badRequest("invalid_env", envProblem);
     if (payload.cwd !== undefined && typeof payload.cwd !== "string") return badRequest("invalid_cwd", "cwd must be an existing directory");
+    // the folder of a create request is one the user picked and sees: a share too
     const cwd = payload.cwd === undefined ? undefined : localFolders ? expandedDirectory(payload.cwd, "chosen") : payload.cwd;
     if (payload.cwd !== undefined && cwd === null) return badRequest("invalid_cwd", "cwd must be an existing directory");
     if (payload.label !== undefined && typeof payload.label !== "string") return badRequest("missing_label", "label must be a string");
@@ -185,12 +199,16 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     if (fault !== null) return badRequest("invalid_agent", fault);
     const messageFault = firstMessageFault(payload.first_message, payload.agent);
     if (messageFault !== null) return badRequest("invalid_first_message", messageFault);
+    // the page connection that asked: the only one that may type the message on its own (server/core/pending.ts)
     const requester = payload.first_message_connection ?? null;
     if (requester !== null && (typeof requester !== "string" || requester.length === 0 || requester.length > 128)) {
       return badRequest("invalid_first_message", "first_message_connection must be the id of this page's connection");
     }
     // agent.start can legitimately take a minute; Bun's default idle timeout is shorter.
     if (payload.agent) bunServer.timeout(request, 75);
+    // taken before the workspace is made and the agent launched: a page that leaves or stops typing during that minute
+    // gets its first message held, as one that leaves after it is listed does
+    const asked = payload.agent && typeof payload.first_message === "string" ? firstMessages.ask(requester) : null;
     try {
       const options = {
         ...(cwd === undefined || cwd === null ? {} : { cwd }),
@@ -201,6 +219,7 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
         ? await tabCreate({ ...options, workspaceId: payload.workspace_id as string })
         : await workspaceCreate(options);
       const workspaceId = created.tab.workspace_id;
+      asked?.at(created.root_pane.pane_id);
       // the page selects the pane on this answer but draws it only once the roster lists it: the roster is read as
       // the answer goes, not after the collector's debounced pane.created (500 ms). Not before the launch either:
       // herdr answers calls made at once up to 250 ms late, and the launch makes its own.
@@ -208,12 +227,13 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
         broadcastAll({ type: "session-changed" });
         return jsonResponse({ workspace_id: workspaceId, pane_id: created.root_pane.pane_id, agent_started: false });
       }
+      // the process the launch brought up, when it says: the first message is bound to it
       let launchedPid: number | null = null;
       const launched = await agentLaunch(created.root_pane.pane_id, payload.agent, (pid) => { launchedPid = pid; }, shellAgents);
       // the request's first message is the user's send: queued for the agent's first ready turn through the
       // bridge's pending path (server/core/pending.ts), never typed here; an agent that did not start gets none
-      const firstMessage = launched.agent_started && typeof payload.first_message === "string"
-        ? await queueFirstMessage(created.root_pane.pane_id, payload.first_message, payload.agent.kind as string, requester, launchedPid).then((message): { id: string; held?: string } | ReturnType<typeof notQueued> => ({
+      const firstMessage = launched.agent_started && asked !== null
+        ? await firstMessages.queue(created.root_pane.pane_id, payload.first_message as string, payload.agent.kind as string, asked, launchedPid).then((message): { id: string; held?: string } | ReturnType<typeof notQueued> => ({
           id: message.id,
           ...(message.state === "held" && message.error ? { held: message.error.code } : {}),
         }), (error: unknown) => {
@@ -225,6 +245,8 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
       return jsonResponse({ workspace_id: workspaceId, pane_id: created.root_pane.pane_id, ...launched, ...(typeof payload.first_message === "string" ? { first_message: firstMessage } : {}) }, 200, wordedHeaders());
     } catch (error) {
       return errorResponse(error);
+    } finally {
+      asked?.end();
     }
   }
 
@@ -272,10 +294,10 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     return jsonResponse({ entries }, 200, wordedHeaders());
   }
 
-  if (pathname === "/api/worktree/remove") {
+  if (pathname === "/api/worktree/remove" || pathname === "/api/worktree/remove-checked") {
     setRequestRoute(pathname);
     if (request.method !== "POST") return badRequest("method_not_allowed", "use POST");
-    const payload = await readJsonObject<{ workspace_id?: unknown; force?: unknown }>(request);
+    const payload = await readJsonObject<{ workspace_id?: unknown; force?: unknown; expected_core?: unknown; expected_repo?: unknown; expected_checkout?: unknown; expected_git_id?: unknown }>(request);
     if (payload instanceof Response) return payload;
     if (typeof payload.workspace_id !== "string" || payload.workspace_id.length === 0) {
       return badRequest("missing_workspace_id", "workspace_id is required");
@@ -284,7 +306,25 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     // git can take a while to delete a large checkout; Bun's default idle timeout is shorter.
     bunServer.timeout(request, 75);
     try {
-      const removed = await worktreeRemove(payload.workspace_id, payload.force === true);
+      const { expected_core, expected_repo, expected_checkout, expected_git_id } = payload;
+      let removed;
+      if (pathname === "/api/worktree/remove-checked") {
+        if (typeof expected_core !== "string" || !expected_core || typeof expected_repo !== "string" || !expected_repo
+          || typeof expected_checkout !== "string" || !isAbsolute(expected_checkout) || typeof expected_git_id !== "string" || !expected_git_id) {
+          return badRequest("invalid_worktree_target", "the confirmed core, repository, checkout and git directory identity are required");
+        }
+        removed = await worktreeRemove(payload.workspace_id, false, undefined, { expected_core, expected_repo, expected_checkout, expected_git_id });
+      } else {
+        // the checkout the confirmation showed: a core refuses the delete when the workspace names another by now
+        if (expected_checkout !== undefined && (typeof expected_checkout !== "string" || !isAbsolute(expected_checkout))) {
+          return badRequest("invalid_expected_checkout", "expected_checkout must be an absolute path");
+        }
+        if (expected_git_id !== undefined && (typeof expected_git_id !== "string" || !expected_git_id)) {
+          return badRequest("invalid_expected_git_id", "expected_git_id must be a non-empty string");
+        }
+        const confirmed = { ...(expected_checkout === undefined ? {} : { expected_checkout }), ...(expected_git_id === undefined ? {} : { expected_git_id }) };
+        removed = await worktreeRemove(payload.workspace_id, payload.force === true, undefined, Object.keys(confirmed).length === 0 ? undefined : confirmed);
+      }
       broadcastAll({ type: "session-changed" });
       return jsonResponse({ ok: true, path: removed.path, forced: removed.forced });
     } catch (error) {
@@ -292,10 +332,10 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     }
   }
 
-  if (pathname === "/api/worktree/create" || pathname === "/api/worktree/open") {
+  if (pathname === "/api/worktree/create" || pathname === "/api/worktree/create-checked" || pathname === "/api/worktree/open") {
     setRequestRoute(pathname);
     if (request.method !== "POST") return badRequest("method_not_allowed", "use POST");
-    const payload = await readJsonObject<{ workspace_id?: unknown; branch?: unknown; base?: unknown; label?: unknown; path?: unknown; agent?: AgentPayload | null }>(request);
+    const payload = await readJsonObject<{ workspace_id?: unknown; branch?: unknown; base?: unknown; label?: unknown; path?: unknown; agent?: AgentPayload | null; expected_core?: unknown; expected_repo?: unknown }>(request);
     if (payload instanceof Response) return payload;
     if (typeof payload.workspace_id !== "string" || payload.workspace_id.length === 0) {
       return badRequest("missing_workspace_id", "workspace_id is required");
@@ -319,7 +359,11 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
       if (payload.path !== "") path = payload.path;
     }
     if (path !== undefined && !isAbsolute(path)) return badRequest("invalid_path", "path must be absolute");
-    const creating = pathname === "/api/worktree/create";
+    const checked = pathname === "/api/worktree/create-checked";
+    const creating = checked || pathname === "/api/worktree/create";
+    const { expected_core, expected_repo } = payload;
+    const expected = checked && typeof expected_core === "string" && expected_core && typeof expected_repo === "string" && expected_repo ? { expected_core, expected_repo } : undefined;
+    if (checked && !expected) return badRequest("invalid_worktree_target", "the selected core and repository are required");
     const agent = creating ? payload.agent ?? undefined : undefined;
     const fault = agentFault(agent);
     if (fault !== null) return badRequest("invalid_agent", fault);
@@ -331,7 +375,7 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     try {
       const asked = payload.workspace_id;
       const from = (workspaceId: string) => creating
-        ? worktreeCreate({ workspaceId, branch: branch as string, base, label, path })
+        ? worktreeCreate({ workspaceId, branch: branch as string, base, label, path, ...(expected ? { expected } : {}) })
         : worktreeOpen({ workspaceId, path, branch, label });
       // herdr starts a worktree only from the workspace on the repository's main checkout. Asked
       // from a workspace on another checkout (herdr does not mark one it did not open as a

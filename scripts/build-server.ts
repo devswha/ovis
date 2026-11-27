@@ -1,15 +1,28 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+/**
+ *   bun scripts/build-server.ts sign <dir> [--public-key <base64>]
+ *                                                 ovis-server.json.sig, with the private key in OVIS_SERVER_SIGNING_KEY,
+ *                                                 only when its public half is RELEASE_PUBLIC_KEY (scripts/server-manifest.ts)
+ *                                                 or the key the flag names (a test's own); prints that public key
+ *   bun scripts/build-server.ts verify <dir> [--public-key <base64>] [--expect-version <X.Y.Z>]
+ *                                                 the folder, the signature (by RELEASE_PUBLIC_KEY unless the flag names
+ *                                                 another), the manifest, every file and the sums; exit 1 with one line
+ *                                                 naming what does not match. A consumer passes the version it asked for:
+ *                                                 the signature alone does not stop an older release being offered
+ */
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { keeperManifestText } from "./release-assets.ts";
 import { DIST_ARCHIVE, generateKeyPair, KEY_FILE, publicKeyOf, RELEASE_PUBLIC_KEY, releaseFile, SERVER_PLATFORMS, type ServerPlatform, SIGNING_KEY_VARIABLE, signManifest, sourceTrees, verifyRelease, writeManifest } from "./server-manifest.ts";
 
 const root = resolve(import.meta.dir, "..");
-const USAGE = `usage: bun scripts/build-server.ts <${SERVER_PLATFORMS.join("|")}> <dir> | release <dir> | manifest <dir> | sign <dir> [--public-key <base64>] | verify <dir> [--public-key <base64>] [--expect-version <X.Y.Z>] | keygen <dir>`;
+const USAGE = `usage: bun scripts/build-server.ts <${SERVER_PLATFORMS.join("|")}> <dir> | release <dir> | manifest <dir> | keeper-manifest <assets-dir> <ovis-server.json> <version> | sign <dir> [--public-key <base64>] | verify <dir> [--public-key <base64>] [--expect-version <X.Y.Z>] | keygen <dir>`;
 const isPlatform = (value: string | undefined): value is ServerPlatform => (SERVER_PLATFORMS as readonly string[]).includes(value ?? "");
 const fail = (message: string, code = 1): never => {
   console.error(message);
   process.exit(code);
 };
 
+// the compile and what it needs load only for a build: sign and verify run where no package is installed
 const artifact = () => import("./server-artifact.ts");
 
 function flags(rest: string[], allowed: string[]): Map<string, string> {
@@ -30,7 +43,6 @@ async function main(args: string[]): Promise<void> {
     const { binaryName, buildBinary } = await artifact();
     mkdirSync(out, { recursive: true });
     await buildBinary(verb, join(out, binaryName(verb)));
-    copyFileSync(join(root, "server", "pty", "pty-host.mjs"), join(out, "pty-host.mjs"));
   } else if (verb === "release" && rest.length === 0) {
     const { binaryName, buildBinary } = await artifact();
     mkdirSync(out, { recursive: true });
@@ -53,12 +65,17 @@ async function main(args: string[]): Promise<void> {
     if ("error" in sources) fail(sources.error);
     const { version } = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string };
     console.log(JSON.stringify(writeManifest(out, { version, sources: sources as { server: string; shared: string } }), null, 2));
+  } else if (verb === "keeper-manifest" && rest.length === 2) {
+    const [serverManifest, version] = rest;
+    if (!serverManifest || !version) return fail(USAGE, 2);
+    process.stdout.write(keeperManifestText(out, version, readFileSync(serverManifest)));
   } else if (verb === "sign") {
     const expected = flags(rest, ["--public-key"]).get("--public-key") ?? RELEASE_PUBLIC_KEY;
     const key = process.env[SIGNING_KEY_VARIABLE]?.trim();
     if (!key) fail(`${SIGNING_KEY_VARIABLE} is not set, so ovis-server.json cannot be signed and the release must not be published. The owner adds the secret ${SIGNING_KEY_VARIABLE} to the environment release-signing (docs/development.md, "The server binary's signing key").`);
     let publicKey = "";
     try {
+      // checked before anything is written: a key in the secret that is not the committed one must fail the release
       const offered = publicKeyOf(`${key}\n`);
       if (offered !== expected) fail(`${SIGNING_KEY_VARIABLE} is the key ${offered}, not ${expected}, which scripts/server-manifest.ts commits and every installer trusts: nothing was signed`);
       publicKey = signManifest(out, `${key}\n`);
@@ -77,6 +94,8 @@ async function main(args: string[]): Promise<void> {
     if (!result.ok) fail(result.problems.join("\n"));
     console.log(`ovis-server.json${version === undefined ? "" : ` for ${version}`} is signed by ${publicKey}, and every binary matches it`);
   } else if (verb === "keygen" && rest.length === 0) {
+    // the file's mode keeps the key to its owner on Linux and macOS; on Windows a mode sets no access rule, and the key
+    // would be as readable as the folder it lands in
     if (process.platform === "win32") fail("keygen does not run on Windows, where it cannot make the key file readable by you alone: run it on Linux or macOS");
     const { privateKeyPem, publicKey } = generateKeyPair();
     mkdirSync(out, { recursive: true });

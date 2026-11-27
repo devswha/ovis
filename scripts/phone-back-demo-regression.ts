@@ -14,6 +14,7 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { openSettingsPage } from "./settings-page.ts";
+import { serveDemo } from "./demo-server.ts";
 
 type Screen = { label: string; width: number; height: number };
 type Entry = { taps: number; keys: string };
@@ -42,6 +43,7 @@ async function open(browser: Browser, origin: string, screen: Screen, run: (page
         if (location.protocol !== "about:") void (window as unknown as { entryAdded: (entry: Entry) => Promise<void> }).entryAdded({ taps, keys: state !== null && typeof state === "object" ? Object.keys(state).join(",") : String(state) });
         return push(...args);
       };
+      // a step the page takes by itself lands as a popstate too, and is none of the user's
       let own = false;
       for (const name of ["back", "forward", "go"] as const) {
         const step = (history[name] as (by?: number) => void).bind(history);
@@ -89,15 +91,7 @@ try {
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n<script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    let file: string;
-    try { file = decodeURIComponent(new URL(request.url).pathname.slice(1)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: "/" });
   const origin = `http://127.0.0.1:${server.port}`;
   const pages = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("<!doctype html><title>Report</title><h1>Report</h1>", { headers: { "content-type": "text/html; charset=utf-8" } }) });
   let browser: Browser | undefined;
@@ -229,6 +223,8 @@ try {
       await stillHere(page, origin, shown, "Files after a file closed by its X");
     });
 
+    // the same file closed by Back: Files is in front again with no tap since, where the browser's
+    // Back would skip an entry made now.
     await open(browser, origin, UPRIGHT, async (page) => {
       const shown = await paneShown(page);
       await page.locator(".header-more-button").tap();
@@ -260,8 +256,8 @@ try {
       await settings.getByRole("button", { name: "Add a connection", exact: true }).tap();
       const connect = page.getByRole("dialog", { name: "Add a connection", exact: true });
       await connect.locator('.connect-tabs [data-tab="ssh"]').tap();
-      await connect.getByLabel("Or type an SSH address", { exact: true }).fill("qa@pc.invalid");
-      await connect.locator(".connect-ssh-form").getByRole("button", { name: "Add", exact: true }).tap();
+      await connect.getByLabel("Add another PC from this one", { exact: true }).fill("qa@pc.invalid");
+      await connect.locator(".connect-ssh-form").getByRole("button", { name: "Connect", exact: true }).tap();
       const addPc = page.locator("dialog.machine-dialog");
       await addPc.waitFor();
       await settings.waitFor({ state: "detached" });
@@ -303,6 +299,10 @@ try {
       await page.waitForURL("about:blank");
     });
 
+    // a busy tab's close asks first, even among other tabs: Back closes the question, and the tab is still there. On
+    // the web pane, whose agent waits on its question for good, beside a new terminal, so the question comes from the
+    // busy agent, not from a last tab: the api pane's turn ends 4.5 s after load (site/demo/transport.ts), and an idle
+    // tab among others closes without asking
     await open(browser, origin, TABLET, async (page) => {
       const busyTab = await page.locator(".tab-strip-close").first().getAttribute("aria-label");
       assert.ok(busyTab, "the web pane's tab has a close button");
@@ -412,6 +412,7 @@ try {
       await stillHere(page, origin, shown, "with no Navigation API, Files after Back closed a file opened from it");
     }, {}, false);
   } finally {
+    // the servers go whatever else failed, a browser that did not start included: left up, they keep this script from ending
     try { await browser?.close(); }
     finally {
       try { await server.stop(true); }

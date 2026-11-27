@@ -6,6 +6,7 @@ import { chromium } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const app = mkdtempSync(join(tmpdir(), "herdr-palette-machines-"));
 const patch = `(() => {
@@ -89,15 +90,7 @@ try {
   writeFileSync(join(app, "palette-machines.js"), patch);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script src="./palette-machines.js"></script><script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    let file: string;
-    try { file = decodeURIComponent(path.slice(1)); } catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: "/" });
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -124,18 +117,34 @@ try {
           assert.equal(await dialog.getByRole("option").filter({ hasText: "Claude Code" }).count(), 0, "the visible choices come from the remote catalog, not the local catalog");
           await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(panes.api)}`);
           await page.locator('.agents-sidebar .agent-select[aria-current="true"]').first().waitFor({ state: "attached" });
-          await page.evaluate(() => history.pushState(null, "", "?machine=remote&new=workspace&agent=codex&name=Forward"));
-          await page.goBack();
+          // puts `link` one entry ahead of the one the page is on. The app writes its own address over the entry it is on
+          // whenever that differs (a roster update reruns it), so the link is never left as the current entry: the
+          // current address goes on top of it in the same task, and the page steps back past both
+          const linkAhead = async (link: string) => {
+            await page.evaluate((link) => {
+              const here = location.search;
+              history.pushState(null, "", link);
+              history.pushState(null, "", here);
+              (window as any).linkAheadLanded = false;
+              addEventListener("popstate", () => { (window as any).linkAheadLanded = true; }, { once: true });
+              history.go(-2);
+            }, link);
+            await page.waitForFunction(() => (window as any).linkAheadLanded === true);
+          };
+          await linkAhead("?machine=remote&new=workspace&agent=codex&name=Forward");
           await page.goForward();
           await dialog.waitFor();
           assert.equal(await dialog.locator("h2").innerText(), "New workspace · Build PC", "Forward to a creation-only link selects the link's PC before opening its dialog");
+          // a dialog open for one PC gives way to the next entry's PC and fields. The app writes where the dialog
+          // opened (its PC's pane and that pane's folder) over the Forward entry once both are in: the next entry is
+          // pushed after that write, or the write lands on it and the entry asks for Build PC again
           await page.waitForFunction(() => { const query = new URLSearchParams(location.search); return query.get("name") === "Forward" && query.has("pane") && query.has("cwd"); });
-          await page.evaluate(() => history.pushState(null, "", "?new=workspace&agent=codex&name=Here"));
-          await page.goBack();
+          await linkAhead("?new=workspace&agent=codex&name=Here");
           await page.goForward();
           await page.getByRole("dialog", { name: "New workspace \u00b7 Laptop", exact: true }).waitFor();
           await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(panes.api)}`);
           await page.locator('.agents-sidebar .agent-select[aria-current="true"]').first().waitFor({ state: "attached" });
+          await page.waitForFunction(() => new URLSearchParams(location.search).has("ws"));
           const here = await page.evaluate(() => location.search);
           await page.evaluate((search) => { history.pushState(null, "", "?machine=offline&new=tab&name=WRONG"); history.pushState(null, "", search); }, here);
           await page.goBack();
@@ -220,6 +229,8 @@ try {
         assert.equal(await palette.getByRole("button", { name: "Try again", exact: true }).count(), 0, "retry fetches the unchanged query and clears its failure");
         console.log("PASS a failed folder listing stays visible and retryable beside cached folder rows");
 
+        // The palette may open over a confirmation. Identical native IDs on the destination
+        // PC must never retarget the first PC's destructive dialog to that new machine.
         await page.keyboard.press("Escape"); await palette.waitFor({ state: "hidden" });
         const selectedTab = page.locator('.tab-strip-tab[aria-selected="true"]');
         assert.equal(await page.locator('.tab-strip-tab').count(), 1, "the selected workspace owns only this tab");

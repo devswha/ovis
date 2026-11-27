@@ -4,7 +4,7 @@ import { Database } from "bun:sqlite";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Locator, type Page } from "playwright-core";
+import { chromium, errors as playwrightErrors, type BrowserContext, type Locator, type Page } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { forgetPageMedia, PAGE_MEDIA_LIFETIME_MS, pageFileHooks, pageMediaResponse } from "../server/file-view.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
@@ -15,6 +15,21 @@ import { openSettingsPage } from "./settings-page.ts";
  * spot Settings comes to cover would open that row's sentence (SettingsControls' useRowSentence), which takes the next
  * Escape for itself, as it should, and a check that Escape closes Settings would wait on it.
  */
+/**
+ * The browser scripts of a lane share one herdr test session, so another script's agent that turns blocked raises
+ * an alert droplet on this script's pages too, at any moment and above an open dialog: it once took the click meant
+ * for the Files dialog's Changes tab (#4270). No check here is about droplets, so these pages draw none. A sheet
+ * the page adopts, not a style element: the app's own document only, and nothing its content policy reads.
+ */
+async function drawsNoDroplet(context: BrowserContext): Promise<void> {
+  await context.addInitScript(() => {
+    if (window.top !== window) return;
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(".droplet { visibility: hidden !important; }");
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  });
+}
+
 async function openSettingsByKeys(page: Page): Promise<void> {
   await page.mouse.move(0, 0);
   await page.keyboard.press("ControlOrMeta+Shift+Comma");
@@ -41,16 +56,68 @@ const openFiles = async (page: import("playwright-core").Page) => {
   else await runMoreItem(page, "Browse files");
 };
 
-const transcriptSettled = (page: Page) => page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached" });
+const transcriptLink = (page: Page, link: Locator): Locator =>
+  page.locator(".pane-frame.is-current .chat-view").locator(link);
 const reloadFollowingEnd = async (page: Page): Promise<void> => {
   await page.evaluate(() => { for (const node of document.querySelectorAll(".chat-view")) node.scrollTop = node.scrollHeight; });
   await page.waitForFunction(() => (JSON.parse(sessionStorage.getItem("ovis:chat-positions") ?? "[]") as [string, { atEnd: boolean }][]).every(([, place]) => place.atEnd));
   await page.reload();
 };
-const activateInTranscript = async (page: Page, link: Locator): Promise<void> => {
-  await transcriptSettled(page);
-  await link.dispatchEvent("click");
-};
+// Dispatch waits for the link in the selected chat. It does not need the end of the chat to be
+// presented, which is what data-pane-content acknowledges.
+const activateInTranscript = (page: Page, link: Locator): Promise<void> =>
+  transcriptLink(page, link).dispatchEvent("click");
+
+async function activateWithPaneDiagnostic(page: Page, link: Locator, expectedPane: string): Promise<void> {
+  try {
+    await activateInTranscript(page, link);
+  } catch (error) {
+    if (!(error instanceof playwrightErrors.TimeoutError)) throw error;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const snapshot = await Promise.race([
+      page.evaluate((expectedPane) => {
+        const frame = document.querySelector(".pane-frame.is-current");
+        const currentPane = frame?.getAttribute("data-layout-pane") ?? null;
+        const chat = frame?.querySelector(".chat-view");
+        const sideNotesPanes = new Set<string | null>();
+        for (const element of document.querySelectorAll("body *")) {
+          if (element.textContent?.trim() === "side notes") {
+            sideNotesPanes.add(element.closest(".pane-frame")?.getAttribute("data-layout-pane") ?? null);
+          }
+        }
+        return {
+          currentPane,
+          matchesExpectedPane: currentPane === expectedPane,
+          hasChatView: chat !== undefined && chat !== null,
+          paneContent: chat?.getAttribute("data-pane-content") ?? frame?.querySelector(".chat-frame")?.getAttribute("data-pane-content") ?? null,
+          chatRows: chat?.querySelectorAll("[data-chat-row]").length ?? 0,
+          conversationSource: chat?.getAttribute("data-conversation-source") ?? chat?.querySelector("[data-conversation-source]")?.getAttribute("data-conversation-source") ?? null,
+          sideNotesFound: sideNotesPanes.size > 0,
+          sideNotesPanes: [...sideNotesPanes],
+        };
+      }, expectedPane).catch((cause: unknown) => ({ snapshotError: cause instanceof Error ? cause.message : String(cause) })),
+      // Page.evaluate has no timeout and may never return if the renderer is stuck.
+      new Promise<{ snapshotError: string }>((resolve) => {
+        timer = setTimeout(() => resolve({ snapshotError: "DOM snapshot timed out" }), 2_000);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    console.error(`Transcript link timeout: ${JSON.stringify({ expectedPane, url: page.url(), ...snapshot })}`);
+    throw error;
+  }
+}
+
+/**
+ * Isolation from the app's service worker, which answers every /assets/ file a page loads: on a loaded runner a page it
+ * controlled stayed on "Loading Ovis" because a module preload it was answering failed (net::ERR_ABORTED, cancelled by
+ * a cause the trace does not show) and the module graph never ran. No check here is about the worker
+ * (scripts/pwa-update-browser-qa.ts is), so these pages take the app's no-worker paths, as on a plain-http address
+ * (src/pwa.ts). Playwright's `serviceWorkers: "block"` is no substitute: its init script reads navigator.serviceWorker,
+ * which throws in the viewer's sandboxed frames, a page error.
+ */
+async function withoutWorker(context: BrowserContext): Promise<BrowserContext> {
+  await context.addInitScript(() => { delete (Navigator.prototype as { serviceWorker?: unknown }).serviceWorker; });
+  return context;
+}
 
 const root = mkdtempSync(join(tmpdir(), "ovis-file-back-"));
 const reportServer = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(
@@ -77,8 +144,10 @@ writeFileSync(transcript, [
   { type: "session_meta", payload: { id: thread, cwd: root } },
   { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Show me the demo video." }] } },
   { type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: `Open [demo video](./preview.webm) or [notes](./notes.txt) or [guide](./docs/guide.md) or [big](./big.txt) or [big code](./big.ts) or [mid code](./mid.ts) or [deep quotes](./deep.md) or [empty](./empty.txt) or [slow preview](./slow.md) or [long notes](./long.md) or [many lines](./lines.txt) or [long list](./list.md) or [contents page](./toc.html) or [file URI notes](${new URL(`file://${join(root, "notes.txt")}`).href}) or [folder](${new URL(`file://${root}`).href}) or [web report](${reportUrl}).\n\n${new URL(`file://${join(root, "notes.txt")}`).href}\n\n\`\`\`ts\nconst answer = 42;\n\nexport { answer };\n\`\`\`\n\n${chatImages}` }] } },
+  // a block the highlighter is quadratic on (a line of dashes in YAML): seconds on the page
   { type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "References: [source column](./target.ts:60:8), [source range](./target.ts#L60-L65), [Markdown line](./docs/guide.md#L6), [past end](./notes.txt:999), [past preview](./big.txt:999999), [capped line](./lines.txt:5)." }] } },
   { type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: `Dashes:\n\n\`\`\`yaml\n${"-".repeat(90_000)}\n\`\`\`` }] } },
+  // more lines than are drawn one element each (LINE_ELEMENT_LIMIT): 30 000 elements held the page
   { type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: `Lines:\n\n\`\`\`\n${"x\n".repeat(30_000)}\`\`\`` }] } },
   ...fidelitySources.map((source, index) => ({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: `\`\`\`${index === 0 ? "ts" : "text"}\n${source}\n\`\`\`` }] } })),
   { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Take the screenshots." }] } },
@@ -103,7 +172,9 @@ writeFileSync(sideTranscript, [
 db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 1, 1, 'cli', ?)").run(sideThread, sideTranscript, side, "Where are the side notes?");
 db.close();
 const standIn = join(root, "codex");
-writeFileSync(standIn, "#!/bin/sh\nsleep 600\n");
+// it lives until its pane closes: a clock of its own (it slept 600 s) ran out under a loaded runner before the last
+// checks, herdr then reported a shell, and those pages opened the terminal instead of the chat they wait on
+writeFileSync(standIn, "#!/bin/sh\nwhile read -r line; do :; done\n");
 chmodSync(standIn, 0o755);
 copyFileSync(join(import.meta.dir, "fixtures", "file-preview.webm"), join(root, "preview.webm"));
 writeFileSync(join(root, "notes.txt"), "File preview history regression\n");
@@ -111,6 +182,8 @@ writeFileSync(join(root, "README"), "Extensionless text\n");
 writeFileSync(join(root, "notes.custom"), "Unknown extension text\n");
 mkdirSync(join(root, "folder.txt"));
 writeFileSync(join(root, "folder.txt", "inside.txt"), "Chosen inside the popup\n");
+// a rendered page whose recording is too large to put into it (EMBED_FILE_BYTES in server/file-view.ts),
+// so it plays from the address its render gives out: 1 150 s of silence as 8 kHz 8-bit mono WAV, 9.2 MB
 mkdirSync(join(root, "media"));
 const takeRate = 8_000;
 const take = Buffer.alloc(44 + takeRate * 1_150, 0x80);
@@ -137,6 +210,7 @@ const SOURCE_LOAD_LIMIT = 8 * 1024 * 1024;
 writeFileSync(join(root, "big.txt"), `a line of plain text, ${"0123456789".repeat(8)}\n`.repeat(Math.ceil((SOURCE_LOAD_LIMIT + 1024 * 1024) / 103)));
 writeFileSync(join(root, "big.ts"), "export const value = 1;\n".repeat(Math.ceil((TEXT_LOAD_LIMIT + 1024) / 24)));
 writeFileSync(join(root, "mid.ts"), Array.from({ length: 3_000 }, (_, index) => `export const value${index + 1} = ${index + 1};`).join("\n") + "\n");
+// 20 KB of nested quotes: parsed one level per `>`, they overflowed the stack and blanked the app
 writeFileSync(join(root, "deep.md"), `${">".repeat(20_000)} deepest\n`);
 // a YAML block of dashes in a Markdown file: seconds for the highlighter in Chromium as in Bun (8 s at
 // 64 KB), while the Markdown parser reads it in a millisecond. A line of "[a" is slow in Bun alone:
@@ -147,17 +221,21 @@ writeFileSync(join(root, "long.md"), longNotes);
 const longPrefix = longNotes.slice(0, TEXT_LOAD_LIMIT);
 const longPreviewHeadings = longPrefix.slice(0, longPrefix.lastIndexOf("\n") + 1).split("\n").filter((line) => line.startsWith("# ")).length;
 writeFileSync(join(root, "lines.txt"), "\n".repeat(TEXT_LOAD_LIMIT));
+// more list items than a Preview draws (PREVIEW_ELEMENT_LIMIT): 65 536 of them held the page 1.6 s
 writeFileSync(join(root, "list.md"), "- a\n".repeat(TEXT_LOAD_LIMIT / 4));
 // an empty file has no first byte: its range answers 416, which is not an error
 writeFileSync(join(root, "empty.txt"), "");
 mkdirSync(join(root, "shots"));
 writeFileSync(join(root, "shots", "t00000.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==", "base64"));
+// a page whose script runs, and reports what it may not reach: the network and this app's storage
 writeFileSync(join(root, "shots", "report.html"), `<!doctype html><meta charset="utf-8"><title>Report</title><body><h1 id="ran">static</h1><p id="net">waiting</p><p id="store"></p><img id="shot" alt="shot" src="t00000.png"><p id="pic">no picture</p><script>
 document.getElementById("shot").decode().then(() => { document.getElementById("pic").textContent = "picture drawn"; }, () => {});
 document.getElementById("ran").textContent = "script ran";
 try { localStorage.length; document.getElementById("store").textContent = "storage reachable"; } catch { document.getElementById("store").textContent = "no storage"; }
 fetch("/api/health").then(() => { document.getElementById("net").textContent = "network reachable"; }, () => { document.getElementById("net").textContent = "network blocked"; });
 </script></body>`);
+// a page with a table of contents: an anchor the reader clicks inside the frame is a navigation of
+// the frame's own, an entry in the session history above the preview's (#1203)
 writeFileSync(join(root, "toc.html"), `<!doctype html><meta charset="utf-8"><title>Contents</title><body><nav><a id="toc" href="#details">Details</a></nav><p id="ran">static</p><p style="height:1200px">body</p><h2 id="details">Details</h2><script>document.getElementById("ran").textContent = "contents ran";</script></body>`);
 const markdownPath = join(root, "preview #1 & 한글.MD");
 const markdownSource = "<p align=\"center\">\n  <img src=\"./preview.svg\" alt=\"Logo\" width=\"64\">\n</p>\n\n<p align=\"center\"><a href=\"https://example.com/\">website</a> &middot; <strong>bold</strong></p>\n\n# Markdown preview\n\n한글 문서도 새 탭에서 읽을 수 있습니다.\n\n| Item | State |\n| --- | --- |\n| Preview | Ready |\n\n- [x] Rendered\n\nSee [the other notes](other.md).\n\n```ts\nconst answer = 42;\n```\n\n![Local image](./preview.svg)\n\n```mermaid\ngraph LR\n  A[Read] --> B[Preview]\n```\n";
@@ -201,7 +279,8 @@ try {
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), codexHome, tailnetPcs: { readStatus: async () => null }, sshCandidates: { sshDir: join(root, "no-ssh"), readStatus: async () => null } });
   const origin = `http://127.0.0.1:${server.port}`;
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const context = await withoutWorker(await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }));
+  await drawsNoDroplet(context);
   const page = await context.newPage();
   await page.addInitScript(() => {
     // the app's own document only: a sandboxed HTML page the viewer frames has no storage to seed
@@ -221,6 +300,12 @@ try {
   await page.goto(`${origin}/api/health`);
   await page.goto(`${origin}/?pane=${encodeURIComponent(pane)}`);
   await page.locator(".conn-live").waitFor();
+  assert.equal(await page.evaluate(() => {
+    const probe = document.body.appendChild(Object.assign(document.createElement("div"), { className: "droplet" }));
+    const visibility = getComputedStyle(probe).visibility;
+    probe.remove();
+    return visibility;
+  }), "hidden", "this script's pages draw no alert droplet");
   const videoLink = page.getByRole("button", { name: "demo video", exact: true });
   await videoLink.waitFor();
   await page.locator(".markdown-code").first().locator(".hl-keyword", { hasText: "const" }).waitFor();
@@ -254,6 +339,9 @@ try {
     for (const [index, source] of fidelitySources.entries()) {
       const block = page.locator(".markdown-code").nth(3 + index);
       assert.equal(await block.locator("code").textContent(), source, `${mode}: source whitespace`);
+      // found and selected in one task: an answer's Markdown is drawn again once the pane's skill
+      // list arrives (Markdown.tsx), which can fall between a locator's element handle and a later
+      // call on it and leave that handle on a detached <pre>
       const selections = await page.evaluate(({ nth, source }) => {
         const pre = document.querySelectorAll(".markdown-code")[nth]!.querySelector("pre")!;
         const selection = window.getSelection()!;
@@ -364,6 +452,7 @@ try {
   assert.equal(await narrowGuide.count(), 1, "Escape closes the More menu, not the file");
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "More", "and gives the focus back to More");
   if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "mobile-markdown-320.png") });
+  // the menu's own entry goes first: a Back pressed before that would leave it, with the file still up
   await sheetEntryLeft(page);
   await page.goBack();
   await narrowGuide.waitFor({ state: "hidden" });
@@ -437,8 +526,8 @@ try {
   await settingsOverPreview.getByRole("button", { name: "Add a connection", exact: true }).click();
   const connectDevice = page.getByRole("dialog", { name: "Add a connection", exact: true });
   await connectDevice.locator('.connect-tabs [data-tab="ssh"]').click();
-  await connectDevice.getByLabel("Or type an SSH address", { exact: true }).fill("qa@pc.invalid");
-  await connectDevice.locator(".connect-ssh-form").getByRole("button", { name: "Add", exact: true }).click();
+  await connectDevice.getByLabel("Add another PC from this one", { exact: true }).fill("qa@pc.invalid");
+  await connectDevice.locator(".connect-ssh-form").getByRole("button", { name: "Connect", exact: true }).click();
   const addPc = page.locator("dialog.machine-dialog");
   await addPc.waitFor();
   await settingsOverPreview.waitFor({ state: "hidden" });
@@ -532,6 +621,7 @@ try {
   await setFileOpen("panel");
   console.log("PASS by default a text file opens in the popup on a wide window");
   const beforePlacement = await page.evaluate(() => history.state);
+  // setFileOpen reloaded the page: its follow to the end can take the link from under a pointer
   await activateInTranscript(page, videoLink);
   await page.locator(".modal.file-viewer video").waitFor();
   assert.equal(await panel.count(), 0, "video starts in the popup at 1280px");
@@ -582,6 +672,8 @@ try {
   await page.keyboard.press("Escape");
   await panel.waitFor({ state: "detached" });
   assert.equal(await page.evaluate(() => history.state?.["ovis:file-preview"]), undefined, "Escape in the panel consumes the preview entry");
+  // A history traversal removes the panel and restores focus: detachment alone is not the
+  // focus signal. Keep the focus assertion, but wait for the state it actually checks.
   await page.waitForFunction((link) => document.activeElement === link, await notesLink.elementHandle());
   assert.equal(await notesLink.evaluate((link) => document.activeElement === link), true, "Escape in the panel returns the focus to the link that opened the file");
   await notesLink.press("Enter");
@@ -606,6 +698,10 @@ try {
   await panel.waitFor({ state: "detached" });
   assert.equal(await page.evaluate(() => history.state?.["ovis:file-preview"]), undefined, "Close file consumes the preview entry");
   console.log("PASS from 980px a file is a panel beside the pane: no scrim, the pane takes clicks, its edge drags and keeps its width, Escape inside and Close file close it");
+  // a page the reader navigates inside its frame (a click on its table of contents; a script setting
+  // location.hash once the page has loaded does the same) puts an entry of its own above the
+  // preview's in the session history: Close file and Escape must still close the panel and consume
+  // the preview's entry, not step the frame back and leave the panel there (#1203)
   const contentsLink = page.getByRole("button", { name: "contents page", exact: true });
   for (const close of ["Close file", "Escape"]) {
     await activateInTranscript(page, contentsLink);
@@ -613,6 +709,8 @@ try {
     await panel.getByRole("button", { name: "Run scripts", exact: true }).click();
     await framed.getByText("contents ran", { exact: true }).waitFor();
     const opened = await page.evaluate(() => history.length);
+    // the frame's own navigation is under test, not where the panel lays the frame out: a pointer
+    // aimed at the link while the panel settles can miss it, and no entry is made
     await framed.locator("#toc").dispatchEvent("click");
     await page.waitForFunction((length) => history.length === length + 1, opened);
     if (close === "Escape") { await panel.locator(".file-panel-resizer").focus(); await page.keyboard.press("Escape"); }
@@ -638,10 +736,9 @@ try {
   console.log("PASS from 980px a file opened from the Files dialog shows in the panel and the dialog closes");
 
   for (const [label, content] of [["extensionless", "Extensionless text"], ["unknown text", "Unknown extension text"]] as const) {
-    const link = page.getByRole("button", { name: label, exact: true });
-    await transcriptSettled(page);
-    await link.focus();
-    await link.dispatchEvent("click");
+    const link = transcriptLink(page, page.getByRole("button", { name: label, exact: true }));
+    // Focus and activate in the same task, before the chat can move or unmount the row.
+    await link.evaluate((button: HTMLButtonElement) => { button.focus(); button.click(); });
     await panel.getByText(content, { exact: true }).waitFor();
     assert.equal(await page.locator(".modal.file-viewer").count(), 0, "real text metadata corrects an unknown-extension popup guess");
     await panel.getByRole("button", { name: "Close file", exact: true }).click();
@@ -858,11 +955,11 @@ try {
   const sideNotes = page.getByRole("button", { name: "side notes", exact: true });
   await rowOf(sidePane).click();
   await onPane(sidePane);
-  await activateInTranscript(page, sideNotes);
+  await activateWithPaneDiagnostic(page, sideNotes, sidePane);
   await panel.getByText("Side pane notes", { exact: true }).waitFor();
   await rowOf(pane).click();
   await onPane(pane);
-  await activateInTranscript(page, notesLink);
+  await activateWithPaneDiagnostic(page, notesLink, pane);
   await panel.getByText("File preview history regression", { exact: true }).waitFor();
   // the viewer showing the first pane's file is marked: a viewer the switch reused would keep that
   // file's loaded content, and show it for the side pane's file until it read its own
@@ -976,6 +1073,7 @@ try {
   await page.goBack();
   await notes.waitFor({ state: "hidden" });
   await videoLink.waitFor();
+  // reloaded and gone back: the chat's follow to its end can take the link from under a pointer
   await videoLink.dispatchEvent("click");
   await preview.waitFor();
   await preview.getByRole("button", { name: "Close file", exact: true }).click();
@@ -1130,6 +1228,7 @@ try {
   });
   await reloadFollowingEnd(page);
   await page.locator(".conn-live").waitFor();
+  // the reloaded chat's follow to its end can take the link from under a pointer
   await activateInTranscript(page, page.getByRole("button", { name: "big code", exact: true }));
   const bigCode = page.getByRole("dialog", { name: "big.ts", exact: true });
   await page.waitForFunction(() => (document.querySelector("diffs-container")?.shadowRoot?.querySelectorAll("[data-line]").length ?? 0) > 0);
@@ -1142,6 +1241,7 @@ try {
   await page.getByRole("button", { name: "Close file", exact: true }).click();
   await page.locator(".file-viewer").waitFor({ state: "hidden" });
 
+  // code past an element per line but within the colors bound: colored in the virtualizer's worker, served by this server under its CSP
   await page.getByRole("button", { name: "mid code", exact: true }).click();
   const midCode = page.getByRole("dialog", { name: "mid.ts", exact: true });
   await page.waitForFunction(() => (document.querySelector("diffs-container")?.shadowRoot?.querySelectorAll("[data-line] span[style*='--herdr-code-token']").length ?? 0) > 0, undefined, { timeout: 20_000 });
@@ -1234,7 +1334,8 @@ try {
 
   for (const width of [390, 1440]) {
     for (const theme of ["dark", "light"]) {
-      const context = await browser.newContext({ viewport: { width, height: 900 }, isMobile: width === 390, hasTouch: width === 390 });
+      const context = await withoutWorker(await browser.newContext({ viewport: { width, height: 900 }, isMobile: width === 390, hasTouch: width === 390 }));
+      await drawsNoDroplet(context);
       await context.addInitScript((theme) => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme })), theme);
       const page = await context.newPage();
       page.setDefaultTimeout(10_000);
@@ -1316,13 +1417,17 @@ try {
     }
   }
   for (const width of [1280, 601, 600, 390]) {
-    const readerContext = await browser.newContext({ viewport: { width, height: 800 } });
+    const readerContext = await withoutWorker(await browser.newContext({ viewport: { width, height: 800 } }));
+    await drawsNoDroplet(readerContext);
     try {
       const readerPage = await readerContext.newPage();
       await readerPage.goto(`${origin}/?read=${encodeURIComponent(join(root, "long.md"))}`);
       const readerBody = readerPage.locator(".file-reader-body");
       await readerBody.locator(".file-viewer-markdown p").first().waitFor();
-      await readerBody.locator(".file-viewer-markdown .markdown-h1").nth(longPreviewHeadings - 1).waitFor();
+      const readerPreview = readerBody.locator('.file-viewer-markdown[data-drawn="complete"]');
+      // A loaded runner can take longer to draw this large file; the signal ends the wait early (#4185).
+      await readerPreview.waitFor({ timeout: 30_000 });
+      assert.equal(await readerPreview.locator(".markdown-h1").count(), longPreviewHeadings);
       const geometry = await readerBody.evaluate((element) => ({ height: element.clientHeight, scrollHeight: element.scrollHeight, viewport: innerHeight }));
       assert.ok(geometry.height < geometry.viewport, `${width}px: standalone reader body is bounded by the viewport`);
       assert.ok(geometry.scrollHeight > geometry.height, `${width}px: long document has an internal scroll range`);
@@ -1368,7 +1473,8 @@ try {
   assert.ok(local?.snapshot);
   const remote: Machine = { ...local, id: "remote-fixture", name: "Remote fixture", snapshot: { ...local.snapshot, panes: [], workspaces: [], tabs: [], layouts: [], agents: [] } };
   for (const target of ["remote-fixture", "local", "missing-fixture"]) {
-    const ownerContext = await browser.newContext();
+    const ownerContext = await withoutWorker(await browser.newContext());
+    await drawsNoDroplet(ownerContext);
     const fileRequests: string[] = [];
     await ownerContext.addInitScript(({ stored, pane }) => {
       localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
@@ -1464,7 +1570,10 @@ try {
   const long = page.getByRole("dialog", { name: "long.md", exact: true });
   await long.locator(".file-viewer-markdown .markdown-h1").first().waitFor();
   assert.match(await long.locator(".file-viewer-meta .file-viewer-notice").getAttribute("title") ?? "", /^Showing the first 256 KB of /);
-  await long.locator(".file-viewer-markdown .markdown-h1").nth(longPreviewHeadings - 1).waitFor();
+  const longPreview = long.locator('.file-viewer-markdown[data-drawn="complete"]');
+  // A loaded runner can take longer to draw this large file; the signal ends the wait early (#4185).
+  await longPreview.waitFor({ timeout: 30_000 });
+  assert.equal(await longPreview.locator(".markdown-h1").count(), longPreviewHeadings);
   // The preview can contain thousands of file-link buttons. Query its toolbar, not every
   // accessible name in the document: the check itself must not monopolize the page.
   const longHeader = long.locator(".file-viewer-header");
@@ -1509,6 +1618,7 @@ try {
   await page.locator(".work-row-detail .chat-tool-io pre").getByRole("button", { name: "shots/report.html", exact: true }).first().tap();
   const report = page.getByRole("dialog", { name: "report.html", exact: true });
   const frame = page.frameLocator(".file-viewer-page");
+  // the page is drawn without its scripts first: the frame allows none, and the line above it offers them
   await report.locator(".file-viewer-page").waitFor();
   assert.equal(await report.locator(".file-viewer-page").getAttribute("sandbox"), "", "a page's scripts do not run by themselves");
   assert.equal(await report.locator(".file-viewer-scripts").innerText().then((text) => text.replace(/\s+/g, " ").trim()), "Scripts in this page are off. Run scripts");
@@ -1516,6 +1626,7 @@ try {
   await frame.getByText("script ran", { exact: true }).waitFor();
   await frame.getByText("network blocked", { exact: true }).waitFor();
   await frame.getByText("no storage", { exact: true }).waitFor();
+  // a picture beside the page is put into it, so it draws though the page may ask this server for nothing
   await frame.getByText("picture drawn", { exact: true }).waitFor();
   assert.equal(await report.locator(".file-viewer-page").getAttribute("sandbox"), "allow-scripts");
   assert.equal(await report.getByRole("button", { name: "Show source", exact: true }).count(), 0, "HTML uses only Page | Source");
@@ -1549,6 +1660,7 @@ try {
     await contentsLink.tap();
     await contents.getByRole("button", { name: "Run scripts", exact: true }).click();
     await frame.getByText("contents ran", { exact: true }).waitFor();
+    // the sheet is still rising when the page shows: a click aimed into the frame meanwhile lands beside the anchor
     await sheetsSettled(page);
     const opened = await page.evaluate(() => history.length);
     await frame.locator("#toc").click();
@@ -1578,6 +1690,10 @@ try {
   console.log("PASS A file whose body is refused shows an error, not the error's JSON");
   assert.deepEqual(errors, []);
 
+  // a rendered page's recording too large to put into it plays and seeks from the address its render
+  // gave out, each request opening the file again and checking it is still the one that render saw; a
+  // lapsed or revoked address plays no more, and closing the viewer lets go of every descriptor, each
+  // once (server/file-view.ts)
   const live = new Set<number>();
   let closedTwice = 0;
   let allClosed: (() => void) | null = null;
@@ -1642,9 +1758,11 @@ try {
     }));
     assert.equal(Math.round(seeked), 900, "the recording seeks");
     assert.equal(await loads("again"), "loaded", "its address answers again");
+    // lapsed: past its lifetime the address is dropped, and the page's next ask is refused
     assert.equal(pageMediaResponse(first.slice(first.lastIndexOf("/") + 1), null, null, Date.now() + PAGE_MEDIA_LIFETIME_MS + 1), null);
     assert.equal(await loads("lapsed"), "error", "a lapsed address is refused");
     await closePage();
+    // revoked: a new render gives a new address, which plays until its client signs out
     const second = await openPage();
     assert.notEqual(second, first, "a new render gives a new address");
     forgetPageMedia({ client: "127.0.0.1" });
@@ -1897,8 +2015,13 @@ try {
   await browser?.close();
   reportServer.stop(true);
   server?.stop();
-  if (otherWorkspace) await workspaceClose(otherWorkspace);
-  if (sideWorkspace) await workspaceClose(sideWorkspace);
-  if (workspace) await workspaceClose(workspace);
+  // each one closes even when another's close fails: a stand-in ends only when its pane closes
+  const closed = await Promise.allSettled([otherWorkspace, sideWorkspace, workspace].flatMap((id) => id ? [workspaceClose(id)] : []));
   rmSync(root, { recursive: true, force: true });
+  const failed = closed.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+  // not thrown: a throw here would replace the failure that brought the run to this cleanup
+  if (failed.length > 0) {
+    console.error(new AggregateError(failed, "workspace cleanup failed"));
+    process.exitCode = 1;
+  }
 }

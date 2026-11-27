@@ -1,5 +1,7 @@
+import { layoutScroll } from "../lib/layoutScroll.ts";
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { createPortal, flushSync } from "react-dom";
+import { legacyEditText } from "../../shared/edit-output.ts";
 import {
   ArrowDown, BookOpen, Check, ChevronDown, ChevronRight, Circle, CircleAlert, CircleCheck, CircleDot, CircleQuestionMark, CircleSlash, CircleX, Copy, Hourglass, Layers, SquareTerminal, Target,
   type LucideProps,
@@ -30,6 +32,7 @@ import { useWholeOutput as useScopedOutput } from "../lib/useWholeOutput.ts";
 import { turnSkills } from "../lib/skillActivity.ts";
 import { ApiError, pinPaneConversation, unpinPaneConversation } from "../lib/api.ts";
 import { copyText } from "../lib/clipboard.ts";
+import { plainText } from "../lib/plainText.ts";
 import type { GalleryImage } from "../lib/imageViewer.ts";
 import { toolGalleryImage, userGalleryImages } from "../lib/chatImages.ts";
 import { useMachineApi } from "../lib/machineContext.tsx";
@@ -82,10 +85,8 @@ import { commandScreenClosed, sentOutcome, type TerminalPeek } from "../lib/term
 const SCROLL_INPUT_MS = 500;
 // How far the reader's own upward move may leave the end and still follow: only endpoint rounding.
 const READER_ALLOWANCE_PX = 1;
-// How far an upward move without the reader's input may leave the end and still follow: a composer
-// growing a few lines shrinks the view before the correction to the end lands. A scroll that sends
-// no input this page sees (a screen reader's, a Firefox scrollbar's) leaves the end only past it, and
-// only over a transcript that did not shrink under it (onScroll, #2042).
+// Without a reader input event or a known layout correction, an upward scroll must leave
+// this much room below the view before it stops following (screen readers, Firefox scrollbars).
 const LAYOUT_ALLOWANCE_PX = 48;
 const LARGEST_PAGE = 50;
 const ChatPaneContext = createContext<string | null>(null);
@@ -99,7 +100,8 @@ const ImageViewerContext = createContext<(images: GalleryImage[], index: number)
 const ToolPathRootContext = createContext<string | null>(null);
 import type { TypedAnswer } from "../lib/promptAnswer.ts";
 import { polledPrompt, screenWordsToShow } from "../lib/promptText.ts";
-import { CARD_TEXT_PREFIX, paneLifetimes } from "../lib/paneLifetime.ts";
+import { paneLifetimes } from "../lib/paneLifetime.ts";
+import { getMemoryCardText, heldCardTextFor, setCardText } from "../lib/cardText.ts";
 import { composerDraftKey, composerDrafts } from "../lib/composerDraft.ts";
 import type { ConversationSearchMatch } from "../../shared/conversation-search.ts";
 import { pickAhead, pickedTurn, pickSettled } from "../../shared/conversation-search.ts";
@@ -158,46 +160,14 @@ const PROMPT_STALE_READS = 2;
  * the terminal, or asked by the pane's session before, is not drawn again. Another herdr's pane IDs
  * forget it (lib/paneLifetime.ts). */
 const lastPrompts = new Map<string, { machineId: string; session: string | null; prompt: InteractivePrompt }>();
-interface CardText { machineId: string; paneId: string; session: string | null; promptId: string; text: string }
-const cardTexts = new Map<string, CardText>();
-/** The card's text is in the pane's stored state too (`ovis:card-text:<paneStorageId>`, lib/paneLifetime.ts),
- * so a reload draws it in the card again as the composer draws its draft. Like a draft, it is the herdr's
- * the storage names: a replaced herdr's goes to Recover unsent text, and a tab behind another keeps its own
- * in its memory, never over the current herdr's. */
-function storeCardText(key: string, typed: CardText | null): void {
-  try {
-    if (typed === null) paneLifetimes.paneStorage.removeItem(CARD_TEXT_PREFIX + key);
-    else paneLifetimes.paneStorage.setItem(CARD_TEXT_PREFIX + key, JSON.stringify(typed));
-  } catch { /* storage refused: this page's memory keeps it */ }
-}
-function heldCardTextFor(key: string): CardText | undefined {
-  const held = cardTexts.get(key);
-  if (held !== undefined) return held;
-  try {
-    const raw = paneLifetimes.paneStorage.getItem(CARD_TEXT_PREFIX + key);
-    if (raw == null) return undefined;
-    const value: unknown = JSON.parse(raw);
-    if (typeof value !== "object" || value === null) return undefined;
-    const { machineId, paneId, session, promptId, text } = value as Partial<CardText>;
-    if (typeof machineId !== "string" || typeof paneId !== "string" || (session !== null && typeof session !== "string") || typeof promptId !== "string" || typeof text !== "string") return undefined;
-    const typed = { machineId, paneId, session: session ?? null, promptId, text };
-    cardTexts.set(key, typed);
-    return typed;
-  } catch { return undefined; }
-}
 paneLifetimes.onRetire((machineId) => {
   for (const [key, kept] of lastPrompts) if (kept.machineId === machineId) lastPrompts.delete(key);
-  // typed for the herdr that went: recovery offers it (its stored copy went there already), the new
-  // herdr's pane under that ID never gets it, and what the storage holds now is the new herdr's
-  for (const [key, typed] of cardTexts) {
-    if (typed.machineId !== machineId) continue;
-    cardTexts.delete(key);
-    if (typed.text.trim() !== "") paneLifetimes.keep(machineId, typed.paneId, "message", typed.text);
-  }
 });
 const keptPrompt = (kept: { session: string | null; prompt: InteractivePrompt } | undefined, session: string | null): InteractivePrompt | null =>
   kept !== undefined && kept.session === session ? kept.prompt : null;
 const LOAD_OLDER_PX = 400;
+// a kept row with no time to bound the search: at most this many earlier pages are read to find it
+const RESTORE_PAGES = 10;
 
 export interface ChatViewProps {
   presentationKey?: string;
@@ -229,6 +199,10 @@ export interface ChatViewProps {
   onSuggestion?: (paneId: string, suggestion: string | null) => void;
   onRestored?: (paneId: string, restored: string | null) => void;
   promptRefreshKey?: number;
+  approvalReflowRevision?: number;
+  approvalReflowPromptId?: string;
+  refreshingApproval?: boolean;
+  onApprovalReflowRead?: (paneId: string, revision: number) => void;
   pendingAnswer?: { promptId: string; answer: TypedAnswer } | null;
   onPendingAnswerDone?: (paneId: string, promptId?: string) => void;
   promptDock?: HTMLElement | null;
@@ -288,20 +262,13 @@ function conversationState(conversation: ConversationResponse): ChatState {
 }
 
 
-function plainText(markdown: string): string {
-  return markdown
-    .replace(/```[^\n]*\n([\s\S]*?)```/g, "$1")
-    .replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)]+\)/gi, "$1")
-    .replace(/(?:\*\*|__|~~|`)(.*?)(?:\*\*|__|~~|`)/g, "$1")
-    .replace(/^#{1,3}\s+/gm, "")
-    .replace(/^>\s?/gm, "");
-}
-
-function CopyButton({ text, label, className = "icon-button chat-copy", children, onResult }: { text: string; label: string; className?: string; children?: React.ReactNode; onResult: (ok: boolean) => void }) {
+function CopyButton({ text, getText, label, className = "icon-button chat-copy", children, onResult }: { text?: string; getText?: () => string; label: string; className?: string; children?: React.ReactNode; onResult: (ok: boolean) => void }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
   const copy = async (): Promise<void> => {
-    const ok = await copyText(text);
+    // Derive lazily when a getter is supplied (e.g. an answer's plain text): the conversion runs
+    // synchronously inside the click gesture, never while the row renders (TASK-002).
+    const ok = await copyText(getText !== undefined ? getText() : text!);
     setCopied(ok);
     onResult(ok);
     if (ok) window.setTimeout(() => setCopied(false), 1500);
@@ -391,6 +358,9 @@ function PatchView({ patch }: { patch: string }) {
 function ToolInputView({ part }: { part: ToolPartType }) {
   const open = useContext(OpenFileContext);
   const t = useT();
+  if (part.edits?.length) return <div className="chat-tool-io">{part.edits.map((edit, index) => <div key={index}>
+    <ToolFile path={edit.path} /><EditDiff before={edit.before} after={edit.after} />
+  </div>)}</div>;
   if (part.arguments_omitted) return <pre className="chat-tool-io">{t("Arguments omitted (too large)")}</pre>;
   const after = isTodoTool(part.name) ? parseTodoAnswer(part.output) ?? todoSnapshot(part) : null;
   if (after !== null && after.length > 0) return <TodoList items={after} />;
@@ -631,7 +601,12 @@ function WorkRow({ paneId, part, stateKey, state }: { paneId: string; part: Tool
   const { verb, narration } = useMemo(() => workRowLabel({ name: part.name, input: part.input }, summary), [part.name, part.input, summary]);
   const name = toolDisplayName(part.name);
   const renamed = narration || verb !== null || name !== part.name;
-  const output = !attempt && isTodoTool(part.name) && parseTodoAnswer(part.output) !== null ? "" : whole.text ?? part.output;
+  const legacy = useMemo(() => legacyEditText(part.edits), [part.edits]);
+  const raw = whole.text ?? part.output;
+  const clippedEdit = legacy && raw.endsWith("\n… trimmed") && legacy.startsWith(raw.slice(0, -"\n… trimmed".length));
+  const output = raw === legacy || clippedEdit || (!attempt && isTodoTool(part.name) && parseTodoAnswer(part.output) !== null) ? ""
+    : legacy && raw.startsWith(`${legacy}\n`) ? raw.slice(legacy.length + 1) : raw;
+  const canLoad = part.output_ref !== undefined && whole.text === null && (!clippedEdit || (part.output_size ?? 0) > legacy.length + 1);
   const stateWord = state === undefined || part.error ? null
     : state === "ok" ? t("succeeded") : state === "pending" ? t("pending") : state === "error" ? t("failed") : t("outcome not recorded");
   const images = useMemo(() => linePictures([part]), [part]);
@@ -650,9 +625,9 @@ function WorkRow({ paneId, part, stateKey, state }: { paneId: string; part: Tool
       {/* opened, the row shows its pictures larger in its detail */}
       {!open && <LineImages paneId={paneId} images={images} />}
     </div>
-    {open && <div className="work-row-detail">{(verb !== null || name !== part.name) && <p className="work-row-tool">{part.name}</p>}{attempt ? <RawToolInput part={part} /> : <ToolInputView part={part} />}<ToolImages paneId={paneId} part={part} />{output.length > 0 && <section className="chat-tool-output"><h4>{t(part.error ? "Error" : "Output")}</h4>{/* each whole output folds on its own, whatever the preview or an earlier one was: another element, another key */}
-      <ToolOutputText key={whole.text !== null ? `whole:${part.output_ref ?? ""}` : "preview"} stateKey={`${stateKey}:${whole.text !== null ? `whole:${part.output_ref ?? ""}` : "output"}`} output={output} whole={whole.text !== null} />
-      {part.output_ref !== undefined && whole.text === null && <button type="button" className="btn btn-ghost chat-tool-more" disabled={whole.state === "loading"} onClick={whole.load}>
+    {open && <div className="work-row-detail">{(verb !== null || name !== part.name) && <p className="work-row-tool">{part.name}</p>}{attempt ? <RawToolInput part={part} /> : <ToolInputView part={part} />}<ToolImages paneId={paneId} part={part} />{(output.length > 0 || (clippedEdit && canLoad)) && <section className="chat-tool-output"><h4>{t(part.error ? "Error" : "Output")}</h4>{/* each whole output folds on its own, whatever the preview or an earlier one was: another element, another key */}
+      {output.length > 0 && <ToolOutputText key={whole.text !== null ? `whole:${part.output_ref ?? ""}` : "preview"} stateKey={`${stateKey}:${whole.text !== null ? `whole:${part.output_ref ?? ""}` : "output"}`} output={output} whole={whole.text !== null} />}
+      {canLoad && <button type="button" className="btn btn-ghost chat-tool-more" disabled={whole.state === "loading"} onClick={whole.load}>
         {t(whole.state === "loading" ? "Loading the whole output…" : whole.state === "failed" ? "Couldn't load the whole output — retry" : "Show the whole output ({size} characters)", { size: formatTokens(part.output_size ?? 0) })}
       </button>}</section>}</div>}
   </div>;
@@ -1110,6 +1085,8 @@ export const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, sh
     </section>;
   }
   const notice = turn.parts.find((part): part is Extract<ConversationPart, { kind: "notice" }> => part.kind === "notice");
+  // a stop (Esc): a quiet line where the turn stopped, as Claude Code's own terminal draws it
+  if (notice?.source === "stopped") return <p className="chat-goal-wait chat-stopped"><span>{t("Stopped|chat")}{time !== null && <> · {time}</>}</span></p>;
   if (notice !== undefined) {
     return <ChatDetails memoryKey="notice" className="chat-compact chat-notice">
       <summary><span className="chat-notice-label">{noticeLabel(t, notice)}</span>{time !== null && <> · {time}</>}</summary>
@@ -1182,7 +1159,7 @@ export const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, sh
     {answerText.length > 0 && <div className="chat-turn-meta chat-agent-meta">
       {/* a mouse reads one copy glyph and the words "Plain text"; touch reads the two formats */}
       <CopyButton className="chat-meta-btn" text={answerText} label={t("Copy as markdown")} onResult={copied}><span className="chat-meta-fmt">MD</span></CopyButton>
-      <CopyButton className="chat-meta-btn chat-meta-plain" text={plainText(answerText)} label={t("Copy as plain text")} onResult={copied}><span className="chat-meta-fmt">TXT</span><span className="chat-meta-word">{t("Plain text")}</span></CopyButton>
+      <CopyButton className="chat-meta-btn chat-meta-plain" getText={() => plainText(answerText)} label={t("Copy as plain text")} onResult={copied}><span className="chat-meta-fmt">TXT</span><span className="chat-meta-word">{t("Plain text")}</span></CopyButton>
       {time}
     </div>}
     {copyError}
@@ -1262,7 +1239,7 @@ function TerminalSnapshot({ text }: { text: string }) {
     if (pinned !== null || !followOnRelease.current) return;
     followOnRelease.current = false;
     const view = section.current?.closest<HTMLElement>(".chat-view");
-    if (view) view.scrollTop = view.scrollHeight;
+    if (view) layoutScroll(view, () => { view.scrollTop = view.scrollHeight; });
   }, [pinned]);
   return <section ref={section} className="chat-terminal-snapshot" aria-label={t("Terminal")} data-newer-read={shown !== text ? "" : undefined}>
     <div className="chat-terminal-snapshot-head"><span><SquareTerminal aria-hidden="true" />{t("Terminal")}</span>
@@ -1309,7 +1286,7 @@ function TerminalFallback({ paneId, visible, explained = false }: { paneId: stri
   </details>;
 }
 
-export const ChatView = memo(function ChatView({ paneId, presentationKey, finishEpoch, finishId, active = true, visible: paneVisible = true, pageScroll, refreshKey, invalidationKey = 0, onConversationWatch, conversationPushes = false, onTerminalOutput, sentKey = 0, unsentKey = 0, pendingRows = NO_ROWS, localSend, navigation, connected, ended, agent, agentStatus, agentSession = null, onMetadata, onRead, greeted = false, onPrompt, onSuggestion, onRestored, promptRefreshKey = 0, pendingAnswer = null, onPendingAnswerDone, promptDock = null, onPromptAnswered, title = null, onOpenTerminal, covered = false, peek = null, onCommandScreenClosed, onOutcomes, interactive = false, watching = false, quotable = false, cwd = null, promptContext = null, searchRequest = 0 }: ChatViewProps) {
+export const ChatView = memo(function ChatView({ paneId, presentationKey, finishEpoch, finishId, active = true, visible: paneVisible = true, pageScroll, refreshKey, invalidationKey = 0, onConversationWatch, conversationPushes = false, onTerminalOutput, sentKey = 0, unsentKey = 0, pendingRows = NO_ROWS, localSend, navigation, connected, ended, agent, agentStatus, agentSession = null, onMetadata, onRead, greeted = false, onPrompt, onSuggestion, onRestored, promptRefreshKey = 0, approvalReflowRevision = 0, approvalReflowPromptId, refreshingApproval = false, onApprovalReflowRead, pendingAnswer = null, onPendingAnswerDone, promptDock = null, onPromptAnswered, title = null, onOpenTerminal, covered = false, peek = null, onCommandScreenClosed, onOutcomes, interactive = false, watching = false, quotable = false, cwd = null, promptContext = null, searchRequest = 0 }: ChatViewProps) {
   const t = useT();
   const { fetchPaneConversation, peekPaneConversation, fetchPanePromptState, fetchPaneTranscript } = useMachineApi();
   const { settings } = useSettings();
@@ -1390,8 +1367,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       return;
     }
     const typed = { machineId, paneId, session: sessionRef.current, promptId, text };
-    cardTexts.set(key, typed);
-    storeCardText(key, typed);
+    setCardText(key, typed);
   };
   const promptOccurrence = useRef<{ of: InteractivePrompt | null; count: number }>({ of: null, count: 0 });
   if (prompt === null) promptOccurrence.current.of = null;
@@ -1406,6 +1382,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   onRestoredRef.current = onRestored;
   const [restored, setRestored] = useState<string | null>(null);
   const [outcomes, setOutcomes] = useState<CommandOutcome[]>([]);
+  const [outcomesRead, setOutcomesRead] = useState(false);
   const outcomesNow = useRef(outcomes);
   outcomesNow.current = outcomes;
   const [historyMove, setHistoryMove] = useState<HistoryMove & { history: string | undefined } | null>(null);
@@ -1426,23 +1403,35 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const timeline = useRef<LegendListRef>(null);
   const ChatTimeline = useChatTimeline();
   const stickToBottom = useRef(true);
+  const restoring = useRef<ChatPosition | null>(null);
+  const restorePages = useRef(0);
   const manualLayout = useRef(false);
   const selecting = useRef(false);
   const pagingAway = useRef(false);
   const openedAway = useRef(false);
   const lastScrollTop = useRef(0);
-  const placedAt = useRef<number | null>(null);
-  const lastRowOffset = useRef<{ key: string; offset: number } | null>(null);
-  const lastScrollHeight = useRef(0);
-  const lastClientHeight = useRef(0);
-  const scrollInputAt = useRef(-Infinity);
+  const lastScrollGeometry = useRef<{ readonly node: HTMLDivElement; readonly height: number; readonly viewport: number } | null>(null);
+  const scrollUpInputAt = useRef(-Infinity);
+  const scrollDownInputAt = useRef(-Infinity);
+  const scrollbarInputAt = useRef(-Infinity);
+  const markScrollInput = useCallback((direction: -1 | 1): void => {
+    restoring.current = null;
+    const now = performance.now();
+    scrollUpInputAt.current = direction < 0 ? now : -Infinity;
+    scrollDownInputAt.current = direction > 0 ? now : -Infinity;
+    scrollbarInputAt.current = -Infinity;
+  }, []);
+  const scrollGesture = useCallback((direction: -1 | 1): void => {
+    markScrollInput(direction);
+    if (direction < 0) dropPendingListScroll(timeline.current);
+  }, [markScrollInput]);
   const pointerDragAt = useRef(-Infinity);
   const scrollInputRead = useRef(-Infinity);
   // A primary press on the transcript's scrollbar, while held: where it went down, and whether the
   // transcript moved up since. No pointermove comes while its thumb is dragged.
   const scrollbarPress = useRef<{ y: number; movedUp: boolean } | null>(null);
   const onScrollRef = useRef<() => void>(() => undefined);
-  const followed = useCallback((top: number) => { lastScrollTop.current = top; placedAt.current = top; }, []);
+  const followed = useCallback((top: number) => { lastScrollTop.current = top; }, []);
   const signature = useRef("");
   const [older, setOlder] = useState<ConversationTurn[]>([]);
   const olderCount = useRef(0);
@@ -1458,7 +1447,6 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const [historyId, setHistoryId] = useState<string | undefined>(undefined);
   const shownPane = useRef(paneId);
   const prependAnchor = useRef<{ key: string; offset: number } | null>(null);
-  const restoring = useRef<ChatPosition | null>(null);
   const revealing = useRef<{ match: ConversationSearchMatch; done: (result: RevealResult) => void } | null>(null);
   const [revealTick, setRevealTick] = useState(0);
   const newestFailed = useRef(false);
@@ -1528,9 +1516,13 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   useLayoutEffect(() => {
     shownPane.current = paneId;
     stopRestore.current?.();
-    restoring.current = readChatPosition(paneStorageId(machineId, paneId)) ?? null;
+    const saved = readChatPosition(paneStorageId(machineId, paneId));
+    restoring.current = saved?.atEnd === false ? saved : null;
+    restorePages.current = 0;
     history.current = undefined; setHistoryId(undefined); enteredMoves.current = null; shownAt.current = Date.now();
-    pagingAway.current = false; stickToBottom.current = true; lastRowOffset.current = null; lastScrollHeight.current = 0; signature.current = ""; setState(EMPTY_STATE); setNewMessages(false); setAway(false); setLoaded(false); setError(null); setErrorStatus(null); setFailures(0); setPrompt(agentStatus === "blocked" ? keptPrompt(lastPrompts.get(paneStorageId(machineId, paneId)), agentSession) : null); setAbandoned(null); setRestored(null); setOutcomes([]); setScreenRead(false);
+    pagingAway.current = restoring.current !== null;
+    stickToBottom.current = !pagingAway.current;
+    signature.current = ""; setState(EMPTY_STATE); setNewMessages(false); setAway(pagingAway.current); setLoaded(false); setError(null); setErrorStatus(null); setFailures(0); setPrompt(agentStatus === "blocked" ? keptPrompt(lastPrompts.get(paneStorageId(machineId, paneId)), agentSession) : null); setAbandoned(null); setRestored(null); setOutcomes([]); setOutcomesRead(false); setScreenRead(false);
     dropOlder();
     lastAnswer.current = null;
     setSentOver(null);
@@ -1653,6 +1645,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
             const storageId = paneStorageId(machineId, paneId);
             const kept = readChatPosition(storageId);
             if (kept !== undefined && kept.historyId === (history.current ?? null)) rememberChatPosition(storageId, { ...kept, historyId: conversation.history_id ?? null });
+            if (restoring.current !== null && restoring.current.historyId === history.current) restoring.current = { ...restoring.current, historyId: conversation.history_id ?? null };
           }
           else {
             if (history.current !== undefined) {
@@ -1666,7 +1659,15 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           }
           generation = olderGeneration.current;
           history.current = conversation.history_id; setHistoryId(conversation.history_id);
-          if (!continued) { pagingAway.current = false; stickToBottom.current = true; lastRowOffset.current = null; lastScrollHeight.current = 0; setNewMessages(false); setAway(false); }
+          if (!continued) {
+            pagingAway.current = conversation.source !== "scrollback" && restoring.current?.historyId === (conversation.history_id ?? null);
+            stickToBottom.current = !pagingAway.current;
+            setNewMessages(false); setAway(pagingAway.current);
+          }
+        }
+        if (conversation.source === "scrollback" && restoring.current !== null) {
+          // a pane that shows no transcript now has no row to come back to: it follows its end
+          restoring.current = null; pagingAway.current = false; stickToBottom.current = true; setAway(false);
         }
         if (conversation === lastAnswer.current) { setStale(false); setError(null); setErrorStatus(null); setFailures(0); setReadPresentation(proved ? readKey : undefined); return; }
         const previous = lastAnswer.current;
@@ -1779,13 +1780,16 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           setPollKey((key) => key + 1); return;
         }
         if (page.source === "scrollback" || page.cursor === undefined) { setOlderCursor(undefined); setOlderState("idle"); return; }
+        if (page.cursor === before) { setOlderState("failed"); return; }
         const first = heldFrom.current === null;
         heldFrom.current ??= before;
-        const top = node.getBoundingClientRect().top;
-        const anchor = [...node.querySelectorAll<HTMLElement>("[data-chat-row]")]
-          .filter((row) => row.getBoundingClientRect().bottom > top)
-          .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0];
-        if (anchor?.dataset.chatRow) prependAnchor.current = { key: anchor.dataset.chatRow, offset: anchor.getBoundingClientRect().top - top };
+        if (restoring.current === null) {
+          const top = node.getBoundingClientRect().top;
+          const anchor = [...node.querySelectorAll<HTMLElement>("[data-chat-row]")]
+            .filter((row) => row.getBoundingClientRect().bottom > top)
+            .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0];
+          if (anchor?.dataset.chatRow) prependAnchor.current = { key: anchor.dataset.chatRow, offset: anchor.getBoundingClientRect().top - top };
+        }
         slots.current = prependChatRowSlots(slots.current, page.turns.length);
         olderCount.current += page.turns.length;
         setOlder((turns) => [...page.turns, ...turns]);
@@ -1817,13 +1821,15 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (anchor === null) return;
     prependAnchor.current = null;
     const index = slots.current.rows.findIndex((row) => row.key === anchor.key);
-    if (index >= 0) void timeline.current?.scrollToIndex({ index, viewPosition: 0, viewOffset: anchor.offset, animated: false });
+    if (index >= 0) void timeline.current?.scrollToIndex({ index, viewPosition: 0, viewOffset: anchor.offset, animated: false, layoutScroll: true });
   }, [older]);
 
   // Prompts belong to the visible screen, not the native transcript: a Codex directory-trust
   // menu can appear while idle without any file mutation. Keep their independent 2s poll.
   const [promptStale, setPromptStale] = useState(false);
   const failedPromptReads = useRef(0);
+  const [readApprovalReflow, setReadApprovalReflow] = useState(0);
+  const readApprovalReflowRef = useRef(0);
   const promptGone = ended || agent === null;
   const pollPrompt = connected && !promptGone;
   const blocked = agentStatus === "blocked";
@@ -1831,37 +1837,54 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const promptKey = paneStorageId(machineId, paneId);
     // (the same question asked by another session is another question: its card does not get the text)
     const keepCardText = (shown: string | null, session: string | null): void => {
-      const typed = cardTexts.get(promptKey);
+      const typed = getMemoryCardText(promptKey);
       if (typed === undefined || (typed.promptId === shown && typed.session === session)) return;
-      cardTexts.delete(promptKey);
-      storeCardText(promptKey, null);
+      setCardText(promptKey, null);
       if (typed.text.trim() !== "") composerDrafts.restorePending(composerDraftKey(promptKey), typed.text);
     };
     if (promptGone) { lastPrompts.delete(promptKey); keepCardText(null, null); setPrompt(null); }
     if (!pollPrompt) { setPromptStale(false); failedPromptReads.current = 0; setRestored(null); onSuggestionRef.current?.(paneId, null); onRestoredRef.current?.(paneId, null); return; }
     if (!visible) return;
+    const controller = new AbortController();
     let cancelled = false;
     let timer = 0;
     let quickReads = blocked ? BLOCKED_PROMPT_READS : 0;
+    const needsReflowRead = () => approvalReflowRevision !== 0 && readApprovalReflowRef.current !== approvalReflowRevision;
+    let reflowRetries = needsReflowRead() ? BLOCKED_PROMPT_READS : 0;
+    const finishReflowRead = () => {
+      if (!needsReflowRead()) return;
+      readApprovalReflowRef.current = approvalReflowRevision;
+      setReadApprovalReflow(approvalReflowRevision);
+    };
     const readPrompt = async (): Promise<void> => {
       const sent = sentKeyRef.current;
       const session = sessionRef.current;
       const lifetime = paneLifetimes.generation(machineId);
       let quick = false;
       try {
-        const next = await fetchPanePromptState(paneId);
+        const next = await fetchPanePromptState(paneId, controller.signal);
         if (!cancelled) {
           failedPromptReads.current = 0;
           setPromptStale(false);
           // a read begun under a herdr that has gone since draws no card and keeps nothing for the new one
           if (paneLifetimes.generation(machineId) === lifetime) {
+            // The old card, a blank frame and a fallback menu can all precede Claude's redraw.
+            // Bound the wait so a resize that doesn't change the ID still lets the user answer.
+            if (needsReflowRead() && reflowRetries > 0
+              && (next.prompt === null || next.prompt.fallback === true || next.prompt.id === approvalReflowPromptId)) {
+              reflowRetries -= 1;
+              quick = true;
+              return;
+            }
             keepCardText(next.prompt?.id ?? null, session);
             setPrompt((current) => polledPrompt(current, next.prompt));
             if (next.prompt === null) lastPrompts.delete(promptKey); else lastPrompts.set(promptKey, { machineId, session, prompt: next.prompt });
+            finishReflowRead();
           }
           if (next.prompt === null && quickReads > 0) { quickReads -= 1; quick = true; } else quickReads = 0;
           setAnsweredPrompt(null);
           setOutcomes((current) => JSON.stringify(current) === JSON.stringify(next.outcomes) ? current : next.outcomes);
+          setOutcomesRead(true);
           enteredMoves.current ??= new Set(next.outcomes.filter((outcome) => isSessionChange(outcome)
             && Date.parse(outcome.created_at) < shownAt.current).map((outcome) => outcome.id));
           onOutcomesRef.current?.(paneId, next.outcomes.map((outcome) => outcome.id));
@@ -1876,17 +1899,36 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       // a read that failed (a network error, a server hiccup) says nothing about the screen: the card,
       // the suggestion and the restored send stay as they are until the next read answers. Reads that
       // keep failing let the card say so (#1335): answering stays safe, the server re-reads first
-      catch { if (!cancelled) { failedPromptReads.current += 1; if (failedPromptReads.current >= PROMPT_STALE_READS) setPromptStale(true); } }
+      catch {
+        if (!cancelled) {
+          setOutcomesRead(true);
+          failedPromptReads.current += 1;
+          if (failedPromptReads.current >= PROMPT_STALE_READS) {
+            setPromptStale(true);
+            // Restore the normal stale-card path: the answer still checks the live prompt.
+            finishReflowRead();
+          }
+        }
+      }
       finally { if (!cancelled) timer = window.setTimeout(() => void readPrompt(), quick ? BLOCKED_PROMPT_READ_MS : PROMPT_POLL_MS); }
     };
-    void readPrompt();
-    return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [pollPrompt, promptGone, paneId, machineId, promptPollKey, promptRefreshKey, fetchPanePromptState, visible, blocked]);
+    // The geometry frame can precede the PTY resize and Claude's redraw. Coalesce resize bursts
+    // before reading again; the answer endpoint still checks against the live screen.
+    if (needsReflowRead()) {
+      timer = window.setTimeout(() => void readPrompt(), BLOCKED_PROMPT_READ_MS);
+    } else void readPrompt();
+    return () => { cancelled = true; controller.abort(); window.clearTimeout(timer); };
+  }, [pollPrompt, promptGone, paneId, machineId, promptPollKey, promptRefreshKey, approvalReflowRevision, approvalReflowPromptId, fetchPanePromptState, visible, blocked]);
 
   useEffect(() => {
     onPrompt?.(paneId, prompt, prompt !== null && answeredPrompt === prompt.id);
     return () => onPrompt?.(paneId, null);
   }, [onPrompt, paneId, prompt, answeredPrompt]);
+
+  // The effect above gives the composer its new card before it can send an answer again.
+  useEffect(() => {
+    if (readApprovalReflow !== 0 && readApprovalReflow === approvalReflowRevision) onApprovalReflowRead?.(paneId, readApprovalReflow);
+  }, [approvalReflowRevision, onApprovalReflowRead, paneId, readApprovalReflow]);
 
   useEffect(() => () => { onSuggestionRef.current?.(paneId, null); onRestoredRef.current?.(paneId, null); }, [paneId]);
 
@@ -1899,6 +1941,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const measureEnd = (): void => {
     const node = scroller.current;
     if (!node) return;
+    if (!visible || (restoring.current !== null && state.source === "conversation")) { setEndPresentation(null); return; }
     // Every measurement path must respect a pending restore/minimap/page navigation.
     // Only genuinely short content cannot be moved away from its end, unless the reader opened
     // something in it: the records that make it longer must not pull that away (readOpened).
@@ -1919,8 +1962,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (atEnd) {
       if (!stickToBottom.current) manualLayout.current = false;
       pagingAway.current = false; stickToBottom.current = true;
-      if (Math.max(scrollInputAt.current, pointerDragAt.current) <= scrollInputRead.current) {
-        scrollInputAt.current = -Infinity; pointerDragAt.current = -Infinity;
+      if (Math.max(scrollUpInputAt.current, scrollDownInputAt.current, pointerDragAt.current, scrollbarInputAt.current) <= scrollInputRead.current) {
+        scrollUpInputAt.current = -Infinity; scrollDownInputAt.current = -Infinity; pointerDragAt.current = -Infinity;
+        scrollbarInputAt.current = -Infinity;
       }
       setAway(false); setNewMessages(false);
     }
@@ -1931,8 +1975,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   useLayoutEffect(() => {
     const node = scroller.current;
     if (node !== null && stickToBottom.current && !selecting.current) {
-      if (state.source === "conversation") timeline.current?.scrollToEnd({ animated: false });
-      else node.scrollTop = node.scrollHeight;
+      if (state.source === "conversation") timeline.current?.scrollToEnd({ animated: false, layoutScroll: true });
+      else layoutScroll(node, () => { node.scrollTop = node.scrollHeight; });
     }
   }, [state, prompt, agentStatus, connected, ended]);
 
@@ -1956,12 +2000,11 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         if (next !== lane) { lane = next; follow = true; }
       }
       if (follow && stickToBottom.current && !selecting.current) {
-        // The list's scrollToEnd lands a frame later (see dropPendingListScroll), so the frame
-        // painted now would show the conversation's last lines under a composer that grew a line.
-        // This callback runs before that paint: put the view at the end here, then let the list
-        // settle its own scroll state.
-        node.scrollTop = node.scrollHeight;
-        if (timeline.current) timeline.current.scrollToEnd({ animated: false });
+        // Put the view at the DOM end before paint. A deferred scroll to the list's measured
+        // end could undo that write if some of the transcript is still unmeasured.
+        dropPendingListScroll(timeline.current);
+        layoutScroll(node, () => { node.scrollTop = node.scrollHeight; });
+        followed(node.scrollTop);
       }
       measureEndRef.current();
     });
@@ -1970,7 +2013,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const content = new MutationObserver(() => measureEndRef.current());
     content.observe(node, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["style"] });
     return () => { observer.disconnect(); content.disconnect(); };
-  }, [state.source, ChatTimeline]);
+  }, [state.source, ChatTimeline, followed]);
   // One of the app's faces arrived (font-display: swap; a unicode-range chunk on the first Korean
   // answer): the conversation rewraps with no width, size or family string changed, so the
   // observer above takes it for one that only grew taller. A reader at the end stays at the end.
@@ -1978,8 +2021,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   useLayoutEffect(() => {
     const node = scroller.current;
     if (node !== null && stickToBottom.current && !selecting.current) {
-      if (timeline.current) timeline.current.scrollToEnd({ animated: false });
-      else node.scrollTo({ top: node.scrollHeight, behavior: "instant" });
+      if (timeline.current) timeline.current.scrollToEnd({ animated: false, layoutScroll: true });
+      else layoutScroll(node, () => node.scrollTo({ top: node.scrollHeight, behavior: "instant" }));
     }
   }, [faces]);
   useEffect(() => {
@@ -1991,27 +2034,27 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (!visible) return;
     let pointer: { x: number; y: number } | null = null;
     let touchY: number | undefined;
-    // A wheel or a drag up the transcript moves the view before its scroll event comes: a follow the
-    // list queued before it (a long chat's first open) would land first and take the reader back to
-    // the end (#2594). A key may not scroll the transcript at all (focus on a button), so it drops
-    // nothing: its scroll event decides.
-    const readingUp = (): void => {
-      scrollInputAt.current = performance.now();
-      dropPendingListScroll(timeline.current);
-    };
+    // Upward wheel and touch gestures cancel queued following before the scroll event (#2594).
+    // Paging keys record their direction; the scroll event confirms they moved the transcript.
     const mark = (event: Event): void => {
       const node = scroller.current;
       if (event instanceof KeyboardEvent) {
         if (!active || event.isComposing || event.keyCode === 229) return;
-        if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable]")) return;
-        if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey)) scrollInputAt.current = performance.now();
+        if (event.target instanceof Element) {
+          if (event.target.closest("input, textarea, select, [contenteditable]")) return;
+          // Space activates the focused control, including a retry of the pending restore.
+          if (event.key === " " && event.target.closest("button, summary, [role='button'], [role='tab']")) return;
+        }
+        if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey)) markScrollInput(-1);
+        else if (event.key === "ArrowDown" || event.key === "PageDown" || event.key === "End" || event.key === " ") markScrollInput(1);
         return;
       }
       if (event instanceof PointerEvent && (event.type === "pointerup" || event.type === "pointercancel")) {
         const press = scrollbarPress.current;
+        if (event.type === "pointercancel") scrollbarInputAt.current = -Infinity;
         const dragged = press !== null && event.type === "pointerup" && event.clientY !== press.y;
         if (node !== null && node.scrollTop < lastScrollTop.current) {
-          scrollInputAt.current = Math.max(scrollInputAt.current, dragged ? performance.now() : pointerDragAt.current);
+          scrollUpInputAt.current = Math.max(scrollUpInputAt.current, dragged ? performance.now() : pointerDragAt.current);
           if (dragged) navigated();
         } else if (node !== null && dragged && press.movedUp && node.scrollHeight - node.clientHeight - node.scrollTop > READER_ALLOWANCE_PX) {
           navigated();
@@ -2025,31 +2068,35 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       }
       // a press released where this page saw no pointerup has no button down by the next pointer
       // event, and a new press is a new gesture
-      if (event instanceof PointerEvent && (event.type === "pointerdown" || event.buttons === 0)) scrollbarPress.current = null;
+      if (event instanceof PointerEvent && (event.type === "pointerdown" || (event.buttons === 0 && scrollbarPress.current !== null))) {
+        scrollbarPress.current = null;
+        scrollbarInputAt.current = -Infinity;
+      }
       if (node === null || !(event.target instanceof Node) || !node.contains(event.target)) return;
-      if (event instanceof WheelEvent && event.deltaY < 0) readingUp();
+      if (event instanceof WheelEvent && event.deltaY !== 0) scrollGesture(event.deltaY < 0 ? -1 : 1);
       if (event instanceof PointerEvent) {
         if (event.type === "pointerdown") {
           pointer = { x: event.clientX, y: event.clientY };
           pointerDragAt.current = -Infinity;
-          // A scrollbar press may scroll before the browser delivers any pointermove.
-          if (event.target === node && event.clientX >= node.getBoundingClientRect().left + node.clientWidth) {
-            pointerDragAt.current = performance.now();
-            scrollbarPress.current = event.button === 0 ? { y: event.clientY, movedUp: false } : null;
+          // Track and arrow presses can scroll in either direction, even after pointerup.
+          if (event.button === 0 && event.target === node && event.clientX >= node.getBoundingClientRect().left + node.clientWidth) {
+            restoring.current = null;
+            scrollbarInputAt.current = performance.now();
+            scrollbarPress.current = { y: event.clientY, movedUp: false };
           }
         }
         else if (pointer !== null && event.buttons !== 0 && (event.clientX !== pointer.x || event.clientY !== pointer.y)) pointerDragAt.current = performance.now();
       }
       if ((event.type === "touchstart" || event.type === "touchmove") && event instanceof TouchEvent) {
         const y = event.touches[0]?.clientY;
-        if (event.type === "touchmove" && y !== undefined && touchY !== undefined && y > touchY) readingUp();
+        if (event.type === "touchmove" && y !== undefined && touchY !== undefined && y !== touchY) scrollGesture(y > touchY ? -1 : 1);
         touchY = y;
       }
     };
     const options = { capture: true, passive: true } as const;
     const types = ["wheel", "touchstart", "touchmove", "pointerdown", "pointermove", "pointerup", "pointercancel", "keydown"] as const;
     for (const type of types) document.addEventListener(type, mark, options);
-    const letGo = (): void => { scrollbarPress.current = null; };
+    const letGo = (): void => { scrollbarPress.current = null; scrollbarInputAt.current = -Infinity; };
     const hidden = (): void => { if (document.visibilityState === "hidden") letGo(); };
     window.addEventListener("blur", letGo);
     document.addEventListener("visibilitychange", hidden);
@@ -2059,69 +2106,59 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       document.removeEventListener("visibilitychange", hidden);
       letGo();
     };
-  }, [active, visible]);
-  const onScroll = (): void => {
+  }, [active, visible, markScrollInput, scrollGesture]);
+  const onScroll = (listCorrected = false): void => {
     const node = scroller.current;
-    if (node === null) return;
+    if (node === null || !visible || (restoring.current !== null && state.source === "conversation")) return;
     const distanceFromBottom = node.scrollHeight - node.clientHeight - node.scrollTop;
-    const scrollingDown = node.scrollTop > lastScrollTop.current;
-    const scrollingUp = node.scrollTop < lastScrollTop.current;
-    const up = lastScrollTop.current - node.scrollTop;
+    const movedBy = node.scrollTop - lastScrollTop.current;
+    const scrollingDown = movedBy > 0;
+    const scrollingUp = movedBy < 0;
     lastScrollTop.current = node.scrollTop;
-    if (scrollingUp) {
-      if (scrollbarPress.current !== null) scrollbarPress.current.movedUp = true;
-      scrollInputAt.current = Math.max(scrollInputAt.current, pointerDragAt.current);
-      scrollInputRead.current = scrollInputAt.current;
+    const geometry = lastScrollGeometry.current;
+    lastScrollGeometry.current = { node, height: node.scrollHeight, viewport: node.clientHeight };
+    const shrank = geometry?.node === node
+      && (geometry.height - node.scrollHeight > READER_ALLOWANCE_PX || node.clientHeight < geometry.viewport);
+    if (scrollingUp && scrollbarPress.current !== null) scrollbarPress.current.movedUp = true;
+    const directionalInput = scrollingDown ? scrollDownInputAt : scrollUpInputAt;
+    if (scrollingUp || scrollingDown) {
+      directionalInput.current = Math.max(directionalInput.current, pointerDragAt.current, scrollbarInputAt.current);
+      scrollbarInputAt.current = -Infinity;
+      scrollInputRead.current = Math.max(scrollInputRead.current, directionalInput.current);
     }
-    const byReader = performance.now() - scrollInputAt.current < SCROLL_INPUT_MS;
+    const byReader = performance.now() - directionalInput.current < SCROLL_INPUT_MS;
     const allowance = byReader ? READER_ALLOWANCE_PX : LAYOUT_ALLOWANCE_PX;
-    if (scrollingUp && byReader) navigated();
-    const lastKey = timelineRows.at(-1)?.key;
-    const lastRow = lastKey === undefined ? null : node.querySelector<HTMLElement>(`[data-chat-row="${CSS.escape(lastKey)}"]`);
-    const row = lastKey === undefined || lastRow === null ? null
-      : { key: lastKey, offset: lastRow.getBoundingClientRect().top - node.getBoundingClientRect().top + node.scrollTop };
-    const rowBefore = lastRowOffset.current;
-    lastRowOffset.current = row;
-    const shrunkAbove = row !== null && rowBefore?.key === row.key ? Math.max(0, rowBefore.offset - row.offset) : 0;
-    // the transcript got shorter: at its end the browser moves the view up with it
-    const shrunk = Math.max(0, lastScrollHeight.current - node.scrollHeight);
-    lastScrollHeight.current = node.scrollHeight;
-    const viewShrank = node.clientHeight < lastClientHeight.current;
-    lastClientHeight.current = node.clientHeight;
-    // Without input, a move up while the transcript got shorter is the layout's, however far: the
-    // list holding the rows and the browser keeping the view inside the transcript can both move it
-    // for one shrink.
-    const shrankUnderView = shrunkAbove > READER_ALLOWANCE_PX || shrunk > READER_ALLOWANCE_PX;
-    // Under a selection in progress the hold keeps the view where it puts it (ChatTimeline), and the
-    // browser can trim it a pixel from there as the transcript shrinks under it: without the
-    // reader's input, landing a pixel above where the chat put it is the layout's.
-    const below = placedAt.current === null ? null : placedAt.current - node.scrollTop;
-    const trimmed = selecting.current && below !== null && below > 0 && below <= READER_ALLOWANCE_PX && up <= READER_ALLOWANCE_PX;
-    const heldInPlace = scrollingUp && !byReader && (shrankUnderView || viewShrank || distanceFromBottom <= LAYOUT_ALLOWANCE_PX || trimmed);
-    const leftEnd = scrollingUp && !heldInPlace;
+    // On first open the list can scroll down to the old end before the transcript grows.
+    const stoppedShort = scrollingDown && timeline.current !== null;
+    // A held selection can be trimmed by a pixel even when the rounded transcript height is unchanged.
+    const selectionTrimmed = selecting.current && -movedBy <= READER_ALLOWANCE_PX;
+    const layoutMoved = !byReader && (listCorrected || stoppedShort || (scrollingUp && (shrank || selectionTrimmed)));
+    const readingUp = scrollingUp && (byReader || (!layoutMoved && distanceFromBottom > LAYOUT_ALLOWANCE_PX));
+    if (readingUp) navigated();
     if ((!pagingAway.current || scrollingDown) && distanceFromBottom <= 1) pagingAway.current = false;
-    if (leftEnd && distanceFromBottom > allowance && stickToBottom.current) {
+    if (readingUp && distanceFromBottom > allowance && stickToBottom.current && !pagingAway.current) {
       pagingAway.current = true;
       dropPendingListScroll(timeline.current);
     }
-    // The list's own move down can stop short too: the browser holds it at the transcript's height
-    // before the list has grown it, and once grown no row changes to follow (a long chat's first
-    // open).
-    const stoppedShort = scrollingDown && !byReader && timeline.current !== null && !listEndPadded(node);
-    if ((heldInPlace || stoppedShort) && stickToBottom.current && !pagingAway.current && !manualLayout.current && !selecting.current && distanceFromBottom > LAYOUT_ALLOWANCE_PX) {
-      // the list's scroll lands a frame later: the frame painted next is at the end already
-      if (stoppedShort) node.scrollTop = node.scrollHeight;
-      if (timeline.current) timeline.current.scrollToEnd({ animated: false });
-      else node.scrollTo({ top: node.scrollHeight, behavior: "instant" });
+    // A held scrollbar thumb may not send any pointermove: let pointerup resolve that gesture
+    // before correcting the view.
+    if (layoutMoved && stickToBottom.current && !pagingAway.current && !manualLayout.current && !selecting.current
+      && scrollbarPress.current === null && distanceFromBottom > READER_ALLOWANCE_PX) {
+      if (!listEndPadded(node)) {
+        layoutScroll(node, () => { node.scrollTop = node.scrollHeight; });
+        followed(node.scrollTop);
+      }
+      else if (scrollingUp && distanceFromBottom > LAYOUT_ALLOWANCE_PX) timeline.current?.scrollToEnd({ animated: false, layoutScroll: true });
     }
-    if (!stickToBottom.current || leftEnd || pagingAway.current) {
+    if (!stickToBottom.current || readingUp || pagingAway.current) {
       const following = !pagingAway.current && distanceFromBottom <= allowance;
       if (following && !stickToBottom.current) manualLayout.current = false;
       stickToBottom.current = following;
     }
     setAway(!stickToBottom.current);
     measureEnd();
-    if (loaded && restoring.current === null && state.source === "conversation") rememberPlace(node);
+    if (stopRestore.current !== null) return;
+    if (loaded && state.source === "conversation") rememberPlace(node);
     if (node.scrollTop < LOAD_OLDER_PX && olderState === "idle") void loadOlder();
   };
   onScrollRef.current = onScroll;
@@ -2132,22 +2169,24 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       });
       return;
     }
-    const top = node.getBoundingClientRect().top;
+    const { top, bottom } = node.getBoundingClientRect();
     let first: { key: string; top: number } | null = null;
     for (const row of node.querySelectorAll<HTMLElement>("[data-chat-row]")) {
       const rect = row.getBoundingClientRect();
-      if (rect.bottom > top && (first === null || rect.top < first.top)) first = { key: row.dataset.chatRow ?? "", top: rect.top };
+      if (rect.bottom > top && rect.top < bottom && (first === null || rect.top < first.top)) first = { key: row.dataset.chatRow ?? "", top: rect.top };
     }
     const row = first === null ? undefined : timelineRows.find((candidate) => candidate.key === first.key);
+    if (row === undefined || first === null) return;
     rememberChatPosition(paneStorageId(machineId, paneId), {
       historyId: history.current ?? null,
-      turn: row === undefined ? "" : row.turn === null ? `outcome|${row.outcome.id}` : chatTurnAnchor(row.turn),
-      offset: first === null ? 0 : first.top - top,
-      atEnd: row === undefined,
+      turn: row.turn === null ? `outcome|${row.outcome.id}` : chatTurnAnchor(row.turn),
+      offset: first.top - top,
+      atEnd: false,
     });
   };
   const readOpened = useCallback((): void => {
     navigationRef.current += 1;
+    restoring.current = null;
     if (!stickToBottom.current) return;
     pagingAway.current = true; stickToBottom.current = false; openedAway.current = true;
     dropPendingListScroll(timeline.current);
@@ -2155,20 +2194,22 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (node !== null) node.scrollTo({ top: node.scrollTop, behavior: "instant" });
     setAway(true);
   }, [navigationRef]);
-  const scrollToBottom = (): void => {
+  const scrollToBottom = (source: "reader" | "layout"): void => {
     const node = scroller.current;
     if (node === null) return;
+    restoring.current = null;
+    stopRestore.current?.();
     pagingAway.current = false; stickToBottom.current = true;
     manualLayout.current = false;
     rememberPlace(node);
-    if (timeline.current) timeline.current.scrollToEnd({ animated: false });
+    if (timeline.current) timeline.current.scrollToEnd({ animated: false, layoutScroll: source === "layout" });
     else node.scrollTo({ top: node.scrollHeight, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
     measureEnd();
   };
   useLayoutEffect(() => {
     if (localSend === undefined || seenLocalSend.current === localSend.key) return;
     seenLocalSend.current = localSend.key;
-    if (localSend.navigationGeneration === navigationRef.current) scrollToBottom();
+    if (localSend.navigationGeneration === navigationRef.current) scrollToBottom("layout");
   }, [localSend]);
   useEffect(() => { if (!paneVisible) navigationRef.current += 1; }, [paneVisible, navigationRef]);
   useEffect(() => () => { navigationRef.current += 1; }, [navigationRef]);
@@ -2184,21 +2225,18 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       const distance = pageScrollDistance(node.clientHeight, rowHeight, PAGE_OVERLAP_ROWS);
       const before = node.scrollTop;
       node.scrollTo({ top: before + direction * distance, behavior: "instant" });
-      if (direction < 0 && node.scrollTop !== before) navigated();
-      // A physical end may still report a positive subpixel gap, even with no movement.
-      if (direction > 0 && node.scrollHeight - node.clientHeight - node.scrollTop <= 1) {
-        pagingAway.current = false;
-        onScroll();
-        return;
-      }
-      if (node.scrollTop === before) { if (direction < 0) onScroll(); return; }
-      lastScrollTop.current = before;
-      if (direction < 0) {
+      const moved = node.scrollTop !== before;
+      const gap = node.scrollHeight - node.clientHeight - node.scrollTop;
+      // PageUp may already be clamped at the start, with the scroll that got there still undelivered.
+      const pageUp = direction < 0 && (moved || (stickToBottom.current && gap > READER_ALLOWANCE_PX));
+      if (moved || (pageUp && before < lastScrollTop.current)) markScrollInput(direction);
+      if (pageUp) {
         pagingAway.current = true;
-        // A minimap tick and a restored place scroll through the list, which drops a follow
-        // still waiting there; this native page scroll does not, so drop it here, or it lands after.
         dropPendingListScroll(timeline.current);
       }
+      if (moved) lastScrollTop.current = before;
+      // A physical end may still report a positive subpixel gap, even with no movement.
+      if (direction > 0 && gap <= READER_ALLOWANCE_PX) pagingAway.current = false;
       onScroll();
     };
     pageScroll.current = scroll;
@@ -2290,12 +2328,13 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       return { ...row, beforeUser: row.turn?.role === "assistant" && next !== undefined && (next.turn === null || next.turn.role === "user") };
     });
   }, [withOutcomes, shownTurns, rowSlots]);
-  const placeRow = (list: LegendListRef, node: HTMLDivElement, index: number, offset: number): void => {
+  const placeRow = (list: LegendListRef, node: HTMLDivElement, position: { readonly index: number; readonly offset: number; readonly layoutScroll?: boolean }): void => {
+    const { index, offset, layoutScroll } = position;
     stopRestore.current?.();
     const key = timelineRows[index]!.key;
     pagingAway.current = true; stickToBottom.current = false; setAway(true);
     navigated();
-    void list.scrollToIndex({ index, viewPosition: 0, viewOffset: offset, animated: false });
+    void list.scrollToIndex({ index, viewPosition: 0, viewOffset: offset, animated: false, layoutScroll });
     const olderAt = olderCount.current;
     let frame = 0, frames = 0, stable = 0;
     const stop = (): void => {
@@ -2309,8 +2348,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       const row = node.querySelector<HTMLElement>(`[data-chat-row="${CSS.escape(key)}"]`);
       if (row !== null) {
         const delta = row.getBoundingClientRect().top - node.getBoundingClientRect().top - offset;
-        if (Math.abs(delta) > 1) { stable = 0; void list.scrollToOffset({ offset: node.scrollTop + delta, animated: false }); }
-        else if (++stable >= 2) { stop(); return; }
+        if (Math.abs(delta) > 1) { stable = 0; void list.scrollToOffset({ offset: node.scrollTop + delta, animated: false, layoutScroll: true }); }
+        else if (++stable >= 2) { stop(); rememberPlace(node); return; }
       }
       frame = requestAnimationFrame(settle);
     };
@@ -2319,15 +2358,54 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     stopRestore.current = stop;
     frame = requestAnimationFrame(settle);
   };
+  // A retained pane can scroll during its hidden layout. Only a visible chat supplies a place.
+  useLayoutEffect(() => {
+    if (visible) return;
+    stopRestore.current?.();
+    // a restore on its way keeps going; a chat at its end (reached without a scroll too, when the whole
+    // transcript came to fit) or with no transcript has no place to come back to
+    if (restoring.current !== null || stickToBottom.current || state.source !== "conversation") return;
+    const saved = readChatPosition(paneStorageId(machineId, paneId));
+    restoring.current = saved?.atEnd === false ? saved : null;
+    restorePages.current = 0;
+  }, [visible, machineId, paneId]);
+  // Where a kept row missing from the loaded rows can still come from: outcome rows come with the prompt
+  // state, turns with earlier pages, until the loaded turns reach back past the row's time.
+  const restoreReach = (saved: ChatPosition): "wait" | "older" | "gone" => {
+    const outcome = saved.turn.startsWith("outcome|");
+    if (outcome && (pollPrompt || !connected) && !outcomesRead) return "wait";
+    const at = outcome ? outcomes.find((item) => `outcome|${item.id}` === saved.turn)?.created_at : saved.turn.split("|")[1];
+    if ((outcome && at === undefined) || typeof olderCursor !== "string") return "gone";
+    const time = Date.parse(at ?? "");
+    const first = Date.parse(shownTurns.find((turn) => turn.ts !== undefined)?.ts ?? "");
+    if (Number.isFinite(time)) return Number.isFinite(first) && first < time ? "gone" : "older";
+    return restorePages.current < RESTORE_PAGES ? "older" : "gone";
+  };
   useLayoutEffect(() => {
     const saved = restoring.current;
-    if (saved === null || !loaded || error !== null || state.source !== "conversation") return;
-    restoring.current = null;
-    const index = chatRestoreIndex(saved, history.current ?? null, timelineRows.map((row) => row.turn === null ? `outcome|${row.outcome.id}` : chatTurnAnchor(row.turn)));
+    if (saved === null || !visible || !loaded || error !== null || state.source !== "conversation") return;
     const list = timeline.current, node = scroller.current;
-    if (index === null || list === null || node === null) return;
-    placeRow(list, node, index, saved.offset);
-  }, [loaded, error, state.source, timelineRows]);
+    if (node === null || list === null) return;
+    if (saved.historyId !== (history.current ?? null)) {
+      scrollToBottom("layout");
+      return;
+    }
+    const index = chatRestoreIndex(saved, history.current ?? null, timelineRows.map((row) => row.turn === null ? `outcome|${row.outcome.id}` : chatTurnAnchor(row.turn)));
+    if (index !== null) {
+      restoring.current = null;
+      placeRow(list, node, { index, offset: saved.offset, layoutScroll: true });
+    } else if (restoreReach(saved) !== "gone") {
+      // Remounts initially have only the newest page. Keep the place until its row is loaded.
+      dropPendingListScroll(list);
+      pagingAway.current = true; stickToBottom.current = false; setAway(true);
+    } else scrollToBottom("layout");
+  }, [visible, loaded, error, state.source, timelineRows, olderCursor, outcomesRead, pollPrompt, connected]);
+  useEffect(() => {
+    const saved = restoring.current;
+    if (!visible || !loaded || error !== null || state.source !== "conversation" || saved === null || olderState !== "idle" || restoreReach(saved) !== "older") return;
+    restorePages.current += 1;
+    void loadOlder();
+  }, [visible, loaded, error, state.source, olderState, olderCursor, loadOlder, outcomes, outcomesRead, pollPrompt, connected]);
   useLayoutEffect(() => {
     const pick = revealing.current;
     const list = timeline.current, node = scroller.current;
@@ -2336,7 +2414,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (list === null || node === null) { pick.done("failed"); return; }
     const index = pickedTurn(timelineRows.map((row) => row.turn), pick.match);
     if (typeof index !== "number") { pick.done("missing"); return; }
-    placeRow(list, node, index, 0);
+    placeRow(list, node, { index, offset: 0 });
     const { turn, key } = timelineRows[index]!;
     const folded = turn !== null ? foldedRequestsMatch(turn, pick.match.match) : null;
     if (folded !== null) {
@@ -2352,12 +2430,14 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         if (timeline.current !== list) return;
         const row = node.querySelector<HTMLElement>(`[data-chat-row="${CSS.escape(key)}"]`);
         const at = row === null ? null : matchTop(row, words);
-        if (at !== null && at > node.clientHeight / 3) placeRow(list, node, index, Math.round(node.clientHeight / 3 - at));
+        if (at !== null && at > node.clientHeight / 3) placeRow(list, node, { index, offset: Math.round(node.clientHeight / 3 - at) });
       });
     }
     pick.done("shown");
   }, [timelineRows, revealTick]);
   const revealTurn = async (match: ConversationSearchMatch): Promise<RevealResult> => {
+    restoring.current = null;
+    stopRestore.current?.();
     const reveal = (): Promise<RevealResult> => new Promise((done) => {
       revealing.current?.done("missing");
       revealing.current = { match, done };
@@ -2391,13 +2471,15 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   }, [shownTurns, timelineRows]);
   const rowKeys = useMemo(() => timelineRows.map((row) => row.key), [timelineRows]);
   const jumpToTurn = useCallback((index: number) => {
+    restoring.current = null;
+    stopRestore.current?.();
     pagingAway.current = true; stickToBottom.current = false; setAway(true);
     navigationRef.current += 1;
     void timeline.current?.scrollToIndex({ index, animated: false, viewPosition: 0 });
   }, [navigationRef]);
   const minimapWheel = useCallback((deltaY: number) => {
-    if (deltaY < 0) { scrollInputAt.current = performance.now(); dropPendingListScroll(timeline.current); }
-  }, []);
+    if (deltaY !== 0) scrollGesture(deltaY < 0 ? -1 : 1);
+  }, [scrollGesture]);
   const focusPrompt = useCallback(() => {
     const card = promptDock?.querySelector<HTMLElement>(".prompt-card");
     if (!card) return;
@@ -2461,8 +2543,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const sentWaiting = useWaitingSends(machineId, paneId, connected);
   const turnsRead = loaded && error === null && !stale && state.source === "conversation";
   useLayoutEffect(() => {
-    settleWaitingSends(waitKey, state.turns, Date.now(), turnsRead);
-  }, [sentWaiting, state.turns, turnsRead, waitKey]);
+    settleWaitingSends(waitKey, state.turns, Date.now(), turnsRead, state.conversationSource);
+  }, [sentWaiting, state.conversationSource, state.turns, turnsRead, waitKey]);
   const waitWords = useAnnouncedText(!loaded && error === null ? t("Loading conversation…") : waiting ? t("Waiting for the PC…") : null);
   const retryRead = useCallback(() => { setFailures(0); conversationRefresh.refresh(); }, [conversationRefresh]);
   const footer = <>
@@ -2489,8 +2571,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       {loaded && empty && error === null && prompt === null && activity === "idle" && !(greeted && blank) && sentWaiting.length === 0 && <div className="chat-empty"><AgentMark agent={agent ?? "agent"} size={32} /><p>{t("No conversation yet — say something below")}</p></div>}
       {ended && <p className="chat-endcap">{t("terminal ended")}</p>}
   </>;
-  const jump = newMessages ? <button type="button" className="btn chat-new-messages chat-virtual-jump" onClick={scrollToBottom}>{t("New messages")} <ArrowDown aria-hidden="true" /></button>
-    : away && <button type="button" className="btn chat-new-messages chat-virtual-jump is-icon" aria-label={t("Jump to latest")} title={t("Jump to latest")} onClick={scrollToBottom}><ArrowDown aria-hidden="true" /></button>;
+  const jump = newMessages ? <button type="button" className="btn chat-new-messages chat-virtual-jump" onClick={() => scrollToBottom("reader")}>{t("New messages")} <ArrowDown aria-hidden="true" /></button>
+    : away && <button type="button" className="btn chat-new-messages chat-virtual-jump is-icon" aria-label={t("Jump to latest")} title={t("Jump to latest")} onClick={() => scrollToBottom("reader")}><ArrowDown aria-hidden="true" /></button>;
   return <ChatMarkdownImages paneId={paneId} cwd={cwd} connected={connected} onOpen={openMarkdownImage}><FileNameLookupContext.Provider value={fileNames}><ChatPaneContext.Provider value={paneId}><ChatHistoryContext.Provider value={historyId ?? ""}><ImageViewerContext.Provider value={openViewer}><ToolPathRootContext.Provider value={toolPathRoot(cwd)}>
     {/* a reader away from the end has not seen the answer a finish lands there: presented only at the end */}
     <div className="chat-frame" data-pane-content={active && visible && !covered && connected && !ended && loaded && error === null && !away && !newMessages
@@ -2522,7 +2604,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       onFollowed={followed}
       onOpen={readOpened}
       renderRow={renderTurn}
-    /> : <div className="chat-view" ref={scroller} onScroll={onScroll} role="log" aria-live="polite" aria-label={logLabel}>
+    /> : <div className="chat-view" ref={scroller} onScroll={() => onScroll()} role="log" aria-live="polite" aria-label={logLabel}>
       <div className="chat-transcript" data-conversation-source={state.conversationSource}>
         <ChatFallback paneId={paneId} agent={agent} visible={visible} messages={state.messages} scrollback={state.scrollback} outcomes={outcomes} restored={restored} actions={outcomeActions} skills={skillMatcher}
           unavailable={state.hint !== undefined ? undefined : state.unavailable} onOpenTerminal={openTerminal} />
@@ -2539,7 +2621,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       input card, where PaneTerminal keeps its place. The prompt itself (its poll, the answer, the
       re-read) stays here. */}
   {prompt !== null && promptDock !== null && createPortal(
-    <PromptCard key={promptOccurrence.current.count} paneId={paneId} prompt={prompt} context={promptContext} watching={watching} answered={answeredPrompt === prompt.id} stale={promptStale} screenWords={screenWordsToShow(prompt, state.source === "conversation" ? state.turns : [])} typedAnswer={pendingAnswer?.promptId === prompt.id ? pendingAnswer.answer : null} onTypedAnswerDone={() => onPendingAnswerDone?.(paneId, prompt.id)} onPromptChanged={() => setPromptPollKey((key) => key + 1)} initialText={heldCardText?.promptId === prompt.id && heldCardText.session === agentSession ? heldCardText.text : undefined} onTextChange={(text, cardGone) => trackCardText(prompt.id, cardLifetime, text, cardGone)} onAnswered={(toMessageBox) => {
+    <PromptCard key={promptOccurrence.current.count} paneId={paneId} prompt={prompt} context={promptContext} watching={watching} answered={answeredPrompt === prompt.id} refreshing={refreshingApproval} stale={promptStale} screenWords={screenWordsToShow(prompt, state.source === "conversation" ? state.turns : [])} typedAnswer={pendingAnswer?.promptId === prompt.id ? pendingAnswer.answer : null} onTypedAnswerDone={() => onPendingAnswerDone?.(paneId, prompt.id)} onPromptChanged={() => setPromptPollKey((key) => key + 1)} initialText={heldCardText?.promptId === prompt.id && heldCardText.session === agentSession ? heldCardText.text : undefined} onTextChange={(text, cardGone) => trackCardText(prompt.id, cardLifetime, text, cardGone)} onAnswered={(toMessageBox) => {
       onPromptAnswered?.(toMessageBox);
       setAnsweredPrompt(prompt.id);
       lastPrompts.delete(paneStorageId(machineId, paneId));

@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { describeProgress } from "../src/lib/bridgeProgress.ts";
-import type { SetupJob } from "../shared/machines.ts";
+import type { SetupJob, SetupStepCode } from "../shared/machines.ts";
 import type { PanePromptResponse } from "../shared/protocol.ts";
 import { paneNotificationTag } from "../shared/notify-policy.ts";
 import { BRIDGE_PROTOCOL, machinePath, paneStorageId, REMOTE_BUNDLE_VERSION } from "../shared/machines.ts";
@@ -11,11 +11,11 @@ import { canSendSecret, sameOrigin, shellQuote, validateTarget } from "./machine
 import { handleMachineRequest, MACHINE_PROXY_PATH } from "./machine-api.ts";
 import type { BridgeDescriptor } from "./bridge.ts";
 import { createServer } from "./index.ts";
-import { MachineActionRequired, MachineManager } from "./machines.ts";
+import { MachineActionRequired, MachineManager, setupStepWords } from "./machines.ts";
 import { detectHost, psQuote, UNSUPPORTED_HOST, windowsBridgeFiles, windowsHost } from "./remote-host.ts";
 import { decodeClixml, SshConnection } from "./ssh.ts";
 import { terminalAttachSupported } from "./herdr/client.ts";
-import { attachableIdentity, isRealNode, sidecarAvailable } from "./pty/sidecar.ts";
+import { attachableIdentity } from "./pty/sidecar.ts";
 import { CompletionTracker } from "./completion.ts";
 import type { PushService } from "./push.ts";
 import { recentSshOutput } from "./ssh.ts";
@@ -176,6 +176,7 @@ describe("machine boundaries", () => {
     const error = spyOn(console, "error").mockImplementation((...args: unknown[]) => { logged.push(args.join(" ")); });
     const watch = () => handleMachineRequest(new Request("http://localhost/api/machines/fixture/pane/prompt?pane_id=pane-1"), manager, undefined, undefined, true);
     try {
+      // exactly at its 1 MiB the answer is still parsed, and loses the plan file and the previews
       serve = () => new Response(padded(answer, MiB).stream);
       const kept = await watch();
       expect(kept.status).toBe(200);
@@ -184,6 +185,7 @@ describe("machine boundaries", () => {
       expect(card.prompt).not.toHaveProperty("plan_file");
       expect(card.outcomes?.[0]).not.toHaveProperty("preview");
       expect(card.outcomes?.[0]).not.toHaveProperty("result_text");
+      // one byte past it, and the answer is refused rather than passed on unredacted
       const over = padded(answer, MiB + 32 * MiB);
       serve = () => new Response(over.stream);
       const refused = await watch();
@@ -191,6 +193,7 @@ describe("machine boundaries", () => {
       const tooLarge = await refused.text();
       expect(JSON.parse(tooLarge).error.code).toBe("remote_response_too_large");
       await within(over.cancelled);
+      // an answer that is not JSON cannot be redacted, so none of it is passed on
       serve = () => new Response(`{"prompt":{"plan_file":"fixture-plan-secret","body":"fixture-plan-text"`);
       const malformed = await watch();
       expect(malformed.status).toBe(502);
@@ -231,6 +234,30 @@ describe("machine boundaries", () => {
       expect((await ask()).status).toBe(503);
       expect(hits).toBe(before);
     } finally { error.mockRestore(); endpoint.mockRestore(); bridge.stop(true); manager.stop(); rmSync(dir, { recursive: true, force: true }); }
+  });
+  it("tries again on a PC's read only while it waits to reconnect: a connected PC is read, a removed one left alone", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-proxy-retry-"));
+    const manager = new MachineManager(dir, {} as PushService, new CompletionTracker(null), async () => { throw new Error("fixture offline"); });
+    const bridge = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ ok: true }) });
+    const reconnect = spyOn(manager as unknown as { reconnect(runtime: unknown): Promise<void> }, "reconnect").mockResolvedValue(undefined);
+    const on = manager["runtime"]({ id: "on", name: "on", kind: "relay", enabled: true, state: "connected", snapshot: null, error: null });
+    on.endpoint = { url: `http://127.0.0.1:${bridge.port}`, token: "fixture-token" };
+    const off = manager["runtime"]({ id: "off", name: "off", kind: "relay", enabled: true, state: "disconnected", snapshot: null, error: "The PC did not answer through the relay" });
+    manager["machines"].set("on", on);
+    manager["machines"].set("off", off);
+    manager["retryLater"](off);
+    const ask = (id: string) => handleMachineRequest(new Request(`http://localhost/api/machines/${id}/session`), manager);
+    try {
+      const generation = on.generation;
+      expect((await ask("on")).status).toBe(200);
+      expect([on.machine.state, on.generation, on.endpoint !== undefined]).toEqual(["connected", generation, true]);
+      expect((await ask("gone")).status).toBe(503);
+      expect(reconnect).not.toHaveBeenCalled();
+      expect((await ask("off")).status).toBe(503);
+      expect(reconnect.mock.calls.map(([runtime]) => runtime)).toEqual([off]);
+      expect((await ask("off")).status).toBe(503);
+      expect(reconnect).toHaveBeenCalledTimes(1);
+    } finally { reconnect.mockRestore(); bridge.stop(true); manager.stop(); rmSync(dir, { recursive: true, force: true }); }
   });
   it("keeps file streaming and 304 bodyless", async () => {
     const dir = mkdtempSync(join(tmpdir(), "herdr-proxy-stream-"));
@@ -286,6 +313,7 @@ describe("machine boundaries", () => {
         expect((await refused.json() as { error: { code: string } }).error.code, path).toBe("read_only");
       }
       expect(hits).toEqual([]);
+      // the block is the access check's own rule (index.ts `mutating`): what it lets a watcher send goes through
       expect((await ask("GET", "pane/read?pane_id=p", true)).status).toBe(200);
       expect((await ask("OPTIONS", "pane/input", true)).status).not.toBe(403);
       expect(hits).toEqual(["GET /api/pane/read", "OPTIONS /api/pane/input"]);
@@ -323,6 +351,7 @@ describe("machine boundaries", () => {
     for (const destination of ["-oProxyCommand=touch /tmp/no", "host;id", "x\ny", "$(id)", "user@host -p 22", ""]) expect(() => validateTarget({ destination })).toThrow();
     expect(validateTarget({ destination: "user@[::1]", port: 2222, session: "work" }).port).toBe(2222);
     for (const session of ["../default", "$(id)", "work;id"]) expect(() => validateTarget({ destination: "host", session })).toThrow();
+    // a key path on the web server, which may be a Windows one; never an option or a relative path
     for (const identity_file of ["/home/u/.ssh/id", "~/.ssh/id", "~\\.ssh\\id", "C:\\Users\\u\\.ssh\\id", "D:/keys/id"]) expect(validateTarget({ destination: "host", identity_file }).identity_file).toBe(identity_file);
     for (const identity_file of ["-oProxyCommand=x", "keys/id", "C:id", "~user/id", "/k\nx"]) expect(() => validateTarget({ destination: "host", identity_file })).toThrow();
     const value = "a'$(touch /tmp/no)";
@@ -339,6 +368,9 @@ describe("machine boundaries", () => {
     for (const path of ["pane/focus", "pane/move", "layout/ratio", "tab/move"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
     for (const path of ["pane/focus/extra", "pane/move/extra", "layout/apply", "layout/ratio/extra", "layout/../auth", "agent/commands/extra", "agent/start"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(false);
     for (const path of ["agent/rename", "agent/commands"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
+    for (const path of ["pane/turn/cancel", "pane/turn/release", "pane/turn/cancel-children"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
+    expect(MACHINE_PROXY_PATH.test("pane/turn/cancel-children/extra")).toBe(false);
+    // the install catalog a PC answers for itself, and an install or sign-in started on that PC; nothing else under it
     for (const path of ["agent-catalog", "agent-catalog/install", "agent-catalog/sign-in"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
     for (const path of ["agent-catalog/uninstall", "agent-catalog/install/extra", "agent-catalog/../auth"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(false);
     expect(MACHINE_PROXY_PATH.test("system")).toBe(true);
@@ -379,6 +411,28 @@ describe("setup job labels", () => {
     expect(manager.job("job")?.phase).toBe("installing");
     expect(manager.job("job")?.step).not.toBe("Review the changes on this PC");
     expect(job.public.step).toBe("Installing on this PC…");
+  });
+
+  it("gives each step a code with its parameters beside its English, which the dialog words in the app's language", () => {
+    const { manager, job, drive } = fixture("approval", "Review the changes on this PC");
+    const coded = drive as unknown as { stage(job: TestJob, phase: SetupJob["phase"], step: SetupStepCode | string): void };
+    manager.action("job", { action: "approve" });
+    expect(manager.job("job")?.step_code).toEqual({ code: "installing" });
+    coded.stage(job, "installing", { code: "install_bundle", platform: "linux-x64" });
+    expect([manager.job("job")?.step, manager.job("job")?.step_code]).toEqual(["Installing verified linux-x64 bundle…", { code: "install_bundle", platform: "linux-x64" }]);
+    coded.stage(job, "starting", { code: "own_update_running", target: "0.5.10", stage: "dependencies" });
+    expect([manager.job("job")?.step, manager.job("job")?.step_code]).toEqual(["This PC's own Ovis is updating itself to v0.5.10: installing dependencies…", { code: "own_update_running", target: "0.5.10", stage: "dependencies" }]);
+    coded.stage(job, "starting", "Waiting for Windows sign-in on this PC.");
+    expect([manager.job("job")?.step, manager.job("job")?.step_code]).toEqual(["Waiting for Windows sign-in on this PC.", null]);
+  });
+
+  it("words every step code in English for logs and older apps", () => {
+    const codes: SetupStepCode[] = [{ code: "connecting" }, { code: "fingerprint" }, { code: "authentication" }, { code: "checking" }, { code: "review" }, { code: "installing" },
+      { code: "install_bundle", platform: "linux-x64" }, { code: "install_herdr" }, { code: "register_key" }, { code: "restart_bridge" }, { code: "start_bridge" },
+      { code: "own_update_ask", target: null }, { code: "own_update_running", target: null, stage: "building" }, { code: "own_update_connect" }, { code: "headless" },
+      { code: "connected" }, { code: "failed" }, { code: "timed_out" }, { code: "cancelled" }];
+    for (const code of codes) expect(setupStepWords(code)).toMatch(/^[\x20-\x7e…]+$/);
+    expect(setupStepWords({ code: "own_update_ask", target: "0.5.10" })).toBe("Asking this PC's own Ovis to update itself to v0.5.10…");
   });
 
   it("requires current Windows-login consent for each headless start and rejects duplicate or cancelled requests", () => {
@@ -736,6 +790,8 @@ describe("SSH output during setup", () => {
   });
 });
 
+// ssh's run() is answered in place of a PC (a PATH-swapped fake cannot serve it: spawned runs
+// never see the swapped PATH), so setup() fails inside its own catch — where the action is set.
 describe("a first connect that finds a bridge of another version", () => {
   const socket = "/home/u/.config/herdr/herdr.sock";
   const descriptor = { pid: 4242, port: 29431, token: "a".repeat(64), socket_path: socket, bridge_protocol: 1, bundle_version: "0", managed_remote: true };
@@ -981,31 +1037,6 @@ describe("terminal attach capability", () => {
     expect(attachableIdentity(declared, false, true)).toEqual(declared);
     expect(attachableIdentity(declared, false, false)).toEqual({ ...declared, terminal_attach: false, terminal_mirror: true });
   });
-
-  it("counts the sidecar as runnable only with both node and node-pty", () => {
-    expect(sidecarAvailable({ node: () => true, pty: () => true })).toBe(true);
-    expect(sidecarAvailable({ node: () => false, pty: () => true })).toBe(false);
-    expect(sidecarAvailable({ node: () => true, pty: () => false })).toBe(false);
-  });
-
-  it("takes a node for Node only when it answers in time, is not Bun and is built for this server's architecture", () => {
-    const dir = mkdtempSync(join(tmpdir(), "herdr-sidecar-probe-"));
-    const stand = (name: string, body: string) => {
-      const path = join(dir, name);
-      writeFileSync(path, `#!/bin/sh\n${body}\n`);
-      chmodSync(path, 0o755);
-      return path;
-    };
-    try {
-      expect(isRealNode(stand("node", `echo 22.23.2 ${process.arch}`))).toBe(true);
-      expect(isRealNode(stand("old-node", `echo 16.20.2 ${process.arch}`))).toBe(false);
-      expect(isRealNode(stand("other-arch", `echo 22.23.2 ${process.arch === "x64" ? "arm64" : "x64"}`))).toBe(false);
-      expect(isRealNode(stand("bun-as-node", "echo bun"))).toBe(false);
-      expect(isRealNode(stand("broken", "exit 1"))).toBe(false);
-      expect(isRealNode(join(dir, "absent"))).toBe(false);
-      expect(isRealNode(stand("hung", "exec sleep 30"), process.env, 200)).toBe(false);
-    } finally { rmSync(dir, { recursive: true, force: true }); }
-  });
 });
 
 describe("host detection", () => {
@@ -1249,6 +1280,7 @@ describe("bridge verification failures", () => {
     expect(await told(answering(500, "null"))).toBe(GENERIC(500));
   });
 
+  // #1960: an Ovis older than its loopback relay, with HOST set to another address, answers nothing on the PC's 127.0.0.1
   it("says what to change when nothing answers on the PC's loopback, not the connection's raw error", async () => {
     expect((await unanswered({})).told).toBe("This PC's Ovis does not answer at 127.0.0.1:18472 through SSH. If it runs with HOST set to another address, update it or set HOST=127.0.0.1 there, restart it, then add the PC again.");
     expect((await unanswered({ managed_remote: true })).told).toBe("The bridge on this PC does not answer at 127.0.0.1:18472 through SSH. Reconnect after checking the remote bridge.");
@@ -1262,6 +1294,7 @@ describe("bridge verification failures", () => {
   });
 
   it("says a bridge that stops halfway through its answer timed out", async () => {
+    // the deadline is what is tested: 200 ms here, not 15 s
     const realTimeout = AbortSignal.timeout.bind(AbortSignal);
     const short = spyOn(AbortSignal, "timeout").mockImplementation(() => realTimeout(200));
     const manager = new MachineManager(temp(), {} as PushService, {} as CompletionTracker);

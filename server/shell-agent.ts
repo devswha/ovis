@@ -13,7 +13,7 @@ import { spawn } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { userInfo } from "node:os";
 import { isAbsolute } from "node:path";
-import { herdrRpc } from "./herdr/client.ts";
+import { paneProcessInfo, paneSendKeys, paneSendText } from "./herdr/client.ts";
 import { isDshProcess } from "./dsh.ts";
 import { isGjcProcess } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity } from "./omo.ts";
@@ -25,6 +25,7 @@ import { COMPILED } from "./entries.ts";
 export const SHELL_AGENTS: Record<string, (argv: readonly string[]) => boolean> = {
   omo: isOmoProcess,
   gjc: isGjcProcess,
+  // dsh-tui's host process (node …/@deepseek-harness-tui/dsh-tui/lib/…/host-entry.js), behind its launcher shims
   "dsh-tui": isDshProcess,
 };
 /** The shell-started agents known to start on Windows; the others are not offered there. */
@@ -76,6 +77,10 @@ export function parseLoginPath(output: string): string | null {
   return path === "" ? null : path;
 }
 
+/**
+ * The variables the probe printed as JSON between its markers, those named as a shell variable can
+ * be (an exported bash function's `BASH_FUNC_f%%` is not one); null when there is no such object.
+ */
 export function parseLoginEnv(output: string): Record<string, string> | null {
   const start = output.lastIndexOf(`\n${LOGIN_ENV_START}\n`);
   const end = output.lastIndexOf(`\n${LOGIN_ENV_END}\n`);
@@ -101,6 +106,10 @@ export interface LoginPathProbe {
  */
 export const PATH_PROBE_MARKER = "OVIS_PATH_PROBE";
 
+/**
+ * A shell SIGKILL cannot end (blocked in the kernel, say on a hung home) is answered for `graceMs`
+ * after the kill and reaped when it exits.
+ */
 export function loginPathProbe(options: LoginShellOptions): LoginPathProbe {
   const probe = loginShellProbe(options, LOGIN_PATH_SCRIPT, parseLoginPath, "PATH");
   return async (signal) => {
@@ -109,6 +118,11 @@ export function loginPathProbe(options: LoginShellOptions): LoginPathProbe {
   };
 }
 
+/**
+ * The PATH a pane's shell starts an agent from: that of an interactive login shell (`-l -i -c`), which
+ * also reads what only an interactive shell reads (zsh's .zshrc, where installers and nvm add their
+ * folders), then the plain login shell's folders it does not name.
+ */
 export function agentPathProbe(options: LoginShellOptions & { rereadGapMs?: number }): LoginPathProbe & { reread: () => void; problem: () => string | null } {
   const env = { ...(options.env ?? process.env), [PATH_PROBE_MARKER]: "1" };
   const interactive = loginPathProbe({ ...options, env, interactive: true });
@@ -232,12 +246,15 @@ function loginShellProbe<T>(options: LoginShellOptions, script: string, read: (o
       try { process.kill(-child.pid!, "SIGKILL"); } catch { }
       if (failure !== null) { done({ value: null, reason: failure }); return; }
       if (code !== 0) { done({ value: null, reason: `${shell} -l ended with ${code === null ? exitSignal : `exit ${code}`}` }); return; }
+      // stdout may still hold output at exit: it is read until close, bounded, as a process outside
+      // the group (one the profile moved to a session of its own) may keep the pipe open
       grace = setTimeout(answer, graceMs);
     });
     child.on("close", () => { if (exited && failure === null) answer(); });
   });
 }
 
+/** Only the fixed names of SHELL_AGENTS are looked up, and only absolute executable files are kept. */
 export class ShellAgentLocator {
   readonly #platform: string;
   readonly #servicePath: () => string;
@@ -283,6 +300,8 @@ export class ShellAgentLocator {
     const found = new Map<string, string>();
     const result = missing.length === 0 ? null : await probe(this.#abort.signal).catch((error: unknown): LoginPathResult => ({ path: null, reason: `the login shell probe failed: ${error instanceof Error ? error.message : String(error)}` }));
     if (this.#stopped) return;
+    // only absolute entries: a relative one (`./node_modules/.bin`, common in .zshrc) would make
+    // whatever is in this server's working folder an agent
     const loginPath = result?.path ? result.path.split(":").filter((entry) => isAbsolute(entry)).join(":") || null : null;
     if (loginPath !== null) {
       for (const kind of missing) {
@@ -404,8 +423,7 @@ export function powershellNativeArgs(program: "powershell" | "pwsh", args: reado
   });
 }
 
-interface ProcessInfo { process_info?: { shell_pid?: number; foreground_processes?: { pid: number; argv?: string[]; cwd?: string }[] } }
-const processInfo = (paneId: string) => herdrRpc<ProcessInfo>("pane.process_info", { pane_id: paneId }).catch(() => null);
+const processInfo = (paneId: string) => paneProcessInfo(paneId).catch(() => null);
 
 /**
  * Types the agent's absolute path and args into the pane's shell and resolves once
@@ -414,7 +432,7 @@ const processInfo = (paneId: string) => herdrRpc<ProcessInfo>("pane.process_info
  * `locator` `/api/agents` asked, so the offer and the start agree whatever the pane shell's
  * PATH says.
  */
-export async function startShellAgent(kind: string, paneId: string, args: string[] = [], options: { command?: string; timeoutMs?: number; locator?: ShellAgentLocator } = {}): Promise<number | null> {
+export async function startShellAgent(kind: string, paneId: string, args: string[] = [], options: { command?: string; timeoutMs?: number; locator?: ShellAgentLocator; env?: Record<string, string> } = {}): Promise<number | null> {
   const isProcess = SHELL_AGENTS[kind];
   if (!isProcess) throw new Error(`${kind} is not a shell-started agent`);
   const windows = process.platform === "win32";
@@ -425,20 +443,22 @@ export async function startShellAgent(kind: string, paneId: string, args: string
       if (!executable) throw new Error(`${kind} is not on this server's PATH or its login shell's`);
       command = shellCommandLine("posix", executable, []);
     }
-    await herdrRpc("pane.send_text", { pane_id: paneId, text: `${[command, ...args.map(quote)].join(" ")}\n` });
+    // through env(1), as the herdr-core adapter does: the shell's own `NAME=value` syntax differs between shells
+    const env = options.env ? [shellCommandLine("posix", "/usr/bin/env", Object.entries(options.env).map(([name, value]) => `${name}=${value}`))] : [];
+    await paneSendText(paneId, `${[...env, command, ...args.map(quote)].join(" ")}\n`);
   } else {
     const executable = await (options.locator ?? servicePathOnly).executable(kind);
     if (!executable) throw new Error(`${kind} is not on this server's PATH`);
-    const shell = paneShell((await processInfo(paneId))?.process_info?.foreground_processes?.[0]?.argv?.[0] ?? "powershell.exe");
-    await herdrRpc("pane.send_text", { pane_id: paneId, text: shellCommandLine(shell, executable, args) });
-    await herdrRpc("pane.send_keys", { pane_id: paneId, keys: ["Enter"] });
+    const shell = paneShell((await processInfo(paneId))?.foreground_processes?.[0]?.argv?.[0] ?? "powershell.exe");
+    await paneSendText(paneId, shellCommandLine(shell, executable, args));
+    await paneSendKeys(paneId, ["Enter"]);
   }
   const deadline = Date.now() + (options.timeoutMs ?? 60_000);
   while (Date.now() < deadline) {
     const info = await processInfo(paneId);
-    const started = info?.process_info?.foreground_processes?.find((entry) => kind === "omo" ? omoProcessIdentity(entry, "", userHome()) !== null : isProcess(entry.argv ?? []));
+    const started = info?.foreground_processes?.find((entry) => kind === "omo" ? omoProcessIdentity(entry, "", userHome()) !== null : isProcess(entry.argv ?? []));
     if (started) return started.pid;
-    const shellPid = info?.process_info?.shell_pid;
+    const shellPid = info?.shell_pid;
     if (windows && typeof shellPid === "number" && descendantArgv(await windowsProcessTable(Math.max(500, Math.min(10_000, deadline - Date.now()))), shellPid).some(isProcess)) return null;
     await Bun.sleep(250);
   }

@@ -16,7 +16,8 @@ import { JA } from "../src/lib/i18n.ja.ts";
 import { KO } from "../src/lib/i18n.ko.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
-import { openSettingsPage } from "./settings-page.ts";
+import { openSettingsPage, pressInSettings } from "./settings-page.ts";
+import { serveDemo } from "./demo-server.ts";
 
 type Theme = "light" | "dark";
 type Language = "en" | "ko";
@@ -221,8 +222,18 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
       assert.ok(await noSidewaysScroll(page), `${tag}: Settings fits`);
       await capture(page, width, theme, language, "settings");
       await page.evaluate(() => { window.__push.hold("POST /api/push/subscribe"); window.__push.hold("POST /api/push/test"); });
-      await repair.click();
-      await dialog.getByRole("button", { name: REPAIRING, exact: true }).waitFor();
+      let phase = "the repair press";
+      await (async () => {
+        await pressInSettings(repair);
+        phase = "the wait for the repairing state";
+        await dialog.getByRole("button", { name: REPAIRING, exact: true }).waitFor();
+      })().catch(async (error: Error) => {
+        const state = await page.evaluate(() => ({
+          counts: window.__push.counts,
+          buttons: [...document.querySelectorAll<HTMLButtonElement>(".settings-dialog button, .update-notice button")].map((button) => `${button.textContent?.trim()}${button.disabled ? " (disabled)" : ""}`),
+        })).catch(() => null);
+        throw new Error(`${error.message}; ${phase} failed, and the page showed ${JSON.stringify(state)}`, { cause: error });
+      });
       assert.equal(await dialog.getByRole("button", { name: REPAIRING, exact: true }).isDisabled(), true);
       assert.equal(await notice(page).getByRole("button", { name: REPAIRING, exact: true }).isDisabled(), true, `${tag}: the notice's button waits with Settings'`);
       assert.equal(await dialog.getByRole("button", { name: label("Send test"), exact: true }).isDisabled(), true);
@@ -426,18 +437,7 @@ try {
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
   writeFileSync(index, html.replace(/<script type="module"/, () => `${HOLD_DEMO_TURN}<script src="./demo-transport.js"></script>${RELEASE_TIMERS}${STAND_IN}\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    const prefix = "/herdr-web-ui/demo/app/";
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   try {
     if (EVIDENCE) mkdirSync(EVIDENCE, { recursive: true });
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });

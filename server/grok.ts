@@ -1,13 +1,11 @@
 import { createHash } from "node:crypto";
 import { constants, closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
-import type { ConversationPart, ConversationTurn, ConversationResponse, SkillActivity } from "../shared/protocol.ts";
-import { imageType, inlineImageType } from "./codex-images.ts";
-import { skillDocument } from "./skill-activity.ts";
-import { grokPromptSkill } from "./skill-invocations/grok.ts";
-import { toolSummary } from "./transcript-records.ts";
+import type { ConversationTurn, ConversationResponse } from "../shared/protocol.ts";
+import { imageType } from "./codex-images.ts";
+import { digestOf, projectUpdates, UpdateUnavailable as GrokUnavailable, updatePictures } from "./acp/updates.ts";
 import { openBound } from "./conversation-shared.ts";
-import { trimOutput } from "./tool-output.ts";
+export { GrokUnavailable };
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue => value !== null && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : {};
@@ -16,11 +14,10 @@ const MAX_LINE = 16 * 1024 * 1024;
 const SCAN_BYTES = 32 * 1024 * 1024;
 const MAX_ENTRIES = 100_000;
 export const GROK_TOOL_REF = /^grok:[A-Za-z0-9_-]{43}$/;
-export class GrokUnavailable extends Error {
-  constructor() { super("Grok history cannot be reconstructed"); this.name = "GrokUnavailable"; }
-}
+
 
 export interface GrokEvent { update: RecordValue; session: string; ts: string | null }
+/** Validate the envelope, not a substring that could also occur inside tool output. */
 export function grokEvent(line: string, expectedSession?: string): GrokEvent | null {
   if (!line.trim()) return null;
   let value: RecordValue;
@@ -57,6 +54,7 @@ function apply(index: Index, event: GrokEvent | null, start: number, end: number
       const removed = index.prompts.pop()!;
       for (const id of removed.calls) index.calls.delete(id);
     }
+    // Marker-only rewinds can shorten the sole range without changing its start.
     index.revision = end;
     return;
   }
@@ -64,6 +62,8 @@ function apply(index: Index, event: GrokEvent | null, start: number, end: number
     const number = record(u._meta).promptIndex;
     if (!Number.isSafeInteger(number) || (number as number) < 0) throw new GrokUnavailable();
     if (current && current.index === number) {
+      // Multiple chunks of one prompt precede its answer. Reused indices after an answer
+      // require an explicit rewind; otherwise their boundaries cannot be established.
       if (current.answered) throw new GrokUnavailable();
     } else {
       if (current && (number as number) <= current.index) throw new GrokUnavailable();
@@ -89,6 +89,8 @@ function apply(index: Index, event: GrokEvent | null, start: number, end: number
     if (u?.sessionUpdate === "turn_completed") current.activity = "idle";
     else if (u?.sessionUpdate === "agent_thought_chunk") current.activity = "thinking";
     else if (u && ["agent_message_chunk", "tool_call"].includes(String(u.sessionUpdate))) current.activity = "working";
+    // Background tool updates after completion must not reopen a finished turn.
+    // A retained prompt ends before a rewind marker, not at the following replacement.
     if (current.end === start || current.start === start) current.end = end;
     else if (u && ["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "turn_completed"].includes(String(u.sessionUpdate))) throw new GrokUnavailable();
     if (u && ["agent_message_chunk", "agent_thought_chunk", "tool_call", "turn_completed"].includes(String(u.sessionUpdate))) current.answered = true;
@@ -103,6 +105,10 @@ export interface GrokProjection {
   revision: string;
 }
 
+/** An unfinished catch-up is unavailable,
+ * never a partially validated history. Size,
+ * identity and change all come from the caller's one stat, so an append between two
+ * stats cannot reset a finished scan. */
 export function grokProjection(path: string, stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }): GrokProjection {
   const { size } = stat;
   const identity = `${stat.dev}:${stat.ino}`;
@@ -114,6 +120,8 @@ export function grokProjection(path: string, stat: { dev: number; ino: number; s
   index.size = size; index.changed = changed;
   indexes.delete(path); indexes.set(path, index);
   if (indexes.size > 16) indexes.delete(indexes.keys().next().value!);
+  // Known limitation: one malformed or unreconstructable record keeps this file on the
+  // terminal view until it is replaced or shrinks. Skipping the line could misplace a rewind.
   if (index.failed) throw new GrokUnavailable();
   // the file a page read is bound to, never another a folder swapped in around this open puts there; and,
   // bound or not, the file `stat` saw: another file's bytes never mark this one's index failed
@@ -161,18 +169,6 @@ export function grokProjection(path: string, stat: { dev: number; ino: number; s
   return { segments, promptStarts, revision: index.revision.toString(36), activity: index.prompts.at(-1)?.activity ?? "idle" };
 }
 
-function outputText(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (!Array.isArray(value)) return "";
-  return value.map((item) => {
-    const block = record(item);
-    const content = record(block.content);
-    if (block.type === "content" && content.type === "text" && typeof content.text === "string") return content.text;
-    if (block.type === "diff") return `--- ${typeof block.path === "string" ? block.path : ""}\n${typeof block.oldText === "string" ? block.oldText : ""}\n+++ ${typeof block.path === "string" ? block.path : ""}\n${typeof block.newText === "string" ? block.newText : ""}`;
-    if (block.type === "terminal" && typeof block.terminalId === "string") return JSON.stringify(block);
-    return "";
-  }).filter(Boolean).join("\n");
-}
 
 function outputRef(path: string, id: string): string {
   const index = indexes.get(path);
@@ -181,93 +177,16 @@ function outputRef(path: string, id: string): string {
   return `grok:${hash(JSON.stringify([path, index.identity, index.revision, id, call.revision, call.digest]))}`;
 }
 
-type Tool = Extract<ConversationPart, { kind: "tool" }>;
+type Tool = Extract<ConversationTurn["parts"][number], { kind: "tool" }>;
+/** Pages contain complete prompts. A bounded mid-prompt page without its call seed fails
+ * rather than manufacturing tool metadata or silently dropping native updates. */
 export function parseGrokTranscript(text: string, path?: string, wholeCall?: string): ConversationTurn[] {
-  const turns: ConversationTurn[] = [];
-  let user: ConversationTurn | undefined;
-  let assistant: ConversationTurn | undefined;
-  let prompt: number | undefined;
-  const calls = new Map<string, { fields: RecordValue; part: Tool; diffs: Map<string, RecordValue> }>();
-  const promptSkills = new Map<ConversationTurn, SkillActivity>();
-  const appendText = (turn: ConversationTurn, value: unknown) => {
-    if (typeof value !== "string" || !value) return;
-    const last = turn.parts.at(-1);
-    if (last?.kind === "text") last.text += value; else turn.parts.push({ kind: "text", text: value });
-  };
-  for (const line of text.split("\n")) {
-    const event = grokEvent(line, path ? basename(dirname(path)) : undefined);
-    if (!event) continue;
-    const u = event.update;
-    const meta = record(u._meta);
-    if (u.sessionUpdate === "rewind_marker") throw new GrokUnavailable();
-    if (u.sessionUpdate === "turn_completed") {
-      const last = assistant?.parts.at(-1);
-      if (last?.kind === "text") last.phase = "final_answer";
-      assistant = undefined; continue;
-    }
-    if (u.sessionUpdate === "user_message_chunk") {
-      if (!Number.isSafeInteger(meta.promptIndex)) throw new GrokUnavailable();
-      if (prompt !== meta.promptIndex) {
-        prompt = meta.promptIndex as number;
-        user = { role: "user", ts: event.ts, parts: [] };
-        assistant = undefined; calls.clear(); turns.push(user);
-      }
-      if (meta.hideFromScrollback !== true) {
-        appendText(user!, record(u.content).text);
-        const skill = grokPromptSkill(u.content);
-        if (skill) promptSkills.set(user!, skill);
-      }
-      for (const picture of updatePictures(u)) user!.parts.push({ kind: "image", media_type: picture.mediaType, ref: `grok-image:${digestOf(picture.data)}` });
-      continue;
-    }
-    if (!["agent_message_chunk", "tool_call", "tool_call_update"].includes(String(u.sessionUpdate))) continue;
-    if (prompt === undefined) throw new GrokUnavailable();
-    if (!assistant) { assistant = { role: "assistant", ts: event.ts, parts: [] }; turns.push(assistant); }
-    if (event.ts !== null) assistant.end_ts = event.ts;
-    if (u.sessionUpdate === "agent_message_chunk") { appendText(assistant, record(u.content).text); continue; }
-    const id = u.toolCallId;
-    if (typeof id !== "string") throw new GrokUnavailable();
-    let call = calls.get(id);
-    if (u.sessionUpdate === "tool_call") {
-      if (call) throw new GrokUnavailable();
-      call = { fields: {}, part: { kind: "tool", name: "", summary: "", input: "", output: "" }, diffs: new Map() };
-      calls.set(id, call); assistant.parts.push(call.part);
-    }
-    if (!call) throw new GrokUnavailable();
-    for (const [key, value] of Object.entries(u)) {
-      // ACP optional nullable raw fields and name use null for "unchanged".
-      if (value === null && ["rawInput", "rawOutput", "name"].includes(key)) continue;
-      call.fields[key] = value;
-    }
-    const fields = call.fields;
-    const input = record(fields.rawInput);
-    const name = fields.name ?? record(record(fields._meta)["x.ai/tool"]).name;
-    call.part.name = typeof name === "string" ? name
-      : fields.kind === "search" && (input.variant === "WebSearch" || input.variant === "XSearch") ? input.variant
-      : typeof fields.kind === "string" ? fields.kind : id;
-    call.part.summary = typeof fields.title === "string" && fields.title ? fields.title.slice(0, 120) : toolSummary(call.part.name, input);
-    call.part.input = typeof fields.rawInput === "string" ? fields.rawInput : fields.rawInput === undefined ? "" : JSON.stringify(fields.rawInput);
-    call.part.error = fields.status === "failed";
-    const skill = call.part.name === "read_file" ? skillDocument(input.target_file) : null;
-    if (skill) call.part.skill = { ...skill, status: fields.status === "completed" ? "loaded" : fields.status === "failed" ? "failed" : "requested" };
-    else delete call.part.skill;
-    // ACP replaces content as a whole. Keep the edit evidence separately so a later
-    // completion message cannot erase a diff that the tool already displayed.
-    const content = Array.isArray(fields.content) ? fields.content : [];
-    for (const value of content) {
-      const block = record(value);
-      if (block.type === "diff") call.diffs.set(hash(JSON.stringify(block)), block);
-    }
-    const output = outputText([...call.diffs.values(), ...content.filter((block) => record(block).type !== "diff")]);
-    const images = [...new Set(updatePictures(fields).map((picture) => `${picture.mediaType}\0grok-image:${digestOf(picture.data)}`))]
-      .map((key) => ({ media_type: key.slice(0, key.indexOf("\0")), ref: key.slice(key.indexOf("\0") + 1) }));
-    if (images.length > 0) call.part.images = images; else delete call.part.images;
-    delete call.part.output_ref; delete call.part.output_size;
-    if (wholeCall === id) call.part.output = output.length > 2_000_000 ? `${output.slice(0, 2_000_000)}\n… trimmed` : output;
-    else trimOutput(call.part, output, path ? outputRef(path, id) : `grok:${hash(id + output)}`);
+  function* events() {
+    const session = path ? basename(dirname(path)) : undefined;
+    for (const line of text.split("\n")) yield grokEvent(line, session);
   }
-  for (const [turn, skill] of promptSkills) turn.parts.push({ kind: "skill", skill });
-  return turns.filter((turn) => turn.parts.length > 0);
+  return projectUpdates(events(), { wholeCall, imageRef: (picture) => `grok-image:${digestOf(picture.data)}`,
+    outputRef: (id, output) => path ? outputRef(path, id) : `grok:${hash(id + output)}` });
 }
 
 export function grokToolOutput(path: string, ref: string): string | null {
@@ -300,21 +219,7 @@ export function grokToolOutput(path: string, ref: string): string | null {
  */
 export const GROK_IMAGE_REF = /^grok-image:([a-f0-9]{64})$/;
 
-function pictures(blocks: unknown[]): { mediaType: string; data: string }[] {
-  return blocks.flatMap((block) => {
-    const image = record(block);
-    const mediaType = image.type === "image" ? inlineImageType(image.mimeType, image.data) : null;
-    return mediaType === null ? [] : [{ mediaType, data: image.data as string }];
-  });
-}
 
-function updatePictures(u: RecordValue): { mediaType: string; data: string }[] {
-  if (u.sessionUpdate === "user_message_chunk") return record(u._meta).hideFromScrollback === true ? [] : pictures([u.content]);
-  if (u.sessionUpdate !== "tool_call" && u.sessionUpdate !== "tool_call_update" || !Array.isArray(u.content)) return [];
-  return pictures(u.content.flatMap((block) => record(block).type === "content" ? [record(block).content] : []));
-}
-
-const digestOf = (data: string): string => createHash("sha256").update(Buffer.from(data, "base64")).digest("hex");
 
 const IMAGE_WINDOW = 1024 * 1024;
 
@@ -329,6 +234,7 @@ async function* segmentLines(fd: number, start: number, end: number): AsyncGener
     for (let offset = 0; offset < read;) {
       const newline = window.subarray(0, read).indexOf(10, offset);
       const stop = newline === -1 ? read : newline;
+      // the projection holds every record to MAX_LINE: a longer one means the file changed under it
       if (length + stop - offset > MAX_LINE) throw new GrokUnavailable();
       pieces.push(Buffer.from(window.subarray(offset, stop)));
       length += stop - offset;
@@ -343,6 +249,12 @@ async function* segmentLines(fd: number, start: number, end: number): AsyncGener
   }
 }
 
+/**
+ * The picture `ref` names in the Grok update log `path`, read only from the prompts its active
+ * history keeps (grokProjection: a prompt rewound away serves nothing, also when it is rewound while
+ * the lookup reads), and only when its bytes are a raster within MAX_IMAGE_BYTES that hash to the
+ * digest the ref names. Null for anything else.
+ */
 export async function grokImage(path: string, ref: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
   const digest = GROK_IMAGE_REF.exec(ref)?.[1];
   if (digest === undefined) return null;
@@ -351,17 +263,20 @@ export async function grokImage(path: string, ref: string): Promise<{ mediaType:
     const fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0));
     try {
       const { segments, revision } = grokProjection(path, statSync(path));
+      // the file read is the one the projection checked, not one moved into its path since
       const opened = fstatSync(fd);
       const named = statSync(path);
       if (opened.dev !== named.dev || opened.ino !== named.ino) return null;
       for (const segment of segments) {
         for await (const { line, at } of segmentLines(fd, segment.start, segment.end)) {
+          // a picture's type is written "image", or with JSON escapes in it
           if (!line.includes('"image"') && !line.includes("\\u")) continue;
           const event = grokEvent(line, basename(dirname(path)));
           for (const picture of event === null ? [] : updatePictures(event.update)) {
             if (digestOf(picture.data) !== digest) continue;
             const data = Buffer.from(picture.data, "base64");
             if (imageType(data) !== picture.mediaType) return null;
+            // the history may have moved while the lookup read: the record must still be active
             const current = statSync(path);
             if (current.dev !== opened.dev || current.ino !== opened.ino) return null;
             const now = grokProjection(path, current);

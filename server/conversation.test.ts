@@ -10,7 +10,7 @@ import * as fsp from "node:fs/promises";
 import * as cmd from "./cmd.ts";
 import * as piTree from "./pi-tree.ts";
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
-import { MAX_TURNS, parseOmpTranscript } from "./transcript-records.ts";
+import { MAX_TURNS, parseOmpTranscript, withHcNotes } from "./transcript-records.ts";
 import { turnStarts } from "./transcript-turns.ts";
 import { claudeImageType } from "./claude-transcript.ts";
 import { toolVerb } from "../src/lib/toolVerbs.ts";
@@ -26,12 +26,62 @@ import { DevinHistoryChanged } from "./devin.ts";
 import * as devinSession from "./devin-session.ts";
 import * as omo from "./omo.ts";
 import * as gjcRuntime from "./gjc-runtime.ts";
+import * as processStart from "./process-start.ts";
 import * as runtime from "./herdr-core/runtime.ts";
 import * as served from "./runtime/capabilities.ts";
 import { HERDR_CORE } from "./runtime/capabilities.ts";
 import { claudeProjectDir } from "./claude-store.ts";
 import { launchedAgents } from "./launched-agents.ts";
-import { agyTranscriptPage, claudePanePid, claudePaneSession, ConversationReadPending, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, stoppedAgentJob, unwrapPastes, toolOutput, transcriptImage, transcriptImageAsync, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
+import { agyTranscriptPage, claudePanePid, claudePaneSession, ConversationReadPending, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneRunsOmo, paneTranscript, parseClaudeTranscript, stoppedAgentJob, unwrapPastes, toolOutput, transcriptImage, transcriptImageAsync, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
+
+it("sees an OmO below its own Windows pane shell, not below another pane's, with or without a supplied list", async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  // herdr on Windows names only the pane's shell
+  const shellOnly = { pane_id: "own-pane", shell_pid: 100, foreground_processes: [{ pid: 100, name: "powershell.exe", argv: ["powershell.exe"] }] };
+  const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: shellOnly });
+  const shell = (pid: number) => ({ pid, parent: 1, path: "C:\\Windows\\powershell.exe", commandLine: "powershell.exe" });
+  const omo = (pid: number, parent: number) => ({ pid, parent, path: "C:\\node.exe", commandLine: "node.exe C:\\node_modules\\omo-ai\\bin\\omo.js" });
+  const table = spyOn(gjcRuntime, "recentProcessTable").mockResolvedValue([shell(100), omo(101, 100), shell(200), omo(201, 200)]);
+  const alive = spyOn(processStart, "processAlive").mockReturnValue(true);
+  const born = spyOn(processStart, "processStartedAt").mockReturnValue(null);
+  const home = mkdtempSync(join(tmpdir(), "herdr-omo-win-home-"));
+  const env = { HOME: process.env["HOME"], USERPROFILE: process.env["USERPROFILE"] };
+  process.env["HOME"] = home;
+  process.env["USERPROFILE"] = home;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    expect(await paneRunsOmo("own-pane")).toBe(true);
+    expect(await paneRunsOmo("own-pane", shellOnly)).toBe(true);
+    table.mockResolvedValue([shell(100), shell(200), omo(201, 200)]);
+    expect(await paneRunsOmo("own-pane")).toBe(false);
+    expect(await paneRunsOmo("own-pane", shellOnly)).toBe(false);
+    // an OmO a Claude in this pane runs as its tool is not the pane's agent
+    table.mockResolvedValue([shell(100), { pid: 101, parent: 100, path: "C:\\claude.exe", commandLine: "claude.exe" }, omo(102, 101)]);
+    expect(await paneRunsOmo("own-pane")).toBe(false);
+    // the process table is a few seconds old: an OmO that exited since is no longer the pane's
+    table.mockResolvedValue([shell(100), omo(101, 100)]);
+    expect(await paneRunsOmo("own-pane")).toBe(true);
+    alive.mockImplementation((pid: number) => pid !== 101);
+    expect(await paneRunsOmo("own-pane")).toBe(false);
+    expect(await paneRunsOmo("own-pane", shellOnly)).toBe(false);
+    // herdr is asked about this pane by its id: given `target`, it answers for the focused pane
+    expect(rpc.mock.calls.map(([method, params]) => [method, params])).toContainEqual(["pane.process_info", { pane_id: "own-pane" }]);
+    expect(rpc.mock.calls.every(([, params]) => (params as { pane_id?: string }).pane_id === "own-pane")).toBe(true);
+    // a supplied sample is used as it is, herdr not asked again
+    alive.mockReturnValue(true);
+    rpc.mockClear();
+    expect(await paneRunsOmo("own-pane", shellOnly)).toBe(true);
+    expect(rpc).not.toHaveBeenCalled();
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    for (const [key, value] of Object.entries(env)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    rmSync(home, { recursive: true, force: true });
+    table.mockRestore();
+    alive.mockRestore();
+    born.mockRestore();
+    rpc.mockRestore();
+  }
+});
 
 it("labels only Claude's explicit end_turn text as final-answer evidence", () => {
   const entry = (stop_reason: string | null) => JSON.stringify({ type: "assistant", message: { role: "assistant", stop_reason, content: [{ type: "text", text: "Answer" }] } });
@@ -209,11 +259,12 @@ describe("pane process roots", () => {
 
   for (const agent of ["claude", "codex", "omp", "gjc", "pi", "opencode", "devin", "grok", "hermes", "agy", "letta"]) {
     it(`reads ${agent}'s environment from its foreground executable`, async () => {
-      const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({
-        process_info: { foreground_processes: [
-          { pid: 101, argv: ["sh", "-c", agent], cwd: "/shell" },
-          { pid: 102, argv: [`C:\\tools\\${agent}.exe`], cwd: "/agent" },
-        ] },
+      const rpc = spyOn(herdr, "paneProcessInfo").mockResolvedValue({
+        pane_id: "process-fixture",
+        foreground_processes: [
+          { pid: 101, name: "sh", argv: ["sh", "-c", agent], cwd: "/shell" },
+          { pid: 102, name: agent, argv: [`C:\\tools\\${agent}.exe`], cwd: "/agent" },
+        ],
       });
       const identity = spyOn(omo, "omoProcessIdentity").mockReturnValue(null);
       const environ = spyOn(omo, "processEnviron").mockReturnValue(["AGENT_HOME=/fixture"]);
@@ -222,7 +273,7 @@ describe("pane process roots", () => {
           omo: null, environ: ["AGENT_HOME=/fixture"], pid: 102, cwd: "/agent",
         });
         expect(rpc).toHaveBeenCalledTimes(1);
-        expect(rpc).toHaveBeenCalledWith("pane.process_info", { pane_id: "process-fixture" });
+        expect(rpc).toHaveBeenCalledWith("process-fixture");
         expect(environ).toHaveBeenCalledWith(102);
       } finally {
         environ.mockRestore();
@@ -231,6 +282,23 @@ describe("pane process roots", () => {
       }
     });
   }
+
+  it("reads the environment of the bundled pi gentle-shell runs under node (#4198)", async () => {
+    const recorded = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "herdr-0.9.5-gentle-shell-pane.json"), "utf8"));
+    const front = recorded["pane.process_info"].process_info.foreground_processes[0];
+    const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue(recorded["pane.process_info"]);
+    const identity = spyOn(omo, "omoProcessIdentity").mockReturnValue(null);
+    const environ = spyOn(omo, "processEnviron").mockReturnValue(["PI_CODING_AGENT_DIR=/home/user/.gentle-shell/agent"]);
+    try {
+      expect(await paneProcessRoots("gentle-shell-fixture", "pi")).toMatchObject({
+        omo: null, environ: ["PI_CODING_AGENT_DIR=/home/user/.gentle-shell/agent"], pid: front.pid, cwd: front.cwd,
+      });
+    } finally {
+      environ.mockRestore();
+      identity.mockRestore();
+      rpc.mockRestore();
+    }
+  });
 
   it("matches a runtime launcher but never an agent name in unrelated arguments", async () => {
     const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({
@@ -704,6 +772,74 @@ describe("parseClaudeTranscript", () => {
       { role: "user", ts: "2026-10-08T09:00:00.000Z", parts: [{ kind: "notice", text: "Usage limit reached · continuing automatically at 4am · esc to cancel", source: "informational" }] },
       { role: "user", ts: "2026-10-08T13:00:00.000Z", parts: [{ kind: "notice", text: "Usage limit reset · continuing automatically", source: "informational" }] },
     ]);
+  });
+
+  it("reads a stop as one quiet notice where it was, not as the person's words", () => {
+    // as Claude Code (2.1.295 to 2.1.330) records a stop: one text block in the person's seat. Esc at a tool call's
+    // prompt refuses the call and marks the stop "for tool use"; Esc while it answers marks the stop plainly.
+    const assistant = (block: object, stop: string | null, ts: string) => JSON.stringify({ type: "assistant", timestamp: ts, message: { role: "assistant", stop_reason: stop, content: [block] } });
+    const user = (content: unknown, ts: string) => JSON.stringify({ type: "user", timestamp: ts, message: { role: "user", content } });
+    const lines = [
+      user("run the tests", "2026-11-22T05:00:00.000Z"),
+      assistant({ type: "tool_use", id: "t1", name: "Bash", input: { command: "bun test" } }, "tool_use", "2026-11-22T05:00:01.000Z"),
+      user([{ type: "tool_result", tool_use_id: "t1", is_error: true, content: "The user doesn't want to proceed with this tool use. The tool use was rejected." }], "2026-11-22T05:00:09.000Z"),
+      user([{ type: "text", text: "[Request interrupted by user for tool use]" }], "2026-11-22T05:00:09.001Z"),
+      user("go on", "2026-11-22T05:01:00.000Z"),
+      assistant({ type: "text", text: "Running them" }, null, "2026-11-22T05:01:02.000Z"),
+      user([{ type: "text", text: "[Request interrupted by user]" }], "2026-11-22T05:01:03.000Z"),
+      user("just the server ones", "2026-11-22T05:02:00.000Z"),
+      assistant({ type: "text", text: "Done." }, "end_turn", "2026-11-22T05:02:05.000Z"),
+    ];
+    const turns = parseClaudeTranscript(lines.join("\n"));
+    expect(turns.map((turn) => [turn.role, turn.parts.map((part) => part.kind === "notice" ? `${part.source}: ${part.text}` : part.kind === "text" ? part.text : part.kind)])).toEqual([
+      ["user", ["run the tests"]],
+      ["assistant", ["tool"]],
+      ["user", ["stopped: Stopped"]],
+      ["user", ["go on"]],
+      ["assistant", ["Running them"]],
+      ["user", ["stopped: Stopped"]],
+      ["user", ["just the server ones"]],
+      ["assistant", ["Done."]],
+    ]);
+    expect([turns[2]!.ts, turns[5]!.ts]).toEqual(["2026-11-22T05:00:09.001Z", "2026-11-22T05:01:03.000Z"]);
+    // the paged reader agrees: a stop's mark opens no turn of its own
+    expect(turnStarts(Buffer.from(lines.join("\n") + "\n"), "claude-transcript")).toHaveLength(3);
+  });
+
+  it("keeps literal human prompts reading like a stop mark and settles dispatched Code Mode scripts on stop", () => {
+    const assistant = (block: object, stop: string | null, ts: string) => JSON.stringify({ type: "assistant", timestamp: ts, message: { role: "assistant", stop_reason: stop, content: [block] } });
+    const lines = [
+      // human string prompt (even without origin/permissionMode, e.g. older transcript)
+      JSON.stringify({ type: "user", timestamp: "2026-11-22T06:00:00.000Z", message: { role: "user", content: "[Request interrupted by user]" } }),
+      // human array prompt with origin/permissionMode
+      JSON.stringify({ type: "user", timestamp: "2026-11-22T06:00:01.000Z", origin: { kind: "human" }, permissionMode: "default", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] } }),
+      // multi-block prompt containing the literal string alongside another text block
+      JSON.stringify({ type: "user", timestamp: "2026-11-22T06:00:02.000Z", message: { role: "user", content: [{ type: "text", text: "Why did it say:" }, { type: "text", text: "[Request interrupted by user]" }] } }),
+      // human queued_command carrying the literal string
+      JSON.stringify({ type: "attachment", timestamp: "2026-11-22T06:00:03.000Z", attachment: { type: "queued_command", commandMode: "prompt", origin: { kind: "human" }, prompt: "[Request interrupted by user]" } }),
+      // Bash approval feedback beside a successful tool_result (no origin/permissionMode)
+      assistant({ type: "tool_use", id: "b1", name: "Bash", input: { command: "echo hi" } }, "tool_use", "2026-11-22T06:00:10.000Z"),
+      JSON.stringify({ type: "user", timestamp: "2026-11-22T06:00:11.000Z", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "b1", content: "hi" }, { type: "text", text: "[Request interrupted by user]" }] } }),
+      // dispatched Code Mode REPL interrupted by Esc before any later prompt
+      JSON.stringify({ type: "user", timestamp: "2026-11-22T06:01:00.000Z", origin: { kind: "human" }, permissionMode: "default", message: { role: "user", content: "run script" } }),
+      assistant({ type: "tool_use", id: "r1", name: "REPL", input: { code: "sleep 10" } }, "tool_use", "2026-11-22T06:01:01.000Z"),
+      JSON.stringify({ type: "user", timestamp: "2026-11-22T06:01:02.000Z", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "r1", content: "(dispatched #1)" }] } }),
+      JSON.stringify({ type: "user", timestamp: "2026-11-22T06:01:03.000Z", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] } }),
+    ];
+    const turns = parseClaudeTranscript(lines.join("\n"));
+    expect(turns.map((turn) => [turn.role, turn.parts.map((part) => part.kind === "notice" ? `${part.source}: ${part.text}` : part.kind === "text" ? part.text : part.kind === "tool" ? `${part.kind}:${part.state}:${part.output}` : part.kind)])).toEqual([
+      ["user", ["[Request interrupted by user]"]],
+      ["user", ["[Request interrupted by user]"]],
+      ["user", ["Why did it say:\n[Request interrupted by user]"]],
+      ["user", ["[Request interrupted by user]"]],
+      ["assistant", ["tool:ok:hi"]],
+      ["user", ["[Request interrupted by user]"]],
+      ["user", ["run script"]],
+      ["assistant", ["tool:ok:(dispatched #1)"]],
+      ["user", ["stopped: Stopped"]],
+    ]);
+    // All five real human user entries (3 literal prompts + approval feedback + "run script") open turns; the stop mark does not.
+    expect(turnStarts(Buffer.from(lines.join("\n") + "\n"), "claude-transcript")).toHaveLength(5);
   });
 
   it("keeps a notice joined from long lines within the notice's length", () => {
@@ -1735,6 +1871,18 @@ describe("gjc sessions", () => {
     ]);
   });
 
+  it("preserves literal [Answer to question ...] text when the shared parser has no OmO ask context", () => {
+    const user = (content: unknown) => JSON.stringify({ type: "message", timestamp: "2026-10-01T00:00:00.000Z", message: { role: "user", content } });
+    const literal = "[Answer to question sample]\nKeep this heading";
+    const headerOnly = "[Answer to question sample]\n";
+    const twoBlocks = [{ type: "text", text: "[Answer to question sample]" }, { type: "text", text: "Keep this heading" }];
+    expect(parseOmpTranscript([user(literal), user(headerOnly), user(twoBlocks)].join("\n")).map((turn) => turn.parts)).toEqual([
+      [{ kind: "text", text: literal }],
+      [{ kind: "text", text: headerOnly }],
+      [{ kind: "text", text: "[Answer to question sample]\nKeep this heading" }],
+    ]);
+  });
+
   it("keeps user-attributed IRC records and ordinary notices whose text quotes IRC", () => {
     const content = "[IRC `0-WindowsPaths` → you]\n\nA quoted example, not an internal delivery.";
     const text = [
@@ -1940,6 +2088,38 @@ describe("transcript pages", () => {
     ]);
   });
 
+  it("shows hc's notes (a child's report, hc's word on a child that exited) as notices in any agent's chat, not as the person's prompt", () => {
+    const path = join(temp(), "hc-notes.jsonl");
+    const say = (text: string) => ({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] } });
+    const human = { kind: "human" };
+    writeFileSync(path, `${[
+      { type: "user", timestamp: "2026-11-17T03:04:00.000Z", origin: human, permissionMode: "bypassPermissions", message: { role: "user", content: "<hc>t3m hub-repair-hc exited (signal 1). Read: hc read t3m</hc>" } },
+      say("reading t3m"),
+      { type: "attachment", timestamp: "2026-11-17T03:05:00.000Z", attachment: { type: "queued_command", commandMode: "prompt", prompt: "<hc from=\"t2q try2-cmd\">done: /tmp/x.md</hc>", origin: human } },
+      say("noted"),
+      // the person quoting a note, with words of their own, is still their prompt
+      { type: "user", timestamp: "2026-11-17T03:06:00.000Z", origin: human, permissionMode: "bypassPermissions", message: { role: "user", content: "<hc>t3m exited</hc> why this format?" } },
+    ].map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    // any agent's prompt that is only a note, as a codex worker's task from its lead
+    const codex: ConversationTurn[] = [
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc from=\"t45 lead\" reach=\"hc send t45 when done or stuck\">\nReview x.rs\n</hc>" }] },
+      // a report that quotes a note is still one note; two notes with words between them are not
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc from=\"t7 review\">The prompt was <hc>hello</hc></hc>" }] },
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc>a</hc> and <hc>b</hc>" }] },
+      // hc types its own notes on children at once as one paste, a line each: one notice each
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc>t3 exited (signal 1)</hc>\n<hc>t4 is blocked (waiting)</hc>" }] },
+      // hc types a report as it is: one that closes its note and opens another with a sender is no batch of notes
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc from=\"t7 review\">Example: </hc>\n<hc from=\"t4 docs\">done</hc>" }] },
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc from=\"t7 review\">see <hc>hello</hc bogus></hc>" }] },
+    ];
+    const turns = withHcNotes([...transcriptPage("claude-transcript", path).turns, ...codex]);
+    expect(turns.map((turn) => turn.parts.map((part) => part.kind === "notice" ? `${part.source}|${part.text}` : part.kind === "text" ? part.text : part.kind).join(" "))).toEqual([
+      "hc|t3m hub-repair-hc exited (signal 1). Read: hc read t3m", "reading t3m", "peer:t2q try2-cmd|done: /tmp/x.md", "noted", "<hc>t3m exited</hc> why this format?",
+      "peer:t45 lead|Review x.rs", "peer:t7 review|The prompt was <hc>hello</hc>", "<hc>a</hc> and <hc>b</hc>",
+      "hc|t3 exited (signal 1)", "hc|t4 is blocked (waiting)", "<hc from=\"t7 review\">Example: </hc>\n<hc from=\"t4 docs\">done</hc>", "peer:t7 review|see <hc>hello</hc bogus>",
+    ]);
+  });
+
   it("shows one notice for a delivery Claude recorded twice, and says 'another session' for an unnamed sender", () => {
     const path = join(temp(), "peer-echo.jsonl");
     const origin = { kind: "peer", from: "uds:x", msg_id: "m7", name: "FUSION", body: "R18 is ready" };
@@ -2012,6 +2192,232 @@ describe("transcript pages", () => {
     for (const page of [transcriptPage("omo-transcript", path), transcriptPage("omo-transcript", cold)]) {
       expect(page.turns.map((turn) => turn.parts[0]?.kind)).toEqual(["text", "text", "text"]);
     }
+  });
+
+  it("preserves literal [Answer to question ...] lines across non-OmO sources and OmO sessions without a matching open ask", () => {
+    const root = temp();
+    const tree = (rows: Record<string, unknown>[]) => {
+      let parentId: string | null = null;
+      return [
+        JSON.stringify({ type: "session", version: 3, id: "s1", timestamp: "2026-10-01T00:00:00.000Z" }),
+        ...rows.map((row, index) => {
+          const id = `e${index + 1}`;
+          const line = JSON.stringify({ id, parentId, timestamp: "2026-10-01T00:00:00.000Z", ...row });
+          parentId = id;
+          return line;
+        }),
+      ].join("\n") + "\n";
+    };
+    const user = (content: unknown) => ({ type: "message", message: { role: "user", content } });
+    const ask = {
+      type: "message",
+      message: { role: "assistant", content: [{ type: "toolCall", id: "sample", name: "ask_user_question", arguments: { waitForAnswer: false } }], stopReason: "toolUse" },
+    };
+    const literal = "[Answer to question sample]\nKeep this heading";
+    const headerOnly = "[Answer to question sample]\n";
+    const twoBlocks = [{ type: "text", text: "[Answer to question sample]" }, { type: "text", text: "Keep this heading" }];
+    // non-OmO sources ignore even a tool call with the same name and id; OmO without a matching ask also preserves verbatim
+    const nonOmoLines = tree([user("first prompt"), ask, user(literal), user(twoBlocks), user(headerOnly)]);
+    const omoLines = tree([user("first prompt"), user(literal), user(twoBlocks), user(headerOnly)]);
+    for (const source of ["pi-transcript", "omp-transcript", "gjc-transcript", "cmd-transcript", "omo-transcript"] as const) {
+      const path = join(root, `${source}.jsonl`);
+      writeFileSync(path, source === "omo-transcript" ? omoLines : nonOmoLines);
+      const newest = transcriptPage(source, path, { prompts: 1 });
+      expect(newest.turns.map((turn) => turn.parts)).toEqual([[{ kind: "text", text: headerOnly }]]);
+      expect(newest.cursor).not.toBeNull();
+      const older = transcriptPage(source, path, { before: newest.cursor!, prompts: 2 });
+      expect(older.turns.map((turn) => turn.parts)).toEqual([
+        [{ kind: "text", text: literal }],
+        [{ kind: "text", text: "[Answer to question sample]\nKeep this heading" }],
+      ]);
+    }
+  });
+
+  it("strips matched OmO late answer frames and resolves OmO 5.1.81 user-word blocks across live, cold, and older pages", () => {
+    const root = temp();
+    const path = join(root, "omo-answers.jsonl");
+    const ask = (id: string, tool: "ask_user_question" | "request_user_input", waitForAnswer: boolean, ts: string) => JSON.stringify({
+      type: "message", timestamp: ts,
+      message: { role: "assistant", content: [{ type: "toolCall", id, name: tool, arguments: { waitForAnswer, questions: [{ id: "q", header: "Next step", question: "What next?" }] } }], stopReason: "toolUse" },
+    });
+    const pendingResult = (id: string, ts: string) => JSON.stringify({
+      type: "message", timestamp: ts,
+      message: { role: "toolResult", toolCallId: id, content: [{ type: "text", text: "Accepted" }], details: { accepted: true, status: "pending" } },
+    });
+    const doneResult = (id: string, ts: string) => JSON.stringify({
+      type: "message", timestamp: ts,
+      message: { role: "toolResult", toolCallId: id, content: [{ type: "text", text: "Done" }], details: { status: "answered" } },
+    });
+    const settlement = (id: string, ts: string) => JSON.stringify({ type: "custom", customType: "ask-user:settlement", timestamp: ts, data: { requestId: id, status: "answered" } });
+    const user = (content: unknown, ts: string) => JSON.stringify({ type: "message", timestamp: ts, message: { role: "user", content } });
+    const reply = (text: string, ts: string) => JSON.stringify({ type: "message", timestamp: ts, message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" } });
+
+    const typedAnswer = user([
+      {
+        type: "text",
+        text: "[Answer to question toolu_01]\nThe user responded: (see [The user's comment for question toolu_01] below)\nNext step: (see [The user's answer to Next step for question toolu_01] below)",
+      },
+      { type: "text", text: "[The user's comment for question toolu_01]" },
+      { type: "text", text: "Keep (see [The user's answer to Next step for question toolu_01] below) literal" },
+      { type: "text", text: "[The user's answer to Next step for question toolu_01]" },
+      { type: "text", text: "Compare on the device" },
+    ], "2026-10-05T00:02:00.000Z");
+    const expectedTyped = "The user responded: Keep (see [The user's answer to Next step for question toolu_01] below) literal\nNext step: Compare on the device";
+
+    const prefix = [
+      user("start", "2026-10-05T00:00:00.000Z"),
+      ask("toolu_01", "ask_user_question", false, "2026-10-05T00:00:01.000Z"),
+      pendingResult("toolu_01", "2026-10-05T00:00:02.000Z"),
+      ask("toolu_done", "ask_user_question", true, "2026-10-05T00:00:03.000Z"),
+      doneResult("toolu_done", "2026-10-05T00:00:04.000Z"),
+      ask("toolu_02", "request_user_input", false, "2026-10-05T00:00:05.000Z"),
+      pendingResult("toolu_02", "2026-10-05T00:00:06.000Z"),
+      ask("toolu_skill", "ask_user_question", false, "2026-10-05T00:00:07.000Z"),
+      pendingResult("toolu_skill", "2026-10-05T00:00:08.000Z"),
+      ask("toolu_empty", "ask_user_question", false, "2026-10-05T00:00:09.000Z"),
+      pendingResult("toolu_empty", "2026-10-05T00:00:10.000Z"),
+      reply("Working while you decide.", "2026-10-05T00:00:11.000Z"),
+      user("intervening prompt", "2026-10-05T00:01:00.000Z"),
+      reply("Still working.", "2026-10-05T00:01:05.000Z"),
+      settlement("toolu_01", "2026-10-05T00:01:59.000Z"),
+    ].join("\n") + "\n";
+
+    // live preview (unterminated tail line without trailing newline) resolves typed answer when ask was on an earlier page
+    writeFileSync(path, prefix);
+    expect(transcriptPage("omo-transcript", path, { prompts: 1 }).turns[0]?.parts).toEqual([{ kind: "text", text: "intervening prompt" }]);
+    appendFileSync(path, typedAnswer);
+    expect(transcriptPage("omo-transcript", path, { prompts: 1 }).turns.map((turn) => turn.parts)).toEqual([
+      [{ kind: "text", text: expectedTyped }],
+    ]);
+
+    // commit the typed answer plus edge cases: repeated quote of settled id, already-answered toolResult id,
+    // two-block non-frame prompt, simple string answer, skill-shaped answer body, and header-only prompt
+    const quotedSettled = "[Answer to question toolu_01]\nWhy did I answer that?";
+    const quotedDone = "[Answer to question toolu_done]\nLiteral quote";
+    const skillBody = '<skill name="review" location="/skills/review/SKILL.md">\nPRIVATE\n</skill>\n\nkeep raw';
+    appendFileSync(path, `\n${[
+      user(quotedSettled, "2026-10-05T00:02:10.000Z"),
+      user(quotedDone, "2026-10-05T00:02:15.000Z"),
+      user([{ type: "text", text: "[Answer to question toolu_02]" }, { type: "text", text: "ordinary second block" }], "2026-10-05T00:02:20.000Z"),
+      user("[Answer to question toolu_02]\nNext step: compare on the device", "2026-10-05T00:02:25.000Z"),
+      user(`[Answer to question toolu_skill]\n${skillBody}`, "2026-10-05T00:02:30.000Z"),
+      user("[Answer to question toolu_empty]\n", "2026-10-05T00:02:35.000Z"),
+      user("final prompt", "2026-10-05T00:02:40.000Z"),
+    ].join("\n")}\n`);
+
+    const cold = join(root, "omo-answers-cold.jsonl");
+    copyFileSync(path, cold);
+    for (const file of [path, cold]) {
+      const last = transcriptPage("omo-transcript", file, { prompts: 1 });
+      expect(last.turns.map((turn) => turn.parts)).toEqual([[{ kind: "text", text: "final prompt" }]]);
+      const older = transcriptPage("omo-transcript", file, { before: last.cursor!, prompts: 7 });
+      expect(older.turns.map((turn) => turn.parts)).toEqual([
+        [{ kind: "text", text: expectedTyped }],
+        [{ kind: "text", text: quotedSettled }],
+        [{ kind: "text", text: quotedDone }],
+        [{ kind: "text", text: "[Answer to question toolu_02]\nordinary second block" }],
+        [{ kind: "text", text: "Next step: compare on the device" }],
+        [{ kind: "text", text: skillBody }],
+        [{ kind: "text", text: "[Answer to question toolu_empty]\n" }],
+      ]);
+    }
+
+    // context_clear forgets asks opened before the clear
+    const cleared = join(root, "omo-cleared.jsonl");
+    const afterClear = "[Answer to question toolu_before]\nStill literal after clear";
+    writeFileSync(cleared, `${[
+      user("before", "2026-10-05T00:00:00.000Z"),
+      ask("toolu_before", "ask_user_question", false, "2026-10-05T00:00:01.000Z"),
+      JSON.stringify({ type: "custom", customType: "context_clear", timestamp: "2026-10-05T00:01:00.000Z" }),
+      user(afterClear, "2026-10-05T00:02:00.000Z"),
+    ].join("\n")}\n`);
+    expect(transcriptPage("omo-transcript", cleared).turns.map((turn) => turn.parts)).toEqual([
+      [{ kind: "text", text: afterClear }],
+    ]);
+  });
+
+  it("handles OmO held extension-user-message answers, interactive quotes, cancelled settlements, non-OmO labels, same-path source isolation, and selected-option collisions", () => {
+    const root = temp();
+    const ask = (id: string, ts: string) => JSON.stringify({
+      type: "message", timestamp: ts,
+      message: { role: "assistant", content: [{ type: "toolCall", id, name: "ask_user_question", arguments: { waitForAnswer: false } }], stopReason: "toolUse" },
+    });
+    const pendingResult = (id: string, ts: string) => JSON.stringify({
+      type: "message", timestamp: ts,
+      message: { role: "toolResult", toolCallId: id, content: [{ type: "text", text: "Accepted" }], details: { accepted: true, status: "pending" } },
+    });
+    const settlement = (id: string, status: string, ts: string) => JSON.stringify({ type: "custom", customType: "ask-user:settlement", timestamp: ts, data: { requestId: id, status } });
+    const user = (content: unknown, ts: string, extra: Record<string, unknown> = {}) => JSON.stringify({ type: "message", timestamp: ts, ...extra, message: { role: "user", content } });
+    const held = (content: unknown, ts: string) => JSON.stringify({ type: "custom_message", customType: "extension-user-message", display: true, timestamp: ts, content });
+
+    const path = join(root, "omo-edge.jsonl");
+    const interactiveQuote = "[Answer to question q_open]\nKeep this interactive quote";
+    const appendixPrompt = [
+      { type: "text", text: "[Answer to question q_open]\nSee (see [Appendix A] below)" },
+      { type: "text", text: "[Appendix A]" },
+      { type: "text", text: "Should not resolve" },
+    ];
+    const cancelledQuote = "[Answer to question q_cancel]\nKeep this literal note";
+    const collisionAnswer = [
+      {
+        type: "text",
+        text: "[Answer to question q_open]\nA: (see [The user's answer to B for question q_open] below)\nB: (see [The user's answer to B for question q_open] below)",
+      },
+      { type: "text", text: "[The user's answer to B for question q_open]" },
+      { type: "text", text: "typed" },
+    ];
+    const heldSelected = held("[Answer to question q_held_sel]\nNext: Option A", "2026-10-05T00:01:10.000Z");
+    const heldTyped = held([
+      { type: "text", text: "[Answer to question q_held_txt]\nNext: (see [The user's answer to Next for question q_held_txt] below)" },
+      { type: "text", text: "[The user's answer to Next for question q_held_txt]" },
+      { type: "text", text: "Typed during hold" },
+    ], "2026-10-05T00:01:20.000Z");
+
+    writeFileSync(path, `${[
+      user("start", "2026-10-05T00:00:00.000Z"),
+      ask("q_open", "2026-10-05T00:00:01.000Z"),
+      pendingResult("q_open", "2026-10-05T00:00:02.000Z"),
+      ask("q_cancel", "2026-10-05T00:00:03.000Z"),
+      pendingResult("q_cancel", "2026-10-05T00:00:04.000Z"),
+      settlement("q_cancel", "cancelled", "2026-10-05T00:00:05.000Z"),
+      ask("q_skip", "2026-10-05T00:00:06.000Z"),
+      pendingResult("q_skip", "2026-10-05T00:00:07.000Z"),
+      settlement("q_skip", "cancelled", "2026-10-05T00:00:08.000Z"),
+      ask("q_held_sel", "2026-10-05T00:00:09.000Z"),
+      pendingResult("q_held_sel", "2026-10-05T00:00:10.000Z"),
+      ask("q_held_txt", "2026-10-05T00:00:11.000Z"),
+      pendingResult("q_held_txt", "2026-10-05T00:00:12.000Z"),
+      // interactive prompt and non-OmO [Appendix A] prompt must stay intact and leave q_open unconsumed
+      user(interactiveQuote, "2026-10-05T00:01:00.000Z", { inputSource: "interactive" }),
+      user(appendixPrompt, "2026-10-05T00:01:02.000Z"),
+      // cancelled settlement with no answer leaves ordinary quotes intact, while real dismissal strips
+      user(cancelledQuote, "2026-10-05T00:01:04.000Z"),
+      user("[Answer to question q_skip]\nThe user dismissed the question.", "2026-10-05T00:01:06.000Z"),
+      // real answer for q_open still resolves, without overwriting question A's selected option
+      user(collisionAnswer, "2026-10-05T00:01:08.000Z"),
+      // held extension-user-message deliveries (selected + typed)
+      heldSelected,
+      heldTyped,
+    ].join("\n")}\n`);
+
+    // reading the exact same path as omp first must not starve OmO's ask index, and reading as OmO first must not leak into omp's page cache
+    const ompFirst = transcriptPage("omp-transcript", path, { prompts: 10 });
+    expect(ompFirst.turns.some((turn) => turn.parts[0]?.kind === "text" && turn.parts[0].text.startsWith("[Answer to question q_skip]\n"))).toBe(true);
+    const omoAfterOmp = transcriptPage("omo-transcript", path, { prompts: 10 });
+    expect(omoAfterOmp.turns.slice(2).map((turn) => turn.parts)).toEqual([
+      [{ kind: "text", text: interactiveQuote }],
+      [{ kind: "text", text: "[Answer to question q_open]\nSee (see [Appendix A] below)\n[Appendix A]\nShould not resolve" }],
+      [{ kind: "text", text: cancelledQuote }],
+      [{ kind: "text", text: "The user dismissed the question." }],
+      [{ kind: "text", text: "A: (see [The user's answer to B for question q_open] below)\nB: typed" }],
+      [{ kind: "text", text: "Next: Option A" }],
+      [{ kind: "text", text: "Next: Typed during hold" }],
+    ]);
+    forgetTranscriptState();
+    const omoFirst = transcriptPage("omo-transcript", path, { prompts: 10 });
+    const ompAfterOmo = transcriptPage("omp-transcript", path, { prompts: 10 });
+    expect(omoFirst.turns.slice(2)).toEqual(omoAfterOmp.turns.slice(2));
+    expect(ompAfterOmo.turns).toEqual(ompFirst.turns);
   });
 
   const endedTitles = (page: { turns: ConversationTurn[] }): unknown => {
@@ -3889,6 +4295,42 @@ describe("Agy native ledger through shared paging", () => {
     try { expect(await page().catch((error: unknown) => error)).toBeInstanceOf(ConversationUnavailable); }
     finally { spy.mockRestore(); }
   });
+  it("reads a longer in-place Agy ledger rewrite after a WAL checkpoint", async () => {
+    db.exec("PRAGMA journal_mode=WAL");
+    add(0, "USER_INPUT", "old");
+    const initial = await page();
+    expect(initial.turns[0]?.parts[0]).toEqual({ kind: "text", text: "old" });
+    const inode = fs.statSync(path).ino;
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    writeFileSync(path, row(0, "USER_INPUT", "a longer replacement prompt"));
+    expect(fs.statSync(path).ino).toBe(inode);
+    const rewritten = await page();
+    expect(rewritten.history_id).not.toBe(initial.history_id);
+    expect(rewritten.turns[0]?.parts[0]).toEqual({ kind: "text", text: "a longer replacement prompt" });
+  });
+  it("reads a growing Agy ledger with a rewritten prefix and unchanged old tail", async () => {
+    db.exec("PRAGMA journal_mode=WAL");
+    add(0, "USER_INPUT", "old");
+    const hidden = "x".repeat(32);
+    const tail = row(2, "PLANNER_RESPONSE", "tail");
+    appendFileSync(path, row(1, "EPHEMERAL_MESSAGE", hidden));
+    add(2, "PLANNER_RESPONSE", "tail");
+    const initial = await page();
+    const inode = fs.statSync(path).ino;
+    const oldTail = fs.statSync(path).size - Buffer.byteLength(tail);
+    db.exec("INSERT INTO steps VALUES (3); PRAGMA wal_checkpoint(TRUNCATE)");
+    const prefix = row(0, "USER_INPUT", "new longer") + row(1, "EPHEMERAL_MESSAGE", hidden.slice(7));
+    expect(Buffer.byteLength(prefix)).toBe(oldTail);
+    writeFileSync(path, prefix + tail + row(3, "USER_INPUT", "next"));
+    expect(fs.statSync(path).ino).toBe(inode);
+    for (let read = 0; read < 2; read++) {
+      const rewritten = await page();
+      expect(rewritten.history_id).not.toBe(initial.history_id);
+      expect(rewritten.turns.map((turn) => turn.parts[0])).toEqual(
+        ["new longer", "tail", "next"].map((text) => ({ kind: "text", text })),
+      );
+    }
+  });
   it("distinguishes unreadable database from verified empty history", async () => {
     add(0, "USER_INPUT", "one");
     (await page());
@@ -3914,9 +4356,10 @@ describe("Agy native ledger through shared paging", () => {
     const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
     const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never);
     try {
-      expect(await paneConversation(pane.pane_id)).toMatchObject({ source: "agy-transcript", turns: [], history_id: `unwritten:${session}` });
+      const greeting = await paneConversation(pane.pane_id);
+      expect(greeting).toMatchObject({ source: "agy-transcript", turns: [], history_id: `unwritten:${session}` });
       db.query("INSERT INTO steps VALUES (0)").run();
-      expect(await paneConversation(pane.pane_id)).toMatchObject({ source: "agy-transcript", turns: [], history_id: `unwritten:${session}` });
+      expect(await paneConversation(pane.pane_id, undefined, { history_id: greeting.history_id })).toMatchObject({ source: "agy-transcript", turns: [], history_id: `unwritten:${session}` });
       writeFileSync(path, row(0, "USER_INPUT", "first prompt"));
       const written = await paneConversation(pane.pane_id);
       expect(written.turns).toHaveLength(1);
@@ -3930,6 +4373,156 @@ describe("Agy native ledger through shared paging", () => {
       db.query("INSERT INTO steps VALUES (500)").run();
       expect(await paneConversation(pane.pane_id).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
     } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
+  });
+  it("does not greet on a cold Agy read with only catalog step zero and no ledger", async () => {
+    rmSync(path);
+    db.query("INSERT INTO steps VALUES (0)").run();
+    const pane = { pane_id: "agy-cold", cwd: root, agent: "agy", agent_status: "working" } as HerdrPane;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({
+      panes: [pane], agents: [], layouts: [], tabs: [], workspaces: [], protocol: 1, version: "test",
+    });
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session: "test", path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never);
+    try {
+      await expect(paneConversation(pane.pane_id)).rejects.toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
+    } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
+  });
+  it("records nothing for a pane forgotten while its status row was read", async () => {
+    const session = "00000000-0000-4000-8000-000000000001";
+    add(0, "USER_INPUT", "one");
+    const pane = { pane_id: "agy-forgotten", cwd: root, agent: "agy", agent_status: "idle" } as HerdrPane;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], agents: [] }) as unknown as SessionSnapshot);
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "pane.get"
+      ? { pane: { ...pane, scroll: { offset_from_bottom: 0, max_offset_from_bottom: 10, viewport_rows: 40 } } }
+      : { process_info: { foreground_processes: [] } }) as never);
+    let forget = true;
+    const read = spyOn(herdr, "paneRead").mockImplementation(async () => {
+      if (forget) forgetPaneTranscriptState(pane.pane_id);
+      return { text: " ? for shortcuts   Gemini 3.8 Flash \u00b7 high\n" } as never;
+    });
+    try {
+      expect(await paneConversation(pane.pane_id).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
+      // the refused read left no mark that this session was written: agy starting it afresh greets
+      forget = false;
+      db.exec("DELETE FROM steps");
+      rmSync(path);
+      expect(await paneConversation(pane.pane_id)).toMatchObject({ history_id: `unwritten:${session}`, turns: [] });
+    } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); read.mockRestore(); }
+  });
+  it("names no model on an unwritten conversation's greeting, whose screen may already show another conversation", async () => {
+    const session = "00000000-0000-4000-8000-000000000001";
+    rmSync(path);
+    const other = join(root, "other.jsonl");
+    writeFileSync(other, row(0, "USER_INPUT", "other session"));
+    const pane = { pane_id: "agy-unwritten-switch", cwd: root, agent: "agy", agent_status: "idle" } as HerdrPane;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], agents: [] }) as unknown as SessionSnapshot);
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "pane.get"
+      ? { pane: { ...pane, scroll: { offset_from_bottom: 0, max_offset_from_bottom: 10, viewport_rows: 40 } } }
+      : { process_info: { foreground_processes: [] } }) as never);
+    // agy moves the pane to another conversation as its screen is read
+    const read = spyOn(herdr, "paneRead").mockImplementation(async () => {
+      store.mockResolvedValue({ root, session: "other", path: other, pid: 3, started: "other" });
+      return { text: " ? for shortcuts   Gemini 4 Hydrogen \u00b7 medium\n" } as never;
+    });
+    try {
+      const greeting = await paneConversation(pane.pane_id);
+      expect(greeting).toMatchObject({ history_id: `unwritten:${session}`, turns: [], screen: true, metadata: { model: null, reasoning_effort: null } });
+      expect(JSON.stringify(greeting)).not.toContain("Gemini 4 Hydrogen");
+    } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); read.mockRestore(); }
+  });
+  it("reads the live status row after a conversation exists, and not a scrolled frame", async () => {
+    const session = "00000000-0000-4000-8000-000000000001";
+    add(0, "USER_INPUT", "one");
+    const pane = { pane_id: "agy-model", cwd: root, agent: "agy", agent_status: "idle" } as HerdrPane;
+    const footer = " ? for shortcuts   Gemini 3.8 Flash · high\n";
+    let offset = 0;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], agents: [] }) as unknown as SessionSnapshot);
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "pane.get"
+      ? { pane: { ...pane, scroll: { offset_from_bottom: offset, max_offset_from_bottom: 10, viewport_rows: 40 } } }
+      : { process_info: { foreground_processes: [] } }) as never);
+    const read = spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: footer }) as never);
+    try {
+      const shown = await paneConversation(pane.pane_id);
+      expect(shown.turns).toHaveLength(1);
+      expect(shown.metadata).toMatchObject({ model: "Gemini 3.8 Flash", reasoning_effort: "high" });
+      expect(shown.screen).toBe(true);
+      offset = 4;
+      const scrolled = await paneConversation(pane.pane_id);
+      expect(scrolled.screen).toBe(true);
+      expect(scrolled.metadata?.model ?? null).toBeNull();
+      expect(scrolled.metadata?.reasoning_effort ?? null).toBeNull();
+    } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); read.mockRestore(); }
+  });
+  it("falls back to the agy transcript model when scroll info is absent (herdr-core) and lets the live status row override it", async () => {
+    const session = "00000000-0000-4000-8000-000000000002";
+    add(0, "USER_INPUT", "<USER_REQUEST>\nhey\n</USER_REQUEST>\n<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` from None to Gemini 4 Neon (Medium).\n</USER_SETTINGS_CHANGE>");
+    add(1, "PLANNER_RESPONSE", "Hi", { model: "gemini-4-neon-medium" });
+    const pane = { pane_id: "agy-model-fallback", cwd: root, agent: "agy", agent_status: "idle" } as HerdrPane;
+    let hasScroll = false;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], agents: [] }) as unknown as SessionSnapshot);
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "pane.get"
+      ? { pane: hasScroll ? { ...pane, scroll: { offset_from_bottom: 0, max_offset_from_bottom: 10, viewport_rows: 40 } } : pane }
+      : { process_info: { foreground_processes: [] } }) as never);
+    const read = spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: " ? for shortcuts   Gemini 3.8 Flash · high\n" }) as never);
+    try {
+      const noScroll = await paneConversation(pane.pane_id);
+      expect(noScroll.metadata).toMatchObject({ model: "Gemini 4 Neon", reasoning_effort: "medium" });
+      hasScroll = true;
+      const live = await paneConversation(pane.pane_id);
+      expect(live.metadata).toMatchObject({ model: "Gemini 3.8 Flash", reasoning_effort: "high" });
+    } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); read.mockRestore(); }
+  });
+  it("refuses a conversation whose pane was forgotten or rebound while its status row was read", async () => {
+    const session = "00000000-0000-4000-8000-000000000001";
+    add(0, "USER_INPUT", "one");
+    const pane = { pane_id: "agy-model-closed", cwd: root, agent: "agy", agent_status: "idle" } as HerdrPane;
+    const footer = " ? for shortcuts   Gemini 3.8 Flash \u00b7 high\n";
+    const other = join(root, "other.jsonl");
+    writeFileSync(other, row(0, "USER_INPUT", "other session"));
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], agents: [] }) as unknown as SessionSnapshot);
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "pane.get"
+      ? { pane: { ...pane, scroll: { offset_from_bottom: 0, max_offset_from_bottom: 10, viewport_rows: 40 } } }
+      : { process_info: { foreground_processes: [] } }) as never);
+    let during: "show" | "forget" | "rebind" | "switch" = "show";
+    const read = spyOn(herdr, "paneRead").mockImplementation(async () => {
+      if (during === "forget") forgetPaneTranscriptState(pane.pane_id);
+      if (during === "rebind") {
+        store.mockResolvedValue({ root, session: "other", path: other, pid: 3, started: "other" });
+        await paneTranscript(pane.pane_id);
+      }
+      if (during === "switch") {
+        store.mockResolvedValue({ root, session: "other", path: other, pid: 3, started: "other" });
+        return { text: " ? for shortcuts   Gemini 4 Hydrogen \u00b7 medium\n" } as never;
+      }
+      return { text: footer } as never;
+    });
+    const refused = async (message: string, model: string) => {
+      const error = await paneConversation(pane.pane_id).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ name: "ConversationUnavailable", message });
+      expect(JSON.stringify(error)).not.toContain(model);
+    };
+    const reset = () => {
+      forgetTranscriptState();
+      store.mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+    };
+    try {
+      expect((await paneConversation(pane.pane_id)).metadata).toMatchObject({ model: "Gemini 3.8 Flash", reasoning_effort: "high" });
+      during = "forget";
+      await refused("no_session_id", "Gemini 3.8 Flash");
+      reset();
+      during = "rebind";
+      await refused("no_session_path", "Gemini 3.8 Flash");
+      // agy's store moved the pane to another conversation during the read, and nothing else
+      // resolved the pane meanwhile: the old turns never go out with the new model
+      reset();
+      during = "switch";
+      await refused("no_session_path", "Gemini 4 Hydrogen");
+    } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); read.mockRestore(); }
   });
   it("retries a transient mid-turn catalog race and answers 503 ConversationReadPending instead of dropping chat", async () => {
     const session = "00000000-0000-4000-8000-000000000001";
@@ -3999,6 +4592,27 @@ describe("Agy native ledger through shared paging", () => {
       expect(fresh).toBeInstanceOf(ConversationReadPending);
     } finally { spy?.mockRestore(); snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
   });
+  it.skipIf(!linksRefused).each(["different inode", "same inode"])("leaves an unpaged Agy read pending when a symlink to the %s replaces its ledger", async (target) => {
+    add(0, "USER_INPUT", "one");
+    const other = `${path}.other`;
+    writeFileSync(other, row(0, "USER_INPUT", "other"));
+    const pane = { pane_id: "agy-symlink-race", cwd: root, agent: "agy", agent_status: "working" } as HerdrPane;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({
+      panes: [pane], agents: [], layouts: [], tabs: [], workspaces: [], protocol: 1, version: "test",
+    });
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session: "test", path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never);
+    const catalog = duringCatalog(1, () => {
+      if (target === "same inode") renameSync(path, other);
+      else rmSync(path);
+      symlinkSync(other, path);
+      throw new Error("transient WAL copy race");
+    });
+    try {
+      await expect(paneConversation(pane.pane_id)).rejects.toBeInstanceOf(ConversationReadPending);
+      await expect(paneConversation(pane.pane_id)).rejects.toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
+    } finally { catalog.mockRestore(); snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
+  });
   it.skipIf(process.platform === "win32")("greets an Agy started in the terminal on its unused start screen", async () => {
     const screen = [
       "❯ agy",
@@ -4022,11 +4636,25 @@ describe("Agy native ledger through shared paging", () => {
     const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "pane.get"
       ? { pane: { ...pane, scroll: { offset_from_bottom: scrolledUp, max_offset_from_bottom: 10, viewport_rows: 40 } } }
       : { process_info: { foreground_processes: [{ pid: process.pid, name: "agy", argv }] } }) as never);
-    const read = spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: currentScreen }) as never);
+    let afterFirstRead: string | null = null;
+    const read = spyOn(herdr, "paneRead").mockImplementation(async () => {
+      const text = currentScreen;
+      if (afterFirstRead !== null) currentScreen = afterFirstRead;
+      return { text } as never;
+    });
     try {
       const greeting = await paneConversation(pane.pane_id);
-      expect(greeting).toMatchObject({ source: "agy-transcript", turns: [], cursor: null });
+      expect(greeting).toMatchObject({
+        source: "agy-transcript", turns: [], cursor: null, screen: true,
+        metadata: { model: "Gemini 3.8 Flash", reasoning_effort: "high" },
+      });
       expect(greeting.history_id).toStartWith(`unwritten:agy:${pane.pane_id}:${process.pid}:`);
+      // the model comes from the frame proven to be the unused start screen, not a later one that
+      // may already show another conversation
+      afterFirstRead = screen.replace(" >", " > hello\n\n \u2726 Hi there\n\n \u2500\u2500\u2500\u2500\n >").replace("Gemini 3.8 Flash \u00b7 high", "Gemini 4 Hydrogen \u00b7 medium");
+      expect((await paneConversation(pane.pane_id)).metadata).toMatchObject({ model: "Gemini 3.8 Flash", reasoning_effort: "high" });
+      afterFirstRead = null;
+      currentScreen = screen;
       argv = ["agy", "--continue"];
       await expect(paneConversation(pane.pane_id)).rejects.toBeInstanceOf(ConversationUnavailable);
       argv = ["agy"];
@@ -4393,7 +5021,7 @@ it("finds the Claude below a Windows pane's shell and its session by the PID rec
 async function claudeStandIns(count: number): Promise<{ leader: number; pids: number[]; start: (pid: number) => string; stop: () => void }> {
   // a background job's stdin would be /dev/null: each stand-in reads the test's pipe through fd 3
   const one = "(exec -a claude bash -c 'echo $$; read -r line' <&3)";
-  const job = Bun.spawn(["bash", "-c", `exec 3<&0; ${Array.from({ length: count }, () => `${one} &`).join(" ")} wait`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+  const job = Bun.spawn(["bash", "-c", `exec 3<&0; ${Array.from({ length: count }, () => `${one} &`).join(" ")} wait`], { env: { PATH: process.env["PATH"] ?? "" }, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
   const reader = job.stdout.getReader();
   let text = "";
   while (text.split("\n").length <= count) {
@@ -4428,9 +5056,91 @@ function claudeHome(pid: number, procStart: string): { home: string; cwd: string
   };
 }
 
+/**
+ * A sandbox wrapper in front of Claude (#3931): `bwrap --new-session` runs Claude in a session of its own, so
+ * no process in the pane's job is Claude. The wrapper's processes carry herdr's agent hint, HERDR_AGENT=claude,
+ * and the store they hand Claude; herdr has the session the wrapper's hook reported.
+ */
+describe.skipIf(process.platform !== "linux")("a Claude a sandbox wrapper runs outside the pane's job (#3931)", () => {
+  const SESSION = "6d1f2e3a-4b5c-4d6e-8f70-81a2b3c4d5e6";
+
+  /** Wrapper stand-ins, one per store, each with the hint and that store in its environment, waiting on the test's stdin. */
+  async function wrapped(stores: string[], reported: string | null, runtime = served.HERDR) {
+    const home = mkdtempSync(join(tmpdir(), "claude-wrapped-"));
+    const cwd = join(home, "work");
+    const store = join(home, "project-store");
+    const transcript = join(store, "projects", claudeProjectDir(cwd), `${SESSION}.jsonl`);
+    mkdirSync(join(transcript, ".."), { recursive: true });
+    writeFileSync(transcript, "");
+    const wrappers: ReturnType<typeof Bun.spawn>[] = [];
+    const restores: (() => void)[] = [];
+    const previousHome = process.env["HOME"];
+    const previousDir = process.env["CLAUDE_CONFIG_DIR"];
+    try {
+      for (const dir of stores) {
+        mkdirSync(join(home, dir), { recursive: true });
+        wrappers.push(Bun.spawn(["bash", "-c", "echo; read -r line"], { env: { PATH: process.env["PATH"] ?? "", HOME: home, HERDR_AGENT: "claude", CLAUDE_CONFIG_DIR: join(home, dir) }, stdin: "pipe", stdout: "pipe", stderr: "ignore" }));
+      }
+      for (const wrapper of wrappers) if ((await (wrapper.stdout as ReadableStream<Uint8Array>).getReader().read()).done) throw new Error("the wrapper stand-in ended early");
+      process.env["HOME"] = home;
+      delete process.env["CLAUDE_CONFIG_DIR"];
+      const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get"
+        ? { agent: reported === null ? {} : { agent_session: { agent: "claude", source: "herdr:claude", kind: "id", value: reported } } }
+        : { process_info: { pane_id: "w1:p1", shell_pid: 1, foreground_processes: wrappers.map((wrapper) => ({ pid: wrapper.pid, name: "bash", argv: ["bash", "/opt/sandbox/claude-wrapped"] })) } }) as unknown as typeof herdr.herdrRpc);
+      restores.push(() => rpc.mockRestore());
+      const serving = spyOn(served, "capabilities").mockReturnValue(runtime);
+      restores.push(() => serving.mockRestore());
+      return { found: (await claudePaneSession({ pane_id: "w1:p1", cwd, foreground_cwd: cwd } as HerdrPane))?.path ?? null, transcript };
+    } finally {
+      for (const restore of restores.reverse()) restore();
+      for (const wrapper of wrappers) wrapper.kill("SIGKILL");
+      if (previousHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = previousHome;
+      if (previousDir !== undefined) process.env["CLAUDE_CONFIG_DIR"] = previousDir;
+      rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  it("reads the reported session in the store the hinted wrapper hands Claude", async () => {
+    const { found, transcript } = await wrapped(["project-store", "project-store"], SESSION);
+    expect(found).toBe(transcript);
+  });
+
+  it("binds none when the hinted processes name two stores: either could be a guess", async () => {
+    expect((await wrapped(["project-store", "other-store"], SESSION)).found).toBeNull();
+  });
+
+  it("binds none when herdr has no session reported: the wrapper is no Claude whose PID record could say", async () => {
+    expect((await wrapped(["project-store"], null)).found).toBeNull();
+  });
+
+  it("takes no hint on herdr-core, which names the job's leader alone: a process below it may name another store", async () => {
+    expect((await wrapped(["project-store"], SESSION, HERDR_CORE)).found).toBeNull();
+  });
+});
+
 // herdr-core names only the first process of the foreground job: a launcher in front of Claude hid it (#3009)
 describe.skipIf(process.platform !== "linux")("a Claude herdr-core does not name in front (#3009)", () => {
   const launcher = (leader: number) => ({ process_info: { pane_id: "t1", shell_pid: 1, foreground_processes: [{ pid: leader, name: "bun", argv: ["bun", "launch.ts"] }] } });
+
+  it("reads a pane's default Claude transcript even when the server has a different store (#4618)", async () => {
+    const job = await claudeStandIns(1);
+    const pid = job.pids[0]!;
+    const store = claudeHome(pid, job.start(pid));
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get"
+      ? { agent: {} }
+      : { process_info: { foreground_processes: [{ pid, name: "claude", argv: ["claude"] }] } }) as unknown as typeof herdr.herdrRpc);
+    try {
+      process.env["CLAUDE_CONFIG_DIR"] = join(store.home, "server-store");
+      mkdirSync(process.env["CLAUDE_CONFIG_DIR"], { recursive: true });
+      const pane = { pane_id: "default-claude-store", cwd: store.cwd, foreground_cwd: store.cwd } as HerdrPane;
+      expect((await claudePaneSession(pane))?.path).toBe(store.transcript);
+    } finally {
+      delete process.env["CLAUDE_CONFIG_DIR"];
+      rpc.mockRestore();
+      job.stop();
+      store.restore();
+    }
+  });
 
   it("finds the one Claude a launcher runs, and its session by the PID record", async () => {
     const job = await claudeStandIns(1);

@@ -3,12 +3,14 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix, sep } from "node:path";
-import { fixedSleepCounts, fixedSleeps, sleepFiles } from "./fixed-sleeps.ts";
+import { fixedSleepCounts, fixedSleeps, markedWaitCounts, markedWaits, sleepFiles, turnWaitCounts, turnWaitFiles, turnWaits } from "./fixed-sleeps.ts";
 import { fail, files, lineOf, read, repo, stripComments } from "./source-scan.ts";
 
-const SOURCES = [...files("{src,server,shared,scripts,site,telemetry,integrations}/**/*.{ts,tsx,mjs,js}"), "vite.config.ts"];
+const SOURCES = [...files("{src,server,shared,scripts,site,telemetry,integrations,tui}/**/*.{ts,tsx,mjs,js}"), "vite.config.ts"];
 
-const SPECIFIER = /(?:^|[\s;])(?:import|export)\s[^;]*?\sfrom\s*["']([^"']+)["']|(?:^|[\s;])import\s*["']([^"']+)["']|\bimport\(\s*["']([^"']+)["']\s*\)/gm;
+// A declaration never runs on into the next `import`: one that no semicolon ends would otherwise take the import
+// after it for its own `from`, and that import's specifier would go unread.
+const SPECIFIER = /(?:^|[\s;])(?:import|export)\s(?:(?!\bimport\b)[^;])*?\sfrom\s*["']([^"']+)["']|(?:^|[\s;])import\s*["']([^"']+)["']|\bimport\(\s*["']([^"']+)["']\s*\)/gm;
 
 const specifiersIn = (code: string): { specifier: string; line: number }[] =>
   [...code.matchAll(SPECIFIER)].map((match) => {
@@ -22,7 +24,7 @@ const specifiers = (file: string): { specifier: string; at: string }[] =>
 describe("imports", () => {
   it("name relative modules with their extension and never use the @shared alias", () => {
     const offenders = SOURCES.flatMap((file) => specifiers(file)
-      .filter(({ specifier }) => specifier.startsWith("@shared/") || (specifier.startsWith(".") && !/\.(?:ts|tsx|mjs|js|css|json|md|svg|png|woff2|html|txt|sh)(?:\?[\w&=-]*)?$/.test(specifier)))
+      .filter(({ specifier }) => specifier.startsWith("@shared/") || (specifier.startsWith(".") && !/\.(?:ts|tsx|mjs|js|css|json|md|svg|png|woff2|html|txt|wasm|sh)(?:\?[\w&=-]*)?$/.test(specifier)))
       .map(({ at }) => at));
     fail(offenders, "Imports carry explicit .ts/.tsx extensions and relative paths (AGENTS.md, Code conventions): write \"./x.ts\" or \"../shared/x.ts\", never \"./x\" or \"@shared/x\".");
   });
@@ -34,7 +36,7 @@ describe("imports", () => {
 });
 
 describe("the frontend build", () => {
-  const BUILD_SCRIPTS = ["vite.config.ts", "scripts/build-xterm.ts", "scripts/compressed-assets.ts", "scripts/service-worker-build.ts", "scripts/theme-bootstrap-build.ts", "scripts/shell-build.ts", "scripts/build-cache.ts"];
+  const BUILD_SCRIPTS = ["vite.config.ts", "scripts/compressed-assets.ts", "scripts/service-worker-build.ts", "scripts/theme-bootstrap-build.ts", "scripts/shell-build.ts", "scripts/build-cache.ts"];
 
   it("imports nothing from server/ or relay/", () => {
     const offenders = BUILD_SCRIPTS.flatMap((file) => specifiers(file).filter(({ specifier }) => /(?:^|\/)(?:server|relay)\//.test(specifier)).map(({ at }) => at));
@@ -116,16 +118,22 @@ describe("the ratchets' base", () => {
   });
 });
 
-describe("fixed sleeps", () => {
-  const baseline = JSON.parse(read("scripts/fixed-sleeps.json")) as Record<string, number>;
+/**
+ * Holds every file to its count in `json`, which may only shrink: never above the one at the ratchets' base, and
+ * lowered when the code has fewer. `instead` says what to do in place of raising it.
+ */
+function countRatchet({ json, what, counts, list, print, instead, covered = sleepFiles }: {
+  json: string; what: string; counts: () => Record<string, number>; list: (file: string) => string[]; print: string; instead: string; covered?: () => string[];
+}): void {
+  const baseline = JSON.parse(read(json)) as Record<string, number>;
 
   const committed = (): { counts: Record<string, number>; renames: Map<string, string> } | null => {
     const base = ratchetBase();
-    const json = base === null ? null : atBase(base, "scripts/fixed-sleeps.json");
-    return base === null || json === null ? null : { counts: JSON.parse(json) as Record<string, number>, renames: renamesSince(base) };
+    const text = base === null ? null : atBase(base, json);
+    return base === null || text === null ? null : { counts: JSON.parse(text) as Record<string, number>, renames: renamesSince(base) };
   };
 
-  it("never raises scripts/fixed-sleeps.json above the one at the ratchets' base", () => {
+  it(`never raises ${json} above the one at the ratchets' base`, () => {
     const at = committed();
     if (at === null) return;
     const before = at.counts;
@@ -134,22 +142,31 @@ describe("fixed sleeps", () => {
     fail([
       ...Object.entries(baseline).filter(([file, count]) => count > was(file)).map(([file, count]) => `${file}: ${count}, the base has ${was(file)}`),
       ...total(baseline) > total(before) ? [`total: ${total(baseline)}, the base has ${total(before)}`] : [],
-    ], "scripts/fixed-sleeps.json may only shrink: take the new fixed sleep out of the code instead (see the message of the test above for how). A renamed file takes its entry along with the same count, which keeps the total.");
+    ], `${json} may only shrink: ${instead} A renamed file takes its entry along with the same count, which keeps the total.`);
   });
 
-  it("adds no fixed sleep and lowers the baseline when one goes", () => {
-    const counts = fixedSleepCounts();
-    const grown = Object.entries(counts).filter(([file, count]) => count > (baseline[file] ?? 0));
-    fail(grown.flatMap(([file, count]) => [`${file}: ${count} fixed sleeps, baseline ${baseline[file] ?? 0}`, ...fixedSleeps(file).map((line) => `  ${line}`)]),
-      "Wait for the condition, not for a set time (AGENTS.md: bounded polls and deadlines, never fixed sleeps): poll in a loop bounded by a deadline (`const deadline = Date.now() + 10_000; while (!done()) { if (Date.now() > deadline) throw new Error(\"…\"); await Bun.sleep(25); }`), or race a timeout against the event (`Promise.race`). A wait that must be fixed (proving that nothing arrives, a settle gap herdr needs) says so with `// fixed wait: <why>` on its line or the line above. Never raise scripts/fixed-sleeps.json; when a file was renamed, move its entry to the new path with the same count.");
-    const shrunk = Object.entries(baseline).filter(([file, count]) => (counts[file] ?? 0) < count);
-    fail(shrunk.map(([file, count]) => `${file}: ${counts[file] ?? 0} now, baseline ${count}`),
-      "Fixed sleeps went away: lower these entries in scripts/fixed-sleeps.json to the counts shown (remove an entry at 0; `bun scripts/fixed-sleeps.ts` prints them all), so they cannot come back.");
+  it(`adds no ${what} and lowers the baseline when one goes`, () => {
+    const now = counts();
+    const grown = Object.entries(now).filter(([file, count]) => count > (baseline[file] ?? 0));
+    fail(grown.flatMap(([file, count]) => [`${file}: ${count} ${what}s, baseline ${baseline[file] ?? 0}`, ...list(file).map((line) => `  ${line}`)]),
+      `${instead} Never raise ${json}; when a file was renamed, move its entry to the new path with the same count.`);
+    const shrunk = Object.entries(baseline).filter(([file, count]) => (now[file] ?? 0) < count);
+    fail(shrunk.map(([file, count]) => `${file}: ${now[file] ?? 0} now, baseline ${count}`),
+      `These ${what}s went away: lower their entries in ${json} to the counts shown (remove an entry at 0; \`${print}\` prints them all), so they cannot come back.`);
   });
 
   it("lists only files that exist", () => {
-    fail(Object.keys(baseline).filter((file) => !existsSync(join(repo, file)) || !sleepFiles().includes(file)),
-      "Remove these entries from scripts/fixed-sleeps.json: the files are gone or no longer covered. A renamed file keeps its entry under the new path, with the same count.");
+    fail(Object.keys(baseline).filter((file) => !existsSync(join(repo, file)) || !covered().includes(file)),
+      `Remove these entries from ${json}: the files are gone or no longer covered. A renamed file keeps its entry under the new path, with the same count.`);
+  });
+}
+
+const WAIT_FOR_THE_CONDITION = "Wait for the condition, not for a set time (AGENTS.md: bounded polls and deadlines, never fixed sleeps): poll in a loop bounded by a deadline (`const deadline = Date.now() + 10_000; while (!done()) { if (Date.now() > deadline) throw new Error(\"…\"); await Bun.sleep(25); }`), or race a timeout against the event (`Promise.race`).";
+
+describe("fixed sleeps", () => {
+  countRatchet({
+    json: "scripts/fixed-sleeps.json", what: "fixed sleep", counts: fixedSleepCounts, list: fixedSleeps, print: "bun scripts/fixed-sleeps.ts",
+    instead: `${WAIT_FOR_THE_CONDITION} A wait that must be fixed (proving that nothing arrives, a settle gap herdr needs) says so with \`// fixed wait: <why>\` on its line or the line above, and counts in scripts/fixed-waits.json instead.`,
   });
 
   it("tells a fixed sleep from a bounded poll", () => {
@@ -184,6 +201,154 @@ describe("fixed sleeps", () => {
     expect(found("const tick = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));\nawait tick();\nawait tick(20);")).toBe(1);
     expect(found("const wait = io.wait ?? Bun.sleep;\nwhile (Date.now() < deadline) await wait(25);")).toBe(0);
     expect(found("async function flood() {\n  await Bun.sleep(150);\n  send();\n}\nawait flood();\nawait flood();")).toBe(1);
+  });
+});
+
+/**
+ * Finding or ending processes by name (pkill, killall, pgrep -f) reaches every process on the PC, the user's own session
+ * and test app included: a lane once ended the maintainer's test app with `pkill -f server/index.ts`. The name must hold
+ * something the run made (a mkdtemp directory, a randomUUID tag, its own pid), not a fixed string or an id herdr gave
+ * out, which another session's pane has too.
+ */
+const KILLS_BY_NAME = /\b(pkill|killall|pgrep)\b/g;
+/** They run these commands only inside a container they start. */
+const IN_A_CONTAINER = ["scripts/fresh-install-docker.ts", "scripts/join/join.contract.test.ts"];
+
+/** One argument of the command, quoted or bare, or what ends the command (`]`, `)`, `;`, `||`, a redirection …). */
+const ARGUMENT = /`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\|\||&&|[)\];|<>]|(?:\$\{[^}]*\}|[^\s"'`,[\]();|&<>])+(?:\([^()]*\))?/g;
+const unquoted = (argument: string): string => argument.replace(/^["'`]|["'`]$/g, "");
+
+/** What an argument takes from the run: the values it interpolates, or a whole JavaScript expression. None for a fixed string. */
+function namesIn(argument: string, shell: boolean): string[] {
+  if (shell || argument.startsWith("`")) return [...argument.matchAll(/\$\{([^}]+)\}|\$([A-Za-z_]\w*)/g)].map((match) => match[1] ?? match[2]!);
+  return /^["']/.test(argument) ? [] : [argument];
+}
+
+/**
+ * The lines that find or end processes by a name the run did not make (`pgrep` only with `-f`). The name is the command's
+ * last argument that is no option (`-f`, `-KILL`, `-${signal}`); a command scoped to a parent the run names
+ * (`pgrep -P <pid>`) passes too.
+ */
+function killsByName(file: string, text: string): string[] {
+  const code = file.endsWith(".sh") ? text.replace(/(^|\s)#.*$/gm, "$1") : stripComments(text);
+  return [...code.matchAll(KILLS_BY_NAME)].flatMap(({ index: at, 1: command }) => {
+    const after = code.slice(at + command!.length);
+    // `["pkill", "-f", tag]` is an argument list, which may go on over lines; anything else (a .sh line, a command in a
+    // string) is a shell's, which ends with its line
+    const list = /["']$/.test(code.slice(0, at)) && /^["']/.test(after);
+    const shell = !list;
+    const args: string[] = [];
+    for (const [token] of (list ? after.slice(1) : after.slice(0, (after + "\n").indexOf("\n"))).matchAll(ARGUMENT)) {
+      if (/^(?:\|\||&&|[)\];|<>])$/.test(token)) {
+        if (token === ">" && /^\d$/.test(args.at(-1) ?? "")) args.pop();
+        break;
+      }
+      args.push(token);
+    }
+    if (command === "pgrep" && !args.some((arg) => /^-[a-zA-Z]*f[a-zA-Z]*$/.test(unquoted(arg)))) return [];
+    const scoped = args.some((arg, i) => unquoted(arg) === "-P" && namesIn(args[i + 1] ?? "", shell).length > 0);
+    const names = namesIn(args.filter((arg) => !unquoted(arg).startsWith("-")).at(-1) ?? "", shell);
+    if (scoped || (names.length > 0 && !names.some((name) => /terminal|pane/i.test(name)))) return [];
+    const line = lineOf(code, at);
+    return [`${file}:${line}: ${text.split("\n")[line - 1]!.trim()}`];
+  }).filter((offender, at, all) => all.indexOf(offender) === at);
+}
+
+describe("killing by name", () => {
+  const KILL_FILES = files("{server,src,shared,scripts,site,telemetry,integrations,tui,app}/**/*.{ts,tsx,mjs,js,sh}")
+    .filter((file) => file !== "scripts/conventions.test.ts");
+
+  it("names only what the run made", () => {
+    fail(KILL_FILES.filter((file) => !IN_A_CONTAINER.includes(file)).flatMap((file) => killsByName(file, read(file))),
+      "pkill, killall and pgrep -f reach every process on the PC, the user's own session and test app included. Name what this run made: a mkdtemp directory or a randomUUID tag in the command line (`pgrep -f ${tag}`), or the pids it started (scripts/own-processes.ts: `ownProcesses(/terminal attach t1$/)` lists the matching processes under this one). A herdr terminal or pane id is no such name: another session has the same ids.");
+  });
+
+  it("lists only files that still kill by name inside their container", () => {
+    fail(IN_A_CONTAINER.filter((file) => !existsSync(join(repo, file)) || killsByName(file, read(file)).length === 0),
+      "IN_A_CONTAINER in scripts/conventions.test.ts lets these files kill by name, and they no longer do: take them out.");
+  });
+
+  it("tells a name the run made from one any process can have", () => {
+    const found = (code: string, file = "example.ts") => killsByName(file, code).length;
+    expect(found("Bun.spawnSync([\"pkill\", \"-f\", \"server/index.ts\"]);")).toBe(1);
+    expect(found("pkill -f server/index.ts", "example.sh")).toBe(1);
+    expect(found("killall bun", "example.sh")).toBe(1);
+    expect(found("Bun.spawn([\"pkill\", \"-f\", `^[^ ]*herdr terminal attach ${terminal}$`]);")).toBe(1);
+    expect(found("Bun.spawnSync([\"pgrep\", \"-f\", `terminal session observe ${paneId}`]);")).toBe(1);
+    expect(found("Bun.spawn([\"pkill\", `-${name}`, \"-f\", \"server/index.ts\"]);")).toBe(1);
+    expect(found("pkill -f \"server/index.ts\" 2>/dev/null || true", "example.sh")).toBe(1);
+    expect(found("await m.sh(`pkill -f ${tag}-x; pkill -f server/index.ts`);")).toBe(1);
+    expect(found("Bun.spawn([\"pkill\", `-${name}`, \"-f\", s.log]);")).toBe(0);
+    expect(found("Bun.spawnSync([\"sudo\", \"-n\", \"pkill\", \"-u\", username]);")).toBe(0);
+    expect(found("Bun.spawnSync([\n  \"pgrep\",\n  \"-f\",\n  \"server/index.ts\",\n]);")).toBe(1);
+    expect(found("Bun.spawnSync([\n  \"pkill\",\n  \"-f\",\n  tag,\n]);")).toBe(0);
+    expect(found("Bun.spawnSync([\"pgrep\", \"-f\", tag]);")).toBe(0);
+    expect(found("spawnSync(\"pkill\", [\"-KILL\", \"-f\", tempDir]);")).toBe(0);
+    expect(found("pkill -f \"$r/remote.sh\" || true", "example.sh")).toBe(0);
+    expect(found("Bun.spawnSync([\"pgrep\", \"-P\", String(process.pid), \"-f\", \"ovis-pty-sidecar\"]);")).toBe(0);
+    expect(found("kill -HUP \"$(pgrep -o -x sshd)\"", "example.sh")).toBe(0);
+    expect(found("# pkill -f server/index.ts", "example.sh")).toBe(0);
+    expect(found("// pkill -f server/index.ts")).toBe(0);
+  });
+});
+
+describe("waits marked fixed", () => {
+  countRatchet({
+    json: "scripts/fixed-waits.json", what: "marked fixed wait", counts: markedWaitCounts, list: markedWaits, print: "bun scripts/fixed-sleeps.ts --marked",
+    instead: `A \`// fixed wait:\` takes a wait out of scripts/fixed-sleeps.json, not out of this count. ${WAIT_FOR_THE_CONDITION} To keep a new wait that must be fixed, take out one that no longer has to be.`,
+  });
+
+  it("counts the set-time waits a marker excuses, and nothing else", () => {
+    const found = (code: string) => markedWaits("example.ts", code).length;
+    expect(found("// fixed wait: nothing may arrive in this time\nawait page.waitForTimeout(500);")).toBe(1);
+    expect(found("await Bun.sleep(300); // fixed wait: a settle gap herdr needs")).toBe(1);
+    expect(found("await Bun.sleep(300);")).toBe(0);
+    expect(found("// fixed wait: polled\nwhile (!done() && Date.now() < deadline) await Bun.sleep(25);")).toBe(0);
+    expect(found("// fixed wait: raced\nawait Promise.race([event, Bun.sleep(1000)]);")).toBe(0);
+  });
+});
+
+describe("turn waits", () => {
+  countRatchet({
+    json: "scripts/turn-waits.json", what: "turn wait", counts: turnWaitCounts, list: turnWaits, print: "bun scripts/fixed-sleeps.ts --turns", covered: turnWaitFiles,
+    instead: "Wait for the work itself, not for a turn of the event loop: a turn ends before work that waits on a file, a timer or a socket, so an assertion that something did not happen passes before it could. Await the work's own promise (the status hub's `codexLooks()`, a spy's result, an event you subscribed to before acting), or poll its condition in a loop bounded by a deadline.",
+  });
+
+  it("tells a turn wait from a wait for the event", () => {
+    const found = (code: string, file = "example.test.ts") => turnWaits(file, code).length;
+    expect(found("await new Promise<void>((resolve) => setImmediate(resolve));")).toBe(1);
+    expect(found("await new Promise((resolve) => { setImmediate(resolve); });")).toBe(1);
+    expect(found("await new Promise((resolve) => setTimeout(resolve, 0));")).toBe(1);
+    expect(found("await new Promise((r) => setTimeout(() => r()));")).toBe(1);
+    expect(found("await new Promise(setImmediate);")).toBe(1);
+    expect(found("for (let turn = 0; turn < 8; turn++) { await d.settled(); await new Promise(setImmediate); }")).toBe(1);
+    expect(found("await act(async () => { for (let turn = 0; turn < 3; turn++) await new Promise((resolve) => setTimeout(resolve, 0)); });")).toBe(1);
+    expect(found("const tick = () => new Promise<void>((resolve) => setImmediate(resolve));\nawait tick();\nawait tick();")).toBe(2);
+    expect(found("import { setImmediate as turn } from \"node:timers/promises\";\nawait turn();")).toBe(1);
+    expect(found("const settled = async () => {\n  await lookup;\n  await new Promise<void>((resolve) => setImmediate(resolve));\n};\nawait settled();")).toBe(1);
+    expect(found("await new Promise((resolve) => setTimeout(resolve, 20));")).toBe(0);
+    expect(found("await h.status.codexLooks();")).toBe(0);
+    expect(found("for (let turn = 0; turn < 50 && answer === null; turn++) await new Promise((resolve) => setImmediate(resolve));")).toBe(0);
+    expect(found("while (!done()) { if (performance.now() > end) throw new Error(\"late\"); await new Promise((r) => setImmediate(r)); }")).toBe(0);
+    expect(found("for (let seen = null; seen !== lane;) { seen = lane; await lane; await new Promise((resolve) => setTimeout(resolve, 0)); }")).toBe(0);
+    expect(found("for (;;) {\n  if (seen()) break;\n  await new Promise(setImmediate);\n}")).toBe(0);
+    expect(found("expect(await Promise.race([ready, new Promise((resolve) => setImmediate(() => resolve(\"pending\")))])).toBe(\"pending\");")).toBe(0);
+    expect(found("await Promise.race([ready, new Promise(setImmediate)]); await new Promise(setImmediate);")).toBe(1);
+    expect(found("for (let i = 8; i > 0; i--) { await new Promise(setImmediate); }")).toBe(1);
+    expect(found("for (const type of types) { await page.evaluate(() => { return 1; }); await new Promise(setImmediate); }")).toBe(1);
+    expect(found("do { await new Promise(setImmediate); } while (!done() && Date.now() < deadline);")).toBe(0);
+    expect(found("function tick() { return new Promise(setImmediate); }\nawait tick();\nawait tick(\"flushed\");")).toBe(2);
+    expect(found("import { setTimeout as sleep } from \"node:timers/promises\";\nawait sleep(0);\nawait sleep();\nawait sleep(20);")).toBe(2);
+    expect(found("import * as timers from \"node:timers/promises\";\nawait timers.setImmediate();\nawait timers.setTimeout(0);\nawait timers.setTimeout(20);")).toBe(2);
+    expect(found("close: () => { setImmediate(() => socket.close()); },")).toBe(0);
+    expect(found("// await new Promise(setImmediate);")).toBe(0);
+  });
+
+  it("counts in tests and browser scripts only", () => {
+    const covered = turnWaitFiles();
+    expect(covered).toContain("server/core/codex-status-hub.test.ts");
+    expect(covered).toContain("scripts/ui-regression.ts");
+    expect(covered).not.toContain("server/core/status.ts");
   });
 });
 
@@ -272,6 +437,53 @@ describe("the tools typecheck", () => {
   });
 });
 
+describe("the demo app's file server", () => {
+  const OWN_SERVER: Record<string, string> = {
+    "scripts/boot-loading-demo-regression.ts": "sends the page's CSP header",
+    "scripts/chat-tool-paths-demo-regression.ts": "answers /pane/conversation and /pane/commands",
+    "scripts/cliproxy-settings-regression.ts": "passes /api to a real server",
+    "scripts/design-gate-qa.ts": "serves the root icons and manifest beside the app",
+    "scripts/diff-find-demo-regression.ts": "serves /icons/ beside the app",
+    "scripts/diff-line-notes-demo-regression.ts": "serves /icons/ beside the app",
+    "scripts/droplet-demo-regression.ts": "rewrites the CSS safe-area inset",
+    "scripts/film/capture.ts": "serves the built site, not the demo app",
+    "scripts/film/render.ts": "serves the film's stage page and footage",
+    "scripts/install-state-demo-regression.ts": "answers manifest.webmanifest with its own body",
+    "scripts/old-safari-demo-regression.ts": "sends the page's CSP header",
+    "scripts/pages-static.ts": "serves the built Pages site as GitHub Pages does",
+    "scripts/pane-mute-demo-run.ts": "answers /fixture/preferences",
+    "scripts/phone-glass-header-demo-regression.ts": "rewrites the CSS safe-area inset",
+    "scripts/prompt-card-timing-demo-regression.ts": "also serves paths outside /app/",
+    "scripts/repo-diff-browser-qa.ts": "serves /icons/ beside the app",
+    "scripts/settings-pages-demo-regression.ts": "serves two builds side by side",
+    "scripts/settings-palette-search-demo-regression.ts": "serves two builds side by side",
+    "scripts/settings-rows-demo-regression.ts": "serves two builds side by side",
+    "scripts/setup-dialog-demo-regression.ts": "serves /icons/ beside the app",
+    "scripts/setup-row-demo-regression.ts": "serves /icons/ beside the app",
+    "scripts/theme-first-paint-demo-regression.ts": "sends the page's CSP header and refuses /api",
+    "scripts/usage-account-management-regression.ts": "passes /api to a real server",
+  };
+  const servesFiles = (code: string): boolean =>
+    /\bBun\.serve\s*\(/.test(code) && /\bdecodeURIComponent\s*\(/.test(code) && /\bBun\.file\s*\(/.test(code);
+  const servers = files("scripts/**/*.{ts,tsx,mjs,js}").filter((file) => file !== "scripts/demo-server.ts" && file !== "scripts/conventions.test.ts" && servesFiles(stripComments(read(file))));
+
+  it("is serveDemo from scripts/demo-server.ts", () => {
+    fail(servers.filter((file) => !(file in OWN_SERVER)),
+      "Serve the demo app with serveDemo(dir) from scripts/demo-server.ts (serveDemo(dir, { prefix }) for another path) instead of a Bun.serve of your own: a copy is one more to fix when the server changes. If a script needs something serveDemo does not do, add it to serveDemo as an option. OWN_SERVER in scripts/conventions.test.ts only holds the scripts that had their own before it existed.");
+  });
+
+  it("lists only scripts that still serve the files themselves", () => {
+    fail(Object.keys(OWN_SERVER).filter((file) => !servers.includes(file)),
+      "These scripts no longer serve files themselves: take them out of OWN_SERVER in scripts/conventions.test.ts.");
+  });
+
+  it("tells a server of files from one that only answers requests, whatever the spelling", () => {
+    expect(servesFiles("Bun.serve( { async fetch(req) { const p = new URL(req.url).pathname; const name = decodeURIComponent( p.slice(base.length)); return new Response(Bun.file( join(root, name))); } })")).toBe(true);
+    expect(servesFiles("const server = serveDemo(app, { prefix: \"/\" });")).toBe(false);
+    expect(servesFiles("Bun.serve({ fetch: () => Response.json({ turns: [] }) }); const pane = decodeURIComponent(id);")).toBe(false);
+  });
+});
+
 describe("demo transport", () => {
   // Every push to main redeploys the browser demo, whose server is site/demo/transport.ts: an
   // endpoint or WS frame it does not answer is a 404 or a dropped frame there (AGENTS.md,
@@ -282,13 +494,50 @@ describe("demo transport", () => {
   const answered = (route: string) => exact.has(route) || prefixes.some((prefix) => route.startsWith(prefix));
 
   const DEMO_404: Record<string, string> = {
+    "/api/pane/turn/cancel": "only a live ACP keeper has a turn a person can cancel",
+    "/api/pane/turn/release": "only a live ACP keeper can be handed back",
+    "/api/pane/turn/cancel-children": "only a pane that started live ACP keepers has children a person can stop",
+    "/api/worktree/create-checked": "Only the terminal screen sends checkout mutations bound to a herdr-core identity.",
+    "/api/worktree/remove-checked": "Only the terminal screen sends checkout mutations bound to a herdr-core identity.",
+    "/api/account/confirm": "a PC-local screen confirmation (the PC's own confirm page); a browser over the demo never answers one",
+    "/api/account/confirm-page": "opens the PC's own confirm page for a key that waits: only with the release flag on, which the demo never is",
+    "/api/account/forget": "a PC-local recovery act (ovis recover / the PC's screen); the demo's browser never asks for it",
+    "/api/account/leave": "the PC leaving its account is a PC-local act; the app's own leave goes through the account service",
+    "/api/account/pc-proof": "this PC's own proof for its listing: asked only by a signed-in window on this PC itself, which the demo never is",
+    "/api/account/list": "how this PC follows its account's signed list: read by this PC's own window and CLI for diagnosis, and no screen of the app asks for it",
+    "/api/account/list/pin": "a person at the PC names the list it pins: this PC's own window and CLI alone, and no screen of the app asks for it yet",
+    "/api/account/list/head": "a device and the PC say where the account's signed list stands: the demo's PC follows no list, and 404 is what such a PC answers",
+    "/api/account/list/page": "a device hands the PC entries of the account's signed list: the demo's PC follows no list, and 404 is what such a PC answers",
+    "/api/account/list/named": "a device that scanned a PC's QR code names its account's list in the place of its link: the demo's PC is in its account and shows no such code",
+    "/api/account/list/witness": "a device asks a PC whom it lets in before its account moves onto a signed list: the demo's account never moves",
+    "/api/account/list/name": "a device names its account's signed list to a PC that follows none: the demo's account has no list",
+    "/api/account/list/card": "a device asks a PC its list carried in for its card: the demo's PC follows no list, and refuses it as such a PC does",
+    "/api/account/list/add": "a PC in no account is added to an account that keeps a signed list: asked by `ovis add` and by Add this PC in the PC's own window, and the demo's PC is in its account",
+    "/api/account/list/add/confirm": "the person at the PC says the adding device shows the same number: asked by `ovis add` on the PC",
+    "/api/account/list/add/cancel": "the person at the PC says the numbers differ: asked by `ovis add` on the PC",
+    "/api/account/list/join": "`ovis join` with an invite's line that names the account's list: the CLI on the PC alone",
+    "/api/account/list/join/prepare": "`ovis join` with an auto invite: the CLI on the PC alone",
+    "/api/account/list/join/body": "`ovis join` with an auto invite: the CLI on the PC alone",
+    "/api/account/list/join/place": "`ovis join` with an auto invite: the CLI on the PC alone",
+    "/api/runtime/move/install": "the demo reports runtime move unavailable (not_herdr), so the app never offers an install",
+    "/api/runtime/move/stop": "the demo reports runtime move unavailable (not_herdr), so the app never offers a stop",
+    "/api/runtime/move/stop-all": "the demo reports runtime move unavailable (not_herdr), so the app never offers a stop",
     "/api/account/enroll": "account linking: no screen of the app asks for it yet (the account screens come with their own demo answers)",
     "/api/updates/cancel": "a connection server asks a PC's own Ovis to stop its update; the demo's browser never does",
     "/api/account/introduce": "account linking: no screen of the app asks for it yet (the account screens come with their own demo answers)",
     "/api/account/introduction": "account linking: no screen of the app asks for it yet (the account screens come with their own demo answers)",
     "/api/account/link": "account linking: no screen of the app asks for it yet (the account screens come with their own demo answers)",
     "/api/account/records": "account linking: no screen of the app asks for it yet (the account screens come with their own demo answers)",
+    "/api/devices/pending": "devices waiting for this PC's screen: only with the release flag on, which the demo never is",
+    "/api/devices/pending/decline": "devices waiting for this PC's screen: only with the release flag on, which the demo never is",
+    "/api/devices/tailnet-nodes/block": "keeping a Tailscale device out: the demo lists none, so its removal dialog offers none to choose",
+    "/api/devices/tailnet-nodes/answer": "a removed Tailscale device asking to get back in: the demo lists none, so no card asks",
+    "/api/account/lock": "strict mode: only with the release flag on, which the demo never is",
+    "/api/account/unlock": "strict mode: only with the release flag on, which the demo never is",
+    "/api/account/local-confirm": "refused to every caller (local_required): an act is confirmed on the PC's own screen, never through a route",
     "/api/account/relay-account": "relay pass: named by a signed-in owner's account screen, which the demo never reaches (no sign-in there)",
+    "/api/account/ssh-add": "adding another PC to the account over SSH: this PC's own window, signed in, after a setup job reached that PC's own Ovis; the demo has no sign-in and no SSH",
+    "/api/account/one-press": "one-press PC add: only with the release flag on and after the account service admitted the PC, which the demo never reaches (no sign-in there)",
     "/api/devices/pair/cancel": "called by the plugin's terminal `link --code` only (scripts/plugin-link.ts); no screen of the app asks for it",
     "/api/auth": "the demo is never locked (/api/health says authenticated), so neither the token form nor sign-out runs",
     "/api/bridge": "a remote PC's bridge endpoint, asked by another server, never by the browser",
@@ -297,6 +546,7 @@ describe("demo transport", () => {
     "/api/info": "OpenCode v2's own service's identity, checked by this server (opencode-service.ts), never by the browser",
     "/api/devices/pair": "pairing a device: the demo is never locked, so the pairing form does not run",
     "/api/relay/pairings": "the waiting relay pairings, read by `plugin.ts pair --approve` in the PC's terminal; the browser hears of them on its event stream",
+    "/api/relay/offer/keep": "the state of a code made for an account, by its id: no screen of the app calls this route. This PC itself, or any device with drive access on a direct connection that has the id, may read it",
     "/api/pane/conversation/image": "an image in a chat turn: the demo's transcripts carry none (listed when this guard was added)",
     "/api/pane/conversation/tool-output": "a tool call's full output: not part of the demo (listed when this guard was added)",
     "/api/pane/image": "pasting an image: the demo stores no files (listed when this guard was added)",
@@ -344,10 +594,9 @@ describe("names from before Ovis", () => {
     "src/lib/legacyStorage.test.ts": "tests that move",
     "server/auth.ts": "still accepts and clears the old cookies",
     "server/auth.test.ts": "tests the old cookies",
-    "server/pty/pty-host.mjs": "keeps the token from the attach under either name",
-    "server/pty/session.ts": "keeps the token from the sidecar under either name",
-    "crates/pty-sidecar/src/pty.rs": "keeps the token from the attach under either name, as pty-host.mjs does",
-    "server/pty/host.test.ts": "tests that both PTY hosts keep the token from the command under either name",
+    "server/pty/session.ts": "keeps the token from the PTY host under either name",
+    "crates/pty-sidecar/src/pty.rs": "keeps the token from the attach under either name",
+    "server/pty/host.test.ts": "tests that the PTY host keeps the token from the command under either name",
     "server/remote-host.ts": "a remote bundle published before the rename reads the old name",
     "install.sh": "reads the old settings of an earlier install",
     "scripts/plugin-tui.ts": "withholds the old token name from ovis tui too, as a shell set up for an earlier install may export it",

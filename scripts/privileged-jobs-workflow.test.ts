@@ -20,7 +20,6 @@ const REVIEWED_ACTIONS: Record<string, { fetchesArtifact: boolean }> = {
   "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8": { fetchesArtifact: false },
   "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6": { fetchesArtifact: false },
   "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1": { fetchesArtifact: false },
-  "contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08": { fetchesArtifact: false },
 };
 const reviewed = (uses: string): boolean => Object.hasOwn(REVIEWED_ACTIONS, uses);
 /** The actions setup-ci's own steps may use, each at the exact reference reviewed. */
@@ -853,8 +852,11 @@ describe("a whole-run run (a Pages run, or one whose privileged job takes an art
 
   test("the remote bundles and the Rust PTY host take the pull-request Mac form, and their publishing jobs skip pull requests", () => {
     expect(repository["remote-bundles.yml"]!.jobs.bundle!["runs-on"]).toBe(MAC_PULL_REQUEST);
+    expect(repository["remote-bundles-platforms.yml"]!.jobs.bundle!["runs-on"]).toBe(MAC_PULL_REQUEST);
     expect(repository["pty-sidecar.yml"]!.jobs.build!["runs-on"]).toBe(MAC_PULL_REQUEST);
     expect(pullRequestProblems(repository, "remote-bundles.yml")).toEqual([]);
+    expect(pullRequestProblems(repository, "remote-bundles-platforms.yml")).toEqual([]);
+    expect(Object.keys(repository["remote-bundles-platforms.yml"]!.on as object)).toEqual(["pull_request"]);
     expect(pullRequestProblems(repository, "pty-sidecar.yml")).toEqual([]);
   });
 

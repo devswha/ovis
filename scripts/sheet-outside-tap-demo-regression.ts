@@ -6,6 +6,7 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
 // A tap on the dimmed page around a phone's sheet closes the sheet and goes nowhere else: the whole tap (its touch,
 // pointer and mouse events and the click the browser sends after the touch ends) lands on the scrim, not on the row
@@ -50,6 +51,11 @@ const pointAbove = (page: Page, selector: string, top: number): Promise<Point | 
   return null;
 }, top);
 const topOf = (page: Page, selector: string): Promise<number> => page.locator(selector).first().evaluate((node) => node.getBoundingClientRect().top);
+const rowSheetAtRest = (page: Page) => page.waitForFunction(() => {
+  const sheet = document.querySelector(".row-sheet");
+  return sheet !== null && sheet.contains(document.activeElement)
+    && sheet.getAnimations().length === 0 && sheet.parentElement?.getAnimations().length === 0;
+});
 
 type Pointer = "touch" | "mouse";
 
@@ -100,7 +106,7 @@ async function listSheet(page: Page, button: string, name: string, pointer: Poin
   await page.locator(".mode-inbox .inbox-item").first().waitFor({ timeout: 20_000 });
   if (pointer === "touch") await page.locator(button).tap();
   else await page.locator(button).click();
-  await page.locator(".row-sheet").waitFor();
+  await rowSheetAtRest(page);
   const point = await pointAbove(page, ".mode-inbox .inbox-item", await topOf(page, ".row-sheet"));
   assert.ok(point !== null, `a row of the list shows above the ${name}`);
   const seen = await tap(page, point, pointer);
@@ -115,15 +121,7 @@ try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    let file: string;
-    try { file = decodeURIComponent(new URL(request.url).pathname.slice(1)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: "/" });
   const base = `http://127.0.0.1:${server.port}`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -135,6 +133,7 @@ try {
       await withPhone(browser, base, "/?app=inbox", "(c) Settings from the list's More: a tap above it closes it alone", async (page) => {
         await page.locator(".mode-inbox .inbox-item").first().waitFor({ timeout: 20_000 });
         await page.locator(".mode-inbox .inbox-more").tap();
+        await rowSheetAtRest(page);
         await page.locator('.row-sheet [data-item="settings"]').tap();
         await page.locator(".settings-dialog").waitFor();
         await page.waitForFunction(() => {
@@ -153,15 +152,23 @@ try {
         await page.locator(".settings-dialog").waitFor({ state: "detached", timeout: 5_000 });
         const at = await address(page);
         assert.ok(await page.locator(".mode-inbox").count() === 1 && at.app === "inbox" && at.pane === null, `the list stays: the address says ${JSON.stringify(at)}`);
+        // its scrim goes on the mousedown, so the mouseup after it is hit-tested onto the list: no click follows it there
         assert.deepEqual(seen.filter((event) => event.type === "click" && event.inList).map((event) => event.target), [], "the tap's click reaches nothing in the list");
       });
 
       await withPhone(browser, base, `/?pane=${encodeURIComponent(panes.omp)}&view=chat`, "(d) the classic More sheet over a pane: a tap above it lands on its scrim alone", async (page) => {
         await page.locator(".pane-frame.is-current").waitFor({ timeout: 20_000 });
         await page.locator(".header-more-button").tap();
-        await page.locator(".row-sheet").waitFor();
+        // Measure the gap above the sheet at its final height.
+        await rowSheetAtRest(page);
         const top = await topOf(page, ".row-sheet");
-        const seen = await tap(page, { x: PHONE.width / 2, y: Math.round(top / 2) });
+        const point = { x: PHONE.width / 2, y: Math.round(top / 2) };
+        const hit = await page.evaluate(({ x, y }) => {
+          const node = document.elementFromPoint(x, y);
+          return { scrim: node !== null && node === document.querySelector(".row-sheet")?.parentElement, target: node?.outerHTML.slice(0, 150) };
+        }, point);
+        assert.ok(hit.scrim, `the point above the More sheet hits its scrim: ${JSON.stringify(hit.target)}`);
+        const seen = await tap(page, point);
         await page.locator(".row-sheet").waitFor({ state: "detached", timeout: 5_000 });
         assert.deepEqual(behind(seen), [], "every event of the tap outside the sheet lands on its scrim, none on the pane behind");
       });

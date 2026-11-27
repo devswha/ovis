@@ -1,6 +1,10 @@
 import type { HerdrCoreLayout, HerdrIdentity } from "../../shared/machines.ts";
 
 export interface RuntimeCapabilities {
+  /**
+   * The runtime's own name. Read only where the question is which program this is (`herdr update`
+   * updates herdr; herdr starts two agent kinds without a manifest), never for what it can do.
+   */
   readonly runtime: string;
   /**
    * How a live terminal is attached. `pty-cli`: a PTY runs the runtime's own attach command (herdr's
@@ -22,18 +26,31 @@ export interface RuntimeCapabilities {
    * `leader`, only its first, so an agent below a launcher, or shown by an attach client, is looked for.
    */
   readonly foreground: "job" | "leader";
+  /** how a finish read here reaches the runtime's other clients: `label`, a `herdr.seen` label written on its terminal; null, it does not */
   readonly seen: "label" | null;
   readonly pins: boolean;
   readonly machines: boolean;
+  /**
+   * Which process hands a new terminal its environment: `server`, the one listening on the runtime's
+   * socket; `core`, the core hc reports (the socket is this server's own adapter).
+   */
   readonly spawner: "server" | "core";
+  /** whether an agent driven over ACP can run under its keeper in one of the runtime's terminals, labelled and under its parent (server/acp/children.ts) */
+  readonly acpChildren: boolean;
+  /**
+   * Whether an agent start can run a launcher Ovis wrote in place of the agent's own command (`agent.start`'s
+   * `program`, which the herdr-core adapter types into the pane's shell): how a Codex starts on its own app server
+   * (server/approvals/codex.ts). herdr starts only an agent's own command.
+   */
+  readonly launcher: boolean;
 }
 
 export const HERDR: RuntimeCapabilities = {
-  runtime: "herdr", attach: "pty-cli", agents: "detected", foreground: "job", seen: null, pins: false, machines: false, spawner: "server",
+  runtime: "herdr", attach: "pty-cli", agents: "detected", foreground: "job", seen: null, pins: false, machines: false, spawner: "server", launcher: false, acpChildren: false,
 };
 
 export const HERDR_CORE: RuntimeCapabilities = {
-  runtime: "herdr-core", attach: "hc", agents: "reported", foreground: "leader", seen: "label", pins: true, machines: true, spawner: "core",
+  runtime: "herdr-core", attach: "hc", agents: "reported", foreground: "leader", seen: "label", pins: true, machines: true, spawner: "core", launcher: true, acpChildren: true,
 };
 
 let served: RuntimeCapabilities | null = null;

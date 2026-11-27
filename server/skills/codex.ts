@@ -1,8 +1,8 @@
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep, win32 } from "node:path";
+import { basename, dirname, join, relative, sep, win32 } from "node:path";
 import type { CommandForm, SlashCommand } from "../../shared/protocol.ts";
 import type { AgentCommandSource } from "./index.ts";
-import { ancestorsToRepoRoot, environRecord, environValue, MAX_WALK_FOLDERS, piTemplates, plainObject, readFrontmatter, readSkillText } from "./walk.ts";
+import { ancestorsToRepoRoot, canonicalFile as canonical, environRecord, environValue, MAX_WALK_FOLDERS, piTemplates, plainObject, readFrontmatter, readSkillText } from "./walk.ts";
 
 /**
  * Pinned to codex-rs at 83086188ae0614bd882818ff1aa23f3194962012 (rust-v0.163.0 for the slash table):
@@ -20,11 +20,7 @@ const PROMPTS_REMOVED_IN = [0, 118, 0] as const;
 // utils/plugins/src/plugin_namespace.rs: the manifest locations a plugin root may carry
 const MANIFESTS = ["plugin.json", ".codex-plugin/plugin.json", ".claude-plugin/plugin.json", ".cursor-plugin/plugin.json"];
 
-function canonical(path: string): string {
-  try { return realpathSync(path); }
-  catch { return resolve(path); }
-}
-
+/** Custom prompts are offered only by a Codex known to be older than 0.118.0. */
 function offersPrompts(version: string | null | undefined): boolean {
   const parts = version?.match(/^v?(\d+)\.(\d+)\.(\d+)/)?.slice(1).map(Number);
   if (!parts) return false;
@@ -57,6 +53,11 @@ function manifestName(root: string): string | null {
 
 interface FoundSkill { readonly name: string; readonly description: string; readonly path: string }
 
+/**
+ * SKILL.md files under `root`, to depth 6; `ancestors` guards link cycles along one branch only, so
+ * sibling links to one folder multiply the paths: every folder resolved counts against `budget`, which
+ * the roots of one discovery share (walk.ts MAX_WALK_FOLDERS).
+ */
 function scanSkills(root: string, budget: { folders: number }): FoundSkill[] {
   const found: FoundSkill[] = [];
   const ancestors = new Set<string>();
@@ -70,6 +71,7 @@ function scanSkills(root: string, budget: { folders: number }): FoundSkill[] {
     try {
       const declared = join(directory, "SKILL.md");
       try {
+        // a SKILL.md that is itself a link is not followed; a linked directory is
         if (lstatSync(declared).isFile()) {
           const fields = readFrontmatter(declared);
           const description = typeof fields?.description === "string" ? fields.description.replace(/\s+/g, " ").trim() : "";
@@ -95,6 +97,7 @@ const TERMINAL: CommandForm[] = [{ match: "bare", interaction: "terminal" }];
 const NONE: CommandForm[] = [{ match: "bare", interaction: "none" }];
 
 export const source: AgentCommandSource = {
+  chatPaletteHidden: ["plan"],
   // codex-rs/tui/src/slash_command.rs at rust-v0.163.0, in its presentation order. Not listed: `app` (macOS and
   // Windows builds only) and `rollout` and `test-approval` (debug builds). `fast` is a model service-tier command
   // there, not a built-in. What the popup hides is listed again in `agentHidden`.
@@ -164,7 +167,7 @@ export const source: AgentCommandSource = {
     const codexHome = environValue(env, "CODEX_HOME") || join(home, ".codex");
     let config: Record<string, unknown> = {};
     try { config = plainObject(Bun.TOML.parse(readFileSync(join(codexHome, "config.toml"), "utf8"))); }
-    catch {}
+    catch { /* missing or malformed TOML leaves discovery ungated */ }
     const configured = plainObject(config.skills).config;
     const disabled = new Set((Array.isArray(configured) ? configured : []).flatMap((entry: unknown) => {
       const setting = plainObject(entry);
@@ -208,6 +211,7 @@ export const source: AgentCommandSource = {
     const cache = join(codexHome, "plugins", "cache");
     const plugins = config.plugins === undefined ? null : plainObject(config.plugins);
     const ancestors = new Set<string>();
+    // A version's `latest` link and the version itself are one plugin install, loaded once.
     const loaded = new Set<string>();
     const visit = (directory: string): void => {
       let path: string;

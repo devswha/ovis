@@ -7,6 +7,7 @@ import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { loadRelayIdentity, RelayIdentityError, relayIdentityPath, rotateRelayIdentity, savedServerId } from "./identity.ts";
 import { privateStateFs } from "../private-state.ts";
+import { RelayService } from "./service.ts";
 
 const dirs: string[] = [];
 const stateDir = (): string => { const dir = mkdtempSync(join(tmpdir(), "relay-identity-")); dirs.push(dir); return dir; };
@@ -15,6 +16,37 @@ afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: tru
 const mode = (path: string): number => statSync(path).mode & 0o777;
 
 describe("relay identity", () => {
+  it("offline lookups reuse only the unchanged validated identity and never recreate a missing one", () => {
+    const dir = stateDir();
+    const service = new RelayService({ stateDir: dir });
+    const path = relayIdentityPath(dir);
+    expect(service.currentIdentity()).toBeUndefined();
+    const original = rotateRelayIdentity(dir);
+    const reads = spyOn(fs, "readFileSync");
+    const identityReads = () => reads.mock.calls.filter(([file]) => file === path).length;
+    try {
+      expect(service.currentIdentity()?.server_id).toBe(original.server_id);
+      const firstReads = identityReads();
+      expect(firstReads).toBeGreaterThan(0);
+      expect(service.currentIdentity()?.server_id).toBe(original.server_id);
+      expect(identityReads()).toBe(firstReads);
+      const next = rotateRelayIdentity(dir);
+      expect(service.currentIdentity()?.server_id).toBe(next.server_id);
+      writeFileSync(path, JSON.stringify({ ...next, public_key: original.public_key }));
+      expect(service.currentIdentity()).toBeUndefined();
+      writeFileSync(path, JSON.stringify(next));
+      expect(service.currentIdentity()?.server_id).toBe(next.server_id);
+      if (process.platform !== "win32") {
+        chmodSync(path, 0o644);
+        expect(service.currentIdentity()?.server_id).toBe(next.server_id);
+        expect(mode(path)).toBe(0o600);
+      }
+      rmSync(path);
+      expect(service.currentIdentity()).toBeUndefined();
+      expect(fs.existsSync(path)).toBe(false);
+    } finally { reads.mockRestore(); }
+  });
+
   it("tells the saved server_id without creating an identity where there is none (#2876)", () => {
     const dir = stateDir();
     expect(savedServerId(dir)).toBeUndefined();
@@ -51,6 +83,7 @@ describe("relay identity", () => {
     const dir = stateDir();
     const first = loadRelayIdentity(dir);
     expect(first.server_id).toMatch(/^[0-9a-f]{32}$/);
+    // the relay admits the PC only by a key that derives its server_id
     expect(first.server_id).toBe(deriveServerId(importPublicKey(first.public_key)));
     if (process.platform !== "win32") expect(mode(relayIdentityPath(dir))).toBe(0o600);
     expect(loadRelayIdentity(dir)).toEqual(first);
@@ -113,6 +146,16 @@ describe("relay identity", () => {
     writeFileSync(path, text);
     expect(() => loadRelayIdentity(dir)).toThrow(/identity_unreadable/);
     expect(readFileSync(path, "utf8")).toBe(text);
+  });
+
+  it("reads a key pair an earlier version saved, byte for byte", () => {
+    const dir = stateDir();
+    mkdirSync(join(dir, "relay"));
+    // RFC 7748 section 6.1's first key pair, as identity.json has always stored it
+    const saved = { v: 1 as const, server_id: "13b4d3cd80478aee7464bbce23620d33",
+      public_key: "hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo=", secret_key: "dwdtCnMYpX08FsFyUbJmRd9ML4frwJkqsXf7pR25LCo=" };
+    writeFileSync(relayIdentityPath(dir), JSON.stringify(saved), { mode: 0o600 });
+    expect(loadRelayIdentity(dir)).toEqual(saved);
   });
 
   it("refuses a key pair whose halves do not match", () => {

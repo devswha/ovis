@@ -3,6 +3,7 @@ import { appendFileSync, chmodSync, readFileSync, writeFileSync } from "node:fs"
 import type { HerdrPane, PaneContext, PlanSummary } from "../shared/protocol.ts";
 import { transcriptPage } from "./conversation.ts";
 import { paneAfterStatus } from "./machines.ts";
+import type { ServedStatus } from "./approvals/codex-status.ts";
 import { readPlan, SessionPlans } from "./session-plan.ts";
 import { at, claude, file } from "./session-plan.fixture.ts";
 
@@ -170,6 +171,7 @@ describe("SessionPlans", () => {
   });
 
   it("follows a Claude rewind on the recorded fork as the chat does: the abandoned answers' figure goes", async () => {
+    // Given Claude Code 2.1.304's recorded restore: apple and banana answered, then "cherry" sent from before apple.
     const lines = readFileSync(new URL("./fixtures/claude-rewind-2.1.304-fork.jsonl", import.meta.url), "utf8").split("\n").filter(Boolean);
     const fork = lines.findIndex((line) => line.includes('"content":"cherry"'));
     const f = file();
@@ -212,6 +214,7 @@ describe("SessionPlans", () => {
   });
 
   it("takes a Claude command's echo from before the last answer as a fork only once the conversation goes on from it, as the chat does", async () => {
+    // Given an answered prompt, then a /context echo hanging from the prompt (as 2.1.304 links it after a Restore) and its output.
     const f = file();
     const echo = (uuid: string, parentUuid: string, content: string) => f.add({ type: "system", subtype: "local_command", uuid, parentUuid, isSidechain: false, content });
     f.add({ type: "user", uuid: "u1", parentUuid: null, message: { role: "user", content: "one" } });
@@ -346,6 +349,28 @@ describe("SessionPlans", () => {
     await plans.refresh([pane("p2", "codex")]);
     plans.poll();
     expect(plans.contextOf("p2")).toEqual({ used: 64_600, window: 258_400 });
+  });
+
+  it("tells a Codex pane's context its server says at once, for the thread its rollout is, and the rollout's again without it", async () => {
+    const thread = "01a210a7-62bd-79a2-9c7b-0c09d625d336";
+    const f = file(`rollout-2026-11-25T12-00-00-${thread}_01a210a7-a189-7bb0-9115-c46322038d80.jsonl`);
+    f.add({ timestamp: at(1), type: "event_msg", payload: { type: "token_count", info: { model_context_window: 475_000, last_token_usage: { total_tokens: 12_000 } } } });
+    let served: ServedStatus | null = null;
+    const plans = new SessionPlans({ claudePath: () => null, codexPath: async () => f.path, codexServed: () => served, onChange: () => {} });
+    await plans.refresh([pane("p2", "codex")]);
+    plans.poll();
+    expect(plans.contextOf("p2")).toEqual({ used: 12_000, window: 475_000 });
+    served = { threadId: thread, context: { used: 12_955, window: 475_000 }, model: null };
+    plans.servedChanged("p2");
+    expect(plans.contextOf("p2")).toEqual({ used: 12_955, window: 475_000 });
+    served = { threadId: "01a210a7-aa30-7f42-9a96-97d456dfe544", context: { used: 99, window: 475_000 }, model: null };
+    plans.servedChanged("p2");
+    expect(plans.contextOf("p2")).toEqual({ used: 12_000, window: 475_000 });
+    served = { threadId: thread, context: { used: 12_955, window: 475_000 }, model: null };
+    plans.servedChanged("p2");
+    served = null;
+    plans.servedChanged("p2");
+    expect(plans.contextOf("p2")).toEqual({ used: 12_000, window: 475_000 });
   });
 
   it("tells a pane's summary as its plan moves, reads nothing while its transcript is as it was, and clears it when the pane runs something else", async () => {

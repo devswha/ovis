@@ -2,8 +2,14 @@ import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import type { WorkspaceWorktreeInfo } from "../../shared/herdr-api.generated.ts";
-import type { WorktreeInfo } from "../herdr/client.ts";
+import type { WorktreeInfo } from "../herdr/worktree-info.ts";
+import type { HerdrWorkspaceWorktree } from "../../shared/protocol.ts";
 
+/**
+ * herdr's worktree calls, answered with git on a herdr-core PC: hc has no worktrees, so Ovis runs
+ * `git worktree` itself and opens a checkout as a workspace of its own, as New workspace does
+ * there.
+ */
 export const WORKTREE_LABEL = "ovis.worktree";
 
 /** herdr's default folder for new checkouts (its `worktree_directory`): `<dir>/<repository>/<branch, slashes as dashes>` */
@@ -13,6 +19,7 @@ export const defaultCheckoutPath = (repoName: string, branch: string): string =>
 /** the branch as a folder and workspace name, as herdr makes them */
 export const worktreeFolder = (branch: string): string => branch.trim().replaceAll("/", "-");
 
+/** A refusal in herdr's words for its worktree calls (not_git_worktree, worktree_create_failed, …). */
 export class WorktreeError extends Error {
   readonly code: string;
   constructor(code: string, message: string) {
@@ -21,8 +28,10 @@ export class WorktreeError extends Error {
   }
 }
 
-export function worktreeOfLabels(labels: Record<string, string> | undefined): WorkspaceWorktreeInfo | null {
-  return labeledWorktree(labels)?.facts ?? null;
+/** a labelled workspace's checkout, with the git identity its label recorded for the row to carry */
+export function worktreeOfLabels(labels: Record<string, string> | undefined): HerdrWorkspaceWorktree | null {
+  const labeled = labeledWorktree(labels);
+  return labeled ? { ...labeled.facts, ...(labeled.gitId ? { git_id: labeled.gitId } : {}) } : null;
 }
 
 // git reuses a `.git/worktrees/<name>` for a checkout added again at the same path, but that is a new folder
@@ -60,6 +69,7 @@ export function realPath(path: string): string {
   }
 }
 
+/** One checkout of a repository, as `git worktree list` says it; the first is the repository's own. */
 export type Checkout = Pick<WorktreeInfo, "path" | "branch" | "is_bare" | "is_detached" | "is_prunable">;
 
 export interface Repository {
@@ -71,13 +81,40 @@ export interface Repository {
   checkouts: Checkout[];
 }
 
-function gitEnvironment(): Record<string, string> {
+const STRIPPED_GIT_VARS = new Set([
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_COMMON_DIR",
+  "GIT_EXTERNAL_DIFF",
+  "GIT_PAGER",
+]);
+
+export interface GitEnvironmentOptions {
+  /** Set `GIT_OPTIONAL_LOCKS=0` for read-only git queries (default: true). */
+  readonly optionalLocks?: boolean;
+  /** Set `GIT_NO_LAZY_FETCH=1` to avoid network fetches on partial clones. */
+  readonly noLazyFetch?: boolean;
+}
+
+/**
+ * Clean environment for spawning `git` in an arbitrary user repository: strips ambient
+ * repository overrides inherited from a hook or test runner and disables interactive prompts.
+ */
+export function gitEnvironment(options: GitEnvironmentOptions = {}): Record<string, string> {
+  const { optionalLocks = true, noLazyFetch = false } = options;
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) {
-    if (value === undefined || name === "GIT_DIR" || name === "GIT_WORK_TREE" || name === "GIT_INDEX_FILE" || name === "GIT_COMMON_DIR") continue;
+    if (value === undefined || STRIPPED_GIT_VARS.has(name)) continue;
     env[name] = value;
   }
-  return { ...env, GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" };
+  return {
+    ...env,
+    GIT_TERMINAL_PROMPT: "0",
+    ...(optionalLocks ? { GIT_OPTIONAL_LOCKS: "0" } : {}),
+    ...(noLazyFetch ? { GIT_NO_LAZY_FETCH: "1" } : {}),
+    LC_ALL: "C",
+  };
 }
 
 /** `git worktree add` or `remove` on a large checkout can take well over a few seconds (herdr's client waits 60 s). */
@@ -86,7 +123,7 @@ const GIT_TIMEOUT_MS = 55_000;
 export async function git(cwd: string, args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
   try {
-    proc = Bun.spawn(["git", "-C", cwd, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: gitEnvironment() });
+    proc = Bun.spawn(["git", "-C", cwd, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: gitEnvironment({ optionalLocks: false }) });
   } catch {
     throw new WorktreeError("worktree_list_failed", "git could not be started on this PC");
   }
@@ -122,7 +159,18 @@ export function parseCheckouts(porcelain: string, end: "\0" | "\n" = "\0"): Chec
   return checkouts;
 }
 
-export async function repositoryOf(folder: string): Promise<Repository> {
+/** How git is run and a path named: this PC's own by default; another machine's through the core (adapter.ts). */
+export interface RepositoryReads {
+  run?: typeof git;
+  real?: (path: string) => string;
+}
+const runGit = (cwd: string, args: string[]) => git(cwd, args);
+const realPathOf = (path: string) => realPath(path);
+
+/** The repository a folder is in and its checkouts; `not_git_worktree` for a folder outside git. */
+export async function repositoryOf(folder: string, reads: RepositoryReads = {}): Promise<Repository> {
+  const git = reads.run ?? runGit;
+  const realPath = reads.real ?? realPathOf;
   const where = await git(folder, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--git-dir"]);
   const [top, common, own] = where.stdout.split("\n");
   if (!where.ok || !top || !common || !own) throw new WorktreeError("not_git_worktree", `${folder} is not in a git worktree`);

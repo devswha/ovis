@@ -98,6 +98,7 @@ describe("cacheKey", () => {
     rmSync(join(root, "public/extra.log"));
     writeFileSync(join(root, "top.log"), "not read by the build");
     expect("key" in cacheKey(root, {}, [])).toBe(true);
+    // what typecheck emits for shared/vendor/paseo-e2ee, which Vite never bundles; elsewhere a .d.ts still counts
     mkdirSync(join(root, "public/dist"), { recursive: true });
     writeFileSync(join(root, "public/dist/x.d.ts"), "");
     expect(cacheKey(root, {}, [])).toEqual({ bypass: "ignored files where the build reads" });
@@ -403,6 +404,12 @@ describe("bun scripts/build-cache.ts", () => {
     writeFileSync(join(bin, "vite"), `#!/usr/bin/env node
 const fs = require("node:fs");
 fs.appendFileSync("node_modules/runs", "x");
+if (process.env.BUILD_GATE) {
+  const gate = require("node:child_process").spawnSync(process.execPath,
+    [process.env.BUILD_GATE, process.env.BUILD_RELEASE, process.env.BUILD_READY],
+    { timeout: 20000, stdio: "inherit" });
+  if (gate.status !== 0) process.exit(1);
+}
 fs.rmSync("dist", { recursive: true, force: true });
 fs.mkdirSync("dist");
 fs.writeFileSync("dist/index.html", fs.readFileSync("main.ts", "utf8") + (process.env.VITE_FLAG ?? ""));
@@ -413,6 +420,8 @@ if (process.env.EDIT_DURING_BUILD) fs.writeFileSync("main.ts", process.env.EDIT_
   }
   const buildEnv = (cache: string | null, extra: Record<string, string> = {}): Record<string, string | undefined> => {
     const env: Record<string, string | undefined> = { ...process.env };
+    // the run's own GitHub Actions variables would turn the cache off outside a pull request run
+    // and a runner's own cache (its outbox, locks and writer) would take the fixture's builds, under its own run
     for (const name of Object.keys(env)) if (name.startsWith("OVIS_BUILD_CACHE_") || ["GITHUB_ACTIONS", "GITHUB_EVENT_NAME", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"].includes(name)) delete env[name];
     Object.assign(env, extra);
     if (cache) env["OVIS_BUILD_CACHE_DIR"] = cache;
@@ -544,11 +553,86 @@ echo "container-of-$slot true 2026-11-10T12:00:00.5Z"
     expect(runs()).toBe(0);
   }, 60_000);
 
+  it("restores a build published between the contender's cache miss and lock acquisition (#4159)", async () => {
+    const { root, runs } = project();
+    const contender = clone(root);
+    const gates = temp("ovis-build-cache-gates-");
+    const cache = join(gates, "cache");
+    const gate = join(gates, "gate.ts");
+    const preload = join(gates, "contender.cjs");
+    const firstReady = join(gates, "first-ready");
+    const firstRelease = join(gates, "first-release");
+    const secondReady = join(gates, "second-ready");
+    const secondRelease = join(gates, "second-release");
+    writeFileSync(gate, `
+      import { existsSync, watch, writeFileSync } from "node:fs";
+      import { dirname } from "node:path";
+      const [, , release, ready] = process.argv;
+      if (ready) writeFileSync(ready, "");
+      await new Promise((resolve) => {
+        const watcher = watch(dirname(release), check);
+        function check() {
+          if (!existsSync(release)) return;
+          watcher.close();
+          resolve();
+        }
+        check();
+      });
+    `);
+    // Pause only the retry: the real first mkdir meets the holder, and the zero wait budget
+    // makes the contender check the still-empty cache before trying to take the lock again.
+    writeFileSync(preload, `
+      const fs = require("node:fs");
+      const { basename } = require("node:path");
+      const mkdir = fs.mkdirSync;
+      let attempts = 0;
+      fs.mkdirSync = (path, ...args) => {
+        if (basename(path).startsWith(".lock-") && ++attempts === 2) {
+          const gate = require("node:child_process").spawnSync(process.execPath,
+            [${JSON.stringify(gate)}, ${JSON.stringify(secondRelease)}, ${JSON.stringify(secondReady)}],
+            { timeout: 20000, stdio: "inherit" });
+          if (gate.status !== 0) process.exit(1);
+        }
+        return mkdir(path, ...args);
+      };
+      require("node:module").syncBuiltinESMExports();
+    `);
+    const waitFor = async (path: string): Promise<void> => {
+      const waiter = Bun.spawn([process.execPath, gate, path], { env: process.env, timeout: 15_000 });
+      expect(await waiter.exited, path).toBe(0);
+    };
+    const first = Bun.spawn([process.execPath, script], {
+      cwd: root, env: buildEnv(cache, { BUILD_GATE: gate, BUILD_RELEASE: firstRelease, BUILD_READY: firstReady }),
+      stdout: "pipe", stderr: "inherit", timeout: 30_000,
+    });
+    let second: typeof first | undefined;
+    try {
+      await waitFor(firstReady);
+      second = Bun.spawn([process.execPath, "--preload", preload, script], {
+        cwd: contender.copy, env: buildEnv(cache, { OVIS_BUILD_CACHE_WAIT_SECONDS: "0" }),
+        stdout: "pipe", stderr: "inherit", timeout: 30_000,
+      });
+      await waitFor(secondReady);
+      writeFileSync(firstRelease, "");
+      expect(await first.exited, await new Response(first.stdout).text()).toBe(0);
+      writeFileSync(secondRelease, "");
+      expect(await second.exited, await new Response(second.stdout).text()).toBe(0);
+      expect([runs(), contender.runs()]).toEqual([1, 0]);
+      expect(readFileSync(join(contender.copy, "dist/index.html"), "utf8")).toBe("export const a = 1;\n");
+    } finally {
+      // Unblock both gates before draining children, even if an assertion failed.
+      writeFileSync(firstRelease, "");
+      writeFileSync(secondRelease, "");
+      await Promise.all([first.exited, second?.exited]);
+    }
+  }, 60_000);
+
   it("on the runner, writes only its own outbox, never the cache", () => {
     const { root, runs } = project();
     const base = temp("ovis-build-cache-runner-");
     const [cache, outbox, locks] = ["cache", "outbox", "locks"].map((name) => join(base, name));
     for (const dir of [cache, outbox, locks]) mkdirSync(dir);
+    // as the runner mounts it: read-only
     chmodSync(cache, 0o555);
     try {
       expect(build(root, cache, { OVIS_BUILD_CACHE_OUTBOX: outbox, OVIS_BUILD_CACHE_LOCKS: locks, OVIS_BUILD_CACHE_PROMOTE_SECONDS: "0", GITHUB_RUN_ID: "7", GITHUB_RUN_ATTEMPT: "1" })).toBe("export const a = 1;\n");
@@ -683,6 +767,7 @@ echo "container-of-$slot true 2026-11-10T12:00:00.5Z"
     expect(runner.filed()).toEqual(["100/", `100/${mine}`]);
     const sum = new Bun.CryptoHasher("sha256").update("<p>").digest("hex");
     expect(readFileSync(join(runner.entries, "100", mine, ".manifest"), "utf8")).toBe(`${sum}  ./index.html\n`);
+    // readable by the runners' user, as the entries themselves are
     expect(statSync(join(runner.entries, "100")).mode & 0o777).toBe(0o755);
     expect(statSync(join(runner.entries, "100", mine)).mode & 0o777).toBe(0o755);
     expect(["s1", "s2", "s3"].map((slot) => readdirSync(join(runner.outboxes, slot)))).toEqual([[`judged-${mine}`], [`judged-${theirs}`], [`judged-${none}`]]);
@@ -697,9 +782,12 @@ echo "container-of-$slot true 2026-11-10T12:00:00.5Z"
     const { root } = project();
     const key = keyFor(root);
     const runner = launcher(["s1", "s2", "s3"], { "100": { slots: ["s1"] }, "200": { slots: ["s2", "s3"], pull: true } });
+    // one of its jobs names the key of main's commit for a build of its own, before main's run has built that commit
     deliver(join(runner.outboxes, "s2"), key, built({ "index.html": "not main's client" }), "200", "1");
+    // and another names main's run for it as well
     deliver(join(runner.outboxes, "s3"), key, built({ "index.html": "not main's client" }), "100", "1");
     expect(runner.pass().status).toBe(0);
+    // the run is trusted, so its build is taken in: where its own jobs read, and nowhere else
     expect(runner.filed()).toEqual(["200/", `200/${key}`]);
     expect(readFileSync(join(runner.entries, "200", key, "index.html"), "utf8")).toBe("not main's client");
     const first = clone(root);
@@ -792,6 +880,7 @@ echo "container-of-$slot true 2026-11-10T12:00:00.5Z"
     writeFileSync(join(runner.base, "used", b), "");
     utimesSync(join(runner.base, "used", b), new Date(2_100_000), new Date(2_100_000));
     for (const key of [a, left]) writeFileSync(join(runner.outboxes, "s1", `used-${key}`), "");
+    // a new build taken in, which is when the launcher evicts: 2 MiB hold three of the big ones
     deliver(join(runner.outboxes, "s1"), fresh, built({ "index.html": "<p>" }), "300", "1");
     expect(runner.pass("2").status).toBe(0);
     expect(runner.filed()).toEqual(["100/", `100/${a}`, "200/", `200/${c}`, "250/", `250/${a}`, "300/", `300/${fresh}`]);
@@ -832,6 +921,7 @@ echo "container-of-$slot true 2026-11-10T12:00:00.5Z"
     const runner = launcher(["s1"], {});
     const left = "e".repeat(64);
     store(runner.entries, left, built({ "index.html": "filed by the key alone" }), 1 << 30);
+    // entries/ itself gives this user no write: nothing in it can be renamed or removed
     chmodSync(runner.entries, 0o555);
     try {
       const passes = [runner.pass(), runner.pass(), runner.pass()];
@@ -878,6 +968,7 @@ echo "container-of-$slot true 2026-11-10T12:00:00.5Z"
   it("never files or evicts through a run's directory that is a link", () => {
     const runner = launcher(["s1", "s2"], { "7": { slots: ["s1"] }, "8": { slots: ["s2"] } });
     const [key, other] = ["a".repeat(64), "b".repeat(64)];
+    // No job can make one (entries/ is mounted read-only in the runners). What it points at, were it followed:
     const outside = join(runner.base, "outside");
     mkdirSync(join(outside, "kept"), { recursive: true });
     writeFileSync(join(outside, "kept", "a.js"), "x".repeat(2_000_000));

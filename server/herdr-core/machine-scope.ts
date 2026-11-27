@@ -1,7 +1,7 @@
 import { type ChannelHandlers, HcConnection, HcError, type HcStreamMethod, type HcTransport } from "./connection.ts";
 import type { HcMethod, HcMethods } from "./hc-api.generated.ts";
 import { isRecord } from "./snapshot.ts";
-import { EVENT_LINE_BYTES } from "./adapter.ts";
+import { EVENT_LINE_BYTES } from "./event-stream.ts";
 
 /**
  * herdr-core seen from one of the other machines its core reaches (`hc machine add lab`), for the
@@ -55,7 +55,8 @@ export class MachineScopedConnection extends HcConnection {
     for (const key of ["terminal", "parent", "children_of"]) {
       if (typeof out[key] === "string") out[key] = this.address(out[key]);
     }
-    if (method === "terminal.run" || method === "doc.get" || method === "doc.set") out["on"] = this.id;
+    // what is made or read without a terminal is this machine's: its terminals, its documents, the programs it runs
+    if (method === "terminal.run" || method === "doc.get" || method === "doc.set" || method === "machine.exec") out["on"] = this.id;
     return out as P;
   }
 
@@ -71,6 +72,7 @@ export class MachineScopedConnection extends HcConnection {
   private mine<R>(method: string, result: R): R {
     if (!isRecord(result)) return result;
     if (Array.isArray(result["terminals"])) {
+      // the core's own machine list is the server's business, not this machine's
       const { machines: _machines, ...rest } = result;
       return { ...rest, terminals: result["terminals"].map((terminal) => this.record(terminal)).filter((terminal) => terminal !== null) } as R;
     }
@@ -78,6 +80,7 @@ export class MachineScopedConnection extends HcConnection {
     return result;
   }
 
+  /** hc's event stream (one JSON line each) with only this machine's events, as this machine tells them. */
   private eventLines(onData: (payload: Uint8Array) => void): (payload: Uint8Array) => void {
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
@@ -107,12 +110,15 @@ export class MachineScopedConnection extends HcConnection {
       if (local === null) return null;
       own = { ...params, terminal: local };
     } else if (machine === this.machine) {
+      // a document of this machine's: told as one of its own
       own = params;
     } else {
+      // the core's own, or another machine's
       return null;
     }
     if (data !== undefined) {
       const record = this.record(data);
+      // a record of another machine's terminal under this one's event is none of this machine's
       if (record === null) return null;
       own["data"] = record;
     }

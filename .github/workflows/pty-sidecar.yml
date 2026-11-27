@@ -42,7 +42,7 @@ jobs:
         env:
           HOME: ${{ runner.temp }}/setup-bun-home
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
           no-cache: true
       - name: Rust toolchain
         run: |
@@ -61,11 +61,10 @@ jobs:
           package-manager-cache: false
       - if: runner.os == 'Linux'
         run: bun install --frozen-lockfile
-      - name: PtySession on the built binary, beside the Node sidecar
+      - name: PtySession on the built binary
         if: runner.os == 'Linux'
         env:
           HERDR_TEST_MODE: unit
-          OVIS_PTY_SIDECAR: rust
           OVIS_PTY_SIDECAR_BIN: ${{ github.workspace }}/pty-sidecar/ovis-pty-sidecar-${{ matrix.asset }}
         run: bun test ./server/pty/host.test.ts ./server/pty/session.test.ts
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -84,7 +83,7 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
           no-cache: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -116,4 +115,6 @@ jobs:
           path: pty-sidecar
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: pty-sidecar/ovis-pty-sidecar-*
+          subject-path: |
+            pty-sidecar/ovis-pty-sidecar-*
+            pty-sidecar/ovis-acp-keeper-*

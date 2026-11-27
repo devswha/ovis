@@ -74,7 +74,7 @@ try {
   mkdirSync(".omo/evidence/output-flow", { recursive: true });
   await page.screenshot({ path: ".omo/evidence/output-flow/stopped.png" });
   await page.setViewportSize({ width: 390, height: 844 });
-  await Bun.sleep(350);
+  await Bun.sleep(350); // finish the sidebar's responsive transition before visual QA
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: ".omo/evidence/output-flow/stopped-mobile.png" });
   await page.setViewportSize({ width: 1280, height: 800 });
@@ -117,5 +117,5 @@ try {
   server?.stop();
   for (const workspace of workspaces) await herdrRpc("workspace.close", { workspace_id: workspace });
   rmSync(root, { recursive: true, force: true });
-  await until(() => Bun.spawnSync(["pgrep", "-P", String(process.pid), "-f", "pty-host.mjs"]).stdout.length === 0, "sidecars reaped", 5000);
+  await until(() => Bun.spawnSync(["pgrep", "-P", String(process.pid), "-f", "ovis-pty-sidecar"]).stdout.length === 0, "PTY hosts reaped", 5000);
 }

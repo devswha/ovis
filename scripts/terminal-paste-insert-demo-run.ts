@@ -1,3 +1,11 @@
+/**
+ * The phone's Paste key and the input line's Insert, on the real client over the demo's fictional
+ * shell: Paste reads the clipboard from its tap alone, into the line at the caret, and drops a read
+ * that answers for another pane, connection, mode or an edited line; Insert types the line without
+ * Enter and clears only what the bridge confirmed, while the shell runs nothing until an explicit
+ * Enter.
+ * Everything stays in this disposable, loopback-only app; no herdr session is opened.
+ */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -10,6 +18,8 @@ import terminalFixture from "../site/demo/fixtures/terminal.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { shownRow, shownRows } from "./shown-rows.ts";
+import { serveDemo } from "./demo-server.ts";
+import { KO } from "../src/lib/i18n.ko.ts";
 
 const playwrightCore = "playwright-core";
 const { chromium } = (await import(playwrightCore)) as typeof import("playwright-core");
@@ -119,6 +129,10 @@ const hook = (page: Page) => ({
 const lineValue = (page: Page, expected: string) => page.waitForFunction((value) => document.querySelector<HTMLTextAreaElement>(".pane-frame.is-current .terminal-input-text")?.value === value, expected, { timeout: 10_000 });
 const noteText = (page: Page, expected: string) => page.waitForFunction((value) => document.querySelector(".pane-frame.is-current .terminal-input-note")?.textContent === value, expected, { timeout: 10_000 });
 const screenShows = (page: Page, text: string) => page.waitForFunction(({ value, shown }) => document.querySelector(shown)?.textContent?.includes(value) === true, { value: text, shown: shownRows(".pane-frame.is-current") }, { timeout: 10_000 });
+/**
+ * A reconnect's attach plays the shell's recording again from a cleared screen, while the old screen
+ * still shows its end: output pushed before the last frame lands is wiped by the replay (#3335).
+ */
 const replayed = (page: Page) => page.waitForFunction(() => window.pasteInsertTest.replayed());
 const screenText = (page: Page) => page.locator(shownRows(".pane-frame.is-current")).evaluate((rows) => rows.textContent ?? "");
 const drafts = (page: Page) => page.evaluate(() => Object.fromEntries(Object.keys(localStorage).filter((key) => key.startsWith("ovis:terminal-line:")).map((key) => [key, localStorage.getItem(key)])));
@@ -308,6 +322,7 @@ async function checkAcknowledgedInsert(page: Page): Promise<void> {
   await screenShows(page, "On branch main");
   check("the shell ran the inserted line only after the explicit Enter", await line.inputValue() === " -b", await line.inputValue());
   check("the insert frame went once", (await h.inserts()).length === before + 1, (await h.inserts()).length - before);
+  // another device's grid on the pane: Insert takes nothing back from it, no resize, focus or take-over
   await h.set({ holdInsert: false });
   await setLine(page, "git status");
   await h.push({ type: "pane-geometry", pane_id: panes.shell, cols: 120, rows: 40 });
@@ -464,6 +479,7 @@ async function checkOlderBridgeAndUncertainty(page: Page): Promise<void> {
   await page.locator(".conn-live").waitFor({ state: "attached" });
   await ready(page);
   await replayed(page);
+  // the connection drops while the bridge's answer is on its way: not confirmed, kept, never sent again
   await h.set({ holdInsert: true });
   const before = (await h.inserts()).length;
   await setLine(page, "git log");
@@ -485,6 +501,39 @@ async function checkOlderBridgeAndUncertainty(page: Page): Promise<void> {
   check("several lines send no frame at all", await h.typedFrames() === linesBefore, await h.typedFrames() - linesBefore);
   await setLine(page, "");
   console.log("PASS an older bridge, a drop before the answer and a refused block keep the line with a note and send nothing else");
+}
+
+/** a Korean phone in the dark theme: the line, Insert, Send and Paste in Korean, a refused insert's note too, Tab reaching Insert and no sideways scroll */
+async function checkKorean(browser: Browser, origin: string): Promise<void> {
+  scenario = "korean";
+  const ko = (name: string): string => { assert.ok(KO[name], `"${name}" has a Korean entry`); return KO[name]!; };
+  const { context, page, errors } = await openShell(browser, origin, { width: 390, theme: "dark", language: "ko" });
+  try {
+    const insert = page.locator(".pane-frame.is-current .terminal-input-insert");
+    const send = page.locator(".pane-frame.is-current .terminal-input-send");
+    await ready(page);
+    const words = {
+      label: await page.locator(".pane-frame.is-current .terminal-input-label").textContent(),
+      insert: [await insert.getAttribute("aria-label"), await insert.locator(".terminal-input-caption").textContent()],
+      send: await send.getAttribute("aria-label"),
+      paste: await page.locator('.pane-frame.is-current .key-bar [data-key="paste"]').getAttribute("aria-label"),
+    };
+    check("the line, Insert, Send and Paste are named in Korean", JSON.stringify(words) === JSON.stringify({
+      label: ko("Input line"), insert: [ko("Insert text without Enter"), ko("Insert text")], send: ko("Press Enter in the terminal"), paste: ko("Paste into the input line"),
+    }), words);
+    const line = page.locator(".pane-frame.is-current .terminal-input-text");
+    await setLine(page, "git status");
+    await line.focus();
+    for (let i = 0; i < 4 && !(await insert.evaluate((node) => node === document.activeElement)); i++) await page.keyboard.press("Tab");
+    check("Tab reaches Insert", await insert.evaluate((node) => node === document.activeElement), "ko");
+    check("no horizontal scroll", await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "ko");
+    await setLine(page, "one\ntwo");
+    await insert.tap();
+    await noteText(page, ko("Insert takes one line. Send several lines, or insert them one at a time."));
+    await setLine(page, "");
+    assert.deepEqual(errors, []);
+    console.log("PASS a Korean phone in the dark theme names the line, Insert, Send and Paste, and notes a refused insert, in Korean; Tab reaches Insert, nothing scrolls sideways");
+  } finally { await context.close(); }
 }
 
 async function captureStates(page: Page, variant: Variant, phone: boolean): Promise<void> {
@@ -584,17 +633,21 @@ async function captureStates(page: Page, variant: Variant, phone: boolean): Prom
   await capture(page, variant, "multiline");
   await line.evaluate((node) => { node.scrollTop = node.scrollHeight; });
   await capture(page, variant, "multiline-scrolled-end");
-  const refusals: [string, { code: string; message: string }][] = [
-    ["read-only", { code: "read_only", message: "observe" }], ["too-long", { code: "insert_too_long", message: "long" }],
-    ["secret-prompt", { code: "secret_prompt", message: "password" }], ["not-transmitted", { code: "not_transmitted", message: "dropped" }],
-    ["waited-too-long", { code: "insert_timeout", message: "late" }], ["not-ready", { code: "input_not_ready", message: "not ready" }],
-    ["other", { code: "pane_busy", message: "The pane is busy with a demo turn." }],
+  const refusals: [string, { code: string; message: string }, string][] = [
+    ["read-only", { code: "read_only", message: "observe" }, "Not inserted: this view only watches the pane."],
+    ["too-long", { code: "insert_too_long", message: "long" }, "Not inserted: the text is too long for the terminal."],
+    ["secret-prompt", { code: "secret_prompt", message: "password" }, "Not inserted: the terminal is asking for a password. Nothing was typed."],
+    ["not-transmitted", { code: "not_transmitted", message: "dropped" }, "Not inserted: the connection dropped before the text left. Try again."],
+    ["waited-too-long", { code: "insert_timeout", message: "late" }, "Not inserted: it waited too long behind earlier input, and nothing was typed. Try again."],
+    ["not-ready", { code: "input_not_ready", message: "not ready" }, "Not inserted: the terminal is not ready. Nothing was typed."],
+    ["other", { code: "pane_busy", message: "The pane is busy with a demo turn." }, "Not inserted: The pane is busy with a demo turn."],
   ];
-  for (const [state, forced] of refusals) {
+  for (const [state, forced, note] of refusals) {
     await h.set({ forceInsert: forced });
     await setLine(page, "git status");
     await press(insert);
-    await page.locator(".pane-frame.is-current .terminal-input-note").waitFor();
+    await noteText(page, note);
+    check(`a ${state} refusal keeps the line`, await line.inputValue() === "git status", await line.inputValue());
     await capture(page, variant, `refused-${state}`);
   }
   await h.set({ forceInsert: null });
@@ -639,11 +692,13 @@ async function captureStates(page: Page, variant: Variant, phone: boolean): Prom
   await page.locator(".conn-live").waitFor({ state: "attached" });
   await ready(page);
   await replayed(page);
+  // a password prompt on screen: the masked input stands in, no Paste or Insert
   await h.push({ type: "pty-data", pane_id: panes.shell, data: "\r\nPassword:" });
   await page.locator(".pane-frame.is-current .secret-input").waitFor();
   await capture(page, variant, "secret-hidden");
   await h.push({ type: "pty-data", pane_id: panes.shell, data: "\r\n\x1b[38;5;214mrelease\x1b[0m $ " });
   await line.waitFor();
+  // a view-only connection: neither control
   await h.push({ type: "role-ack", mode: "observe" });
   await page.locator(".pane-frame.is-current .terminal-banner-observe").waitFor();
   await capture(page, variant, "observe");
@@ -664,46 +719,31 @@ async function captureStates(page: Page, variant: Variant, phone: boolean): Prom
   check("no horizontal scroll", await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), label(variant));
 }
 
-export async function runPasteInsert(part: "main" | "variants"): Promise<void> { try {
-  if (part === "variants" && !evidence) { console.log("SKIP the Paste and Insert variants: UI_EVIDENCE_DIR is not set, and this part only writes its captures there"); return; }
-  const records = part === "main" ? "" : `-${part}`;
+export async function runPasteInsert(): Promise<void> { try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${HOOK}\n    <script type="module"`));
   const prefix = "/herdr-web-ui/demo/app/";
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix });
   const origin = `http://127.0.0.1:${server.port}${prefix}`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
-      if (part === "main") {
-        const main: Variant = { width: 390, theme: "light", language: "en" };
-        const { context, page, errors } = await openShell(browser, origin, main);
-        try {
-          await checkAcknowledgedInsert(page);
-          await checkClipboardTargetChanged(page);
-          await checkOlderBridgeAndUncertainty(page);
-          scenario = `captures-${label(main)}`;
-          await captureStates(page, main, true);
-          assert.deepEqual(errors, []);
-        } finally { await context.close(); }
-      }
+      const main: Variant = { width: 390, theme: "light", language: "en" };
+      const { context, page, errors } = await openShell(browser, origin, main);
+      try {
+        await checkAcknowledgedInsert(page);
+        await checkClipboardTargetChanged(page);
+        await checkOlderBridgeAndUncertainty(page);
+        scenario = `captures-${label(main)}`;
+        await captureStates(page, main, true);
+        assert.deepEqual(errors, []);
+      } finally { await context.close(); }
+      await checkKorean(browser, origin);
       if (evidence) {
-        const variants: Variant[] = part === "main" ? [{ width: 1440, theme: "light", language: "en" }]
-          : [{ width: 390, theme: "dark", language: "en" }, { width: 390, theme: "light", language: "ko" }, { width: 1440, theme: "dark", language: "en" }];
-        for (const variant of variants) {
+        for (const variant of [{ width: 1440, theme: "light", language: "en" }] as const) {
           const opened = await openShell(browser, origin, variant);
           try {
             scenario = `captures-${label(variant)}`;
@@ -711,17 +751,17 @@ export async function runPasteInsert(part: "main" | "variants"): Promise<void> {
             assert.deepEqual(opened.errors, []);
           } finally { await opened.context.close(); }
         }
-        writeFileSync(join(evidence, `manifest${records}.json`), JSON.stringify(manifest, null, 2));
-        writeFileSync(join(evidence, `measurements${records}.json`), JSON.stringify(measurements, null, 2));
+        writeFileSync(join(evidence, "manifest.json"), JSON.stringify(manifest, null, 2));
+        writeFileSync(join(evidence, "measurements.json"), JSON.stringify(measurements, null, 2));
         console.log(`PASS ${manifest.length} captures in ${evidence}`);
       }
     } finally { await browser.close(); }
   } finally { server.stop(true); }
   if (evidence) {
     const tool = "UI_EVIDENCE_DIR=<evidence>/visual bun scripts/terminal-paste-insert-demo-regression.ts";
-    if (part === "main") for (const name of ["paste-acknowledged-insert", "clipboard-target-changed", "older-bridge-and-uncertainty"]) {
+    for (const name of ["paste-acknowledged-insert", "clipboard-target-changed", "older-bridge-and-uncertainty"]) {
       writeFileSync(join(evidence, `${name}.json`), JSON.stringify({ scenario: name, tool, at: new Date().toISOString(), checks: results[name] ?? [] }, null, 2));
     }
-    writeFileSync(join(evidence, `results${records}.json`), JSON.stringify(results, null, 2));
+    writeFileSync(join(evidence, "results.json"), JSON.stringify(results, null, 2));
   }
 } finally { rmSync(app, { recursive: true, force: true }); } }

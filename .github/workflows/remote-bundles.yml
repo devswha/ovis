@@ -4,6 +4,11 @@ on:
     paths:
       - 'server/**'
       - 'shared/**'
+      # no bundle carries a unit test or a note: the Windows smoke's own test file is the one they run
+      - '!server/**/*.test.ts'
+      - '!shared/**/*.test.ts'
+      - '!server/**/*.md'
+      - 'server/windows-native.test.ts'
       - 'scripts/build-remote-bundle.ts'
       - 'scripts/server-artifact.ts'
       - 'scripts/install-*-integration.ts'
@@ -12,6 +17,7 @@ on:
       - 'scripts/pty-sidecar.ts'
       - 'crates/pty-sidecar/**'
       - 'scripts/ssh-*.ts'
+      - 'scripts/ci-ssh-checks.sh'
       - 'package.json'
       - 'bun.lock'
       - '.github/workflows/remote-bundles.yml'
@@ -25,7 +31,11 @@ concurrency:
   group: remote-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  # A pull request builds and smokes the Linux x64 bundle here (bundle-linux); the arm64 and macOS ones run in
+  # remote-bundles-platforms.yml, only for a change to what differs between platforms. In two weeks of pull
+  # request runs (1,269, to 2026-11-21) those three jobs failed alone nine times, never in the smoke step.
   bundle:
+    if: github.event_name != 'pull_request'
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -44,7 +54,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
           node: 'true'
           cache: none
       - run: bun install --frozen-lockfile
@@ -56,7 +66,61 @@ jobs:
         with:
           name: remote-${{ matrix.os }}
           path: remote-bundles/*
+  # A pull request's Linux job also assembles the Windows bundle that smoke-windows starts and runs the SSH checks:
+  # what bundle-windows and ssh do for a tag or a manual run, on one hosted runner instead of three. Each part runs
+  # whatever became of the others, as it did in a job of its own: the Windows bundle goes up first, and smoke-windows
+  # starts on its upload, not on this job's result.
+  bundle-linux:
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    env:
+      HERDR_BUNDLE_PTY_SIDECAR: ${{ github.workspace }}/pty-sidecar/ovis-pty-sidecar-linux-x64
+    outputs:
+      windows: ${{ steps.windows-artifact.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+        with:
+          bun-version: 1.4.4
+          node: 'true'
+          cache: none
+      - run: bun install --frozen-lockfile
+      - id: common
+        run: bun run typecheck && bun run build
+      # in a folder of its own, so the artifact holds the Windows bundle alone, as bundle-windows' does
+      - name: Windows bundle
+        env:
+          HERDR_BUNDLE_OUTPUT: remote-bundles-win32
+        run: bun run scripts/build-remote-bundle.ts win32-x64
+      - id: windows-artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: remote-win32-x64
+          path: remote-bundles-win32/*
+      # the Linux bundle and its smoke, whatever became of the Windows bundle
+      - id: pty-host
+        if: "!cancelled() && steps.common.outcome == 'success'"
+        run: bun scripts/pty-sidecar.ts build linux-x64 pty-sidecar
+      - id: linux-bundle
+        if: "!cancelled() && steps.pty-host.outcome == 'success'"
+        run: bun run scripts/build-remote-bundle.ts
+      - if: "!cancelled() && steps.linux-bundle.outcome == 'success'"
+        run: bun run scripts/remote-bundle-smoke.ts
+      # the SSH checks on that Linux bundle, with its Rust PTY host, as the ssh job's, whatever became of the smoke
+      - name: OpenSSH server
+        if: "!cancelled() && steps.linux-bundle.outcome == 'success'"
+        run: bash scripts/ci-ssh-checks.sh server
+      - name: SSH integration
+        if: "!cancelled() && steps.linux-bundle.outcome == 'success'"
+        run: bash scripts/ci-ssh-checks.sh integration
+      - name: SSH password in a disposable container
+        if: "!cancelled() && steps.linux-bundle.outcome == 'success'"
+        run: bash scripts/ci-ssh-checks.sh password
   bundle-windows:
+    if: github.event_name != 'pull_request'
     timeout-minutes: 20
     # release publishes its bundle: GitHub-hosted whatever the runner variables say, and no shared cache (scripts/privileged-jobs-workflow.test.ts)
     runs-on: ubuntu-24.04
@@ -66,7 +130,7 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
           no-cache: true
       - run: bun install --frozen-lockfile
       - run: bun run typecheck && bun run build
@@ -77,7 +141,9 @@ jobs:
           path: remote-bundles/*
   smoke-windows:
     timeout-minutes: 20
-    needs: bundle-windows
+    # the Windows bundle of this run: bundle-linux uploads it for a pull request, bundle-windows otherwise
+    needs: [bundle-linux, bundle-windows]
+    if: "!cancelled() && (needs.bundle-linux.outputs.windows != '' || needs.bundle-windows.result == 'success')"
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -85,7 +151,7 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
           no-cache: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -104,40 +170,36 @@ jobs:
           HERDR_TEST_MODE: unit
         run: bun test ./server/windows-native.test.ts
   ssh:
+    if: github.event_name != 'pull_request'
     timeout-minutes: 20
     runs-on: ubuntu-24.04
+    env:
+      HERDR_BUNDLE_PTY_SIDECAR: ${{ github.workspace }}/pty-sidecar/ovis-pty-sidecar-linux-x64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
           no-cache: true
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
           package-manager-cache: false
-      # the self-hosted image already ships sshd (and has no sudo); a hosted runner installs it
       - name: OpenSSH server
-        run: |
-          if [ -x /usr/sbin/sshd ] && [ -d /run/sshd ]; then
-            echo "sshd is already installed"
-          else
-            sudo bash scripts/ci-bounded-retry.sh 300 bash -c 'apt-get update && apt-get install -y openssh-server' && sudo mkdir -p /run/sshd
-          fi
-      - run: bun install --frozen-lockfile && bun run build && bun run scripts/build-remote-bundle.ts
-      # password mode creates an account and starts sshd as root; without sudo (the self-hosted image) the
-      # key-only flow runs, with sshd as the runner user on a port of its own
+        run: bash scripts/ci-ssh-checks.sh server
+      - run: bun install --frozen-lockfile && bun run build
+      - run: bun scripts/pty-sidecar.ts build linux-x64 pty-sidecar
+      - run: bun run scripts/build-remote-bundle.ts
       - name: SSH integration
-        run: |
-          if sudo -n true 2>/dev/null; then export SSH_TEST_PASSWORD=1; fi
-          bun run scripts/ssh-integration.ts
+        run: bash scripts/ci-ssh-checks.sh integration
       - name: SSH password in a disposable container
-        run: |
-          if docker info >/dev/null 2>&1; then bun run scripts/ssh-password-docker.ts; else echo "::notice::no Docker here, password flow skipped"; fi
+        run: bash scripts/ci-ssh-checks.sh password
   release:
-    if: startsWith(github.ref, 'refs/tags/remote-v')
+    # every job it needs passed, said outright: smoke-windows also waits for bundle-linux, which a tag skips, and the
+    # implicit success() would skip this job behind it (scripts/workflow-needs.test.ts)
+    if: "!cancelled() && startsWith(github.ref, 'refs/tags/remote-v') && needs.bundle.result == 'success' && needs.smoke-windows.result == 'success' && needs.ssh.result == 'success'"
     needs: [bundle, smoke-windows, ssh]
     runs-on: ubuntu-24.04
     permissions:

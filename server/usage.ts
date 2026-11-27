@@ -9,6 +9,10 @@
  *
  * A sign-in another tool on this PC holds is never read at all. Where that tool keeps its own record of the limits
  * it read, the record is listed instead, named as that tool's (usage-recorded.ts).
+ *
+ * Nothing runs in the background: a provider is asked only when a client asks this server, at
+ * most every FRESH_MS unless the client forces it, which is still limited to one ask per
+ * MIN_REFRESH_MS. A provider that answered 429 is not asked again before it said to.
  */
 
 import { Database } from "bun:sqlite";
@@ -17,9 +21,9 @@ import { closeSync, mkdtempSync, openSync, readdirSync, readSync, rmSync, statSy
 import { open, type FileHandle } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { readStatusline, type StatuslinePayload } from "./statusline.ts";
+import { readStatusline, STALE_MS, type StatuslinePayload } from "./statusline.ts";
 import { installStatusline, removeStatusline, StatuslineInstallError, statuslineInstallState, type StatuslineInstallState } from "./statusline-install.ts";
-import type { ProviderUsage, UsageCredits, UsageProblem, UsageProviderId, UsageReport, UsageResets, UsageWindow } from "../shared/protocol.ts";
+import type { ProviderUsage, UsageCredits, UsageFailure, UsageProblem, UsageProviderId, UsageReport, UsageResets, UsageWindow } from "../shared/protocol.ts";
 import { jsonResponse } from "./http.ts";
 import { opencodeDatabasePath } from "./opencode.ts";
 import { recordedUsages, type RecordedReading, type RecordedSource, type RecordedUsage } from "./usage-recorded.ts";
@@ -28,11 +32,13 @@ import { ompRecorded } from "./usage-recorded-omp.ts";
 
 export const FRESH_MS = 5 * 60_000;
 export const MIN_REFRESH_MS = 30_000;
+/** after a failure or an expired sign-in: soon enough to pick up the CLI's next refresh */
 export const RETRY_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 15_000;
 const CODEX_RESETS_TIMEOUT_MS = 5_000;
 const COMMAND_TIMEOUT_MS = 5_000;
 const USER_AGENT = "ovis";
+/** the most a credential file, a command's output or a provider's answer may hold; more is unreadable */
 export const MAX_READ_BYTES = 1024 * 1024;
 
 export type KeychainRead = { status: "found"; value: string } | { status: "missing" } | { status: "locked" };
@@ -60,12 +66,20 @@ interface SignIn {
   chatgptAccount?: string | null;
   fallbacks?: string[];
   account?: Account | null;
+  /** Copilot: found only through the GitHub CLI, never signed in to Copilot in an editor */
   cliOnly?: boolean;
+  /** Copilot: named editor accounts to match when an older CLI cannot identify its token */
   editorAccounts?: string[];
+  /**
+   * OpenCode: set for an OAuth sign-in alone, the console workspace its Go limits are asked for; null
+   * when it names none, or a console other than opencode.ai, so nothing is asked with its token.
+   */
+  opencodeOrg?: string | null;
 }
 
 type Found = { source: string; home?: CredentialHome } & (SignIn | { locked: true; account?: Account | null });
 
+/** A tag, not a source string: a configured directory may well be named `default` or `keychain`. */
 export type CredentialHome = { readonly kind: "default" } | { readonly kind: "dir"; readonly dir: string };
 
 interface Reading {
@@ -75,11 +89,14 @@ interface Reading {
   credits?: UsageCredits | null;
   account?: Account | null;
   checkedAt?: number;
+  /** a local reading that still describes every window it named: taken before the provider is asked */
+  current?: boolean;
 }
 
 export interface UsageProvider {
   id: UsageProviderId;
   signIns(ctx: UsageContext): Promise<Found[]>;
+  /** A token-free reading matched to this sign-in; checked before endpoint expiry/backoff gates. */
   readLocal?(ctx: UsageContext, signIn: SignIn): Reading | null;
   read(ctx: UsageContext, signIn: SignIn): Promise<Reading | null>;
   missingCommand?(ctx: UsageContext): string | null;
@@ -90,7 +107,18 @@ export interface UsageProvider {
   recorded?: readonly RecordedSource[];
 }
 
-class UsageTooLarge extends Error {}
+/** A read that failed in a way the meter names (shared/usage.ts UsageFailure). */
+export class UsageFailed extends Error {
+  constructor(readonly failure: UsageFailure, message: string) {
+    super(message);
+  }
+}
+
+/** What a failed read ran into, as the meter names it; null when it is none of those (an HTTP status other than 5xx). */
+export function failureOf(error: unknown): UsageFailure | null {
+  if (error instanceof UsageFailed) return error.failure;
+  return error instanceof UsageHttpError && error.status >= 500 ? "upstream" : null;
+}
 
 export class UsageHttpError extends Error {
   constructor(readonly status: number, readonly retryAfterMs: number | null) {
@@ -226,14 +254,34 @@ function retryAfter(header: string | null): number | null {
 }
 
 async function requestJson(ctx: UsageContext, url: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Json> {
-  const response = await ctx.fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  const host = new URL(url).host;
+  // the time allowed ran out (AbortSignal.timeout), else the connection itself failed (DNS, refused, dropped)
+  const unreachable = (error: unknown) => error instanceof UsageFailed ? error : new UsageFailed(
+    error instanceof Error && error.name === "TimeoutError" ? "timeout" : "network", `${host}: ${error instanceof Error ? error.message : String(error)}`);
+  let response: Response;
+  try { response = await ctx.fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) }); } catch (error) { throw unreachable(error); }
   if (!response.ok) {
     await response.body?.cancel();
     throw new UsageHttpError(response.status, retryAfter(response.headers.get("retry-after")));
   }
-  const body = await readCapped(response.body);
-  if (body === null) throw new UsageTooLarge(`${new URL(url).host} answered more than ${MAX_READ_BYTES} bytes`);
-  return record(JSON.parse(body));
+  let body: string | null;
+  try { body = await readCapped(response.body); } catch (error) { throw unreachable(error); }
+  if (body === null) throw new UsageFailed("bad_response", `${host} answered more than ${MAX_READ_BYTES} bytes`);
+  try { return record(JSON.parse(body)); } catch { throw new UsageFailed("bad_response", `${host} answered something other than JSON`); }
+}
+
+/**
+ * A Secret Service item read with secret-tool: "locked" when the item is listed but its secret is not
+ * (the login keyring is still locked, e.g. after a reboot), so the meter stays with that reason instead
+ * of vanishing as if there were no sign-in. Searched only when `probeLock`: a sign-in from a file wins
+ * over a locked item, so the search could change nothing.
+ */
+async function linuxKeyring(ctx: UsageContext, attributes: string[], parse: (value: string) => SignIn | null, probeLock: boolean): Promise<SignIn | "locked" | null> {
+  const value = await ctx.run(["secret-tool", "lookup", ...attributes]);
+  const signIn = value ? parse(value) : null;
+  if (signIn || value || !probeLock) return signIn;
+  const listed = await ctx.run(["secret-tool", "search", ...attributes]);
+  return listed !== null && /^\[\//m.test(listed) && !/^secret = /m.test(listed) ? "locked" : null;
 }
 
 async function fromKeychain(ctx: UsageContext, service: string, accounts: Array<string | undefined>, parse: (value: string) => SignIn | null): Promise<SignIn | "locked" | null> {
@@ -251,6 +299,7 @@ async function fromKeychain(ctx: UsageContext, service: string, accounts: Array<
 
 // ---- Claude Code: keychain `Claude Code-credentials` on macOS, else ~/.claude/.credentials.json ----
 
+/** the account a Claude Code config file says is signed in: `oauthAccount` in .claude.json */
 function claudeAccount(path: string): Account | null {
   const oauth = record(record(parseJson(readText(path)))["oauthAccount"]);
   const id = text(oauth["accountUuid"]);
@@ -275,6 +324,7 @@ function claudeHome(ctx: UsageContext, home: CredentialHome): ClaudeHome {
   return { source: home.dir, service: `Claude Code-credentials-${hash}`, dir: home.dir, config: join(home.dir, ".claude.json"), home };
 }
 
+/** the sign-in one Claude home holds: its keychain item or its credentials file, whichever is later */
 async function claudeFound(ctx: UsageContext, home: ClaudeHome): Promise<Found[]> {
   const user = ctx.env["USER"];
   const account = claudeAccount(home.config);
@@ -289,6 +339,7 @@ function claudeSignIn(source: string | null): SignIn | null {
   return token ? { token, expiresAt: number(oauth["expiresAt"]), plan: text(oauth["subscriptionType"]) } : null;
 }
 
+/** `seconds`: the window's length, which Claude names in the key (`five_hour`, `seven_day`) */
 function claudeWindow(value: unknown, kind: UsageWindow["kind"], scope: string | null, seconds: number): UsageWindow | null {
   const window = record(value);
   const used = number(window["utilization"]);
@@ -296,6 +347,10 @@ function claudeWindow(value: unknown, kind: UsageWindow["kind"], scope: string |
   return used === null ? null : { kind, scope, used_percent: percent(used), resets_at: resetsAt, starts_at: startOf(resetsAt, seconds) };
 }
 
+/**
+ * Claude's windows from the payload its own status line draws (server/statusline.ts): the five-hour
+ * session and the week, exactly the numbers the CLI shows, with no request and no token.
+ */
 function claudeStatuslineWindows(payload: StatuslinePayload): UsageWindow[] {
   const windows: UsageWindow[] = [];
   if (payload.fiveHour) windows.push({ kind: "session", scope: null, used_percent: percent(payload.fiveHour.usedPercent), resets_at: payload.fiveHour.resetsAt, starts_at: startOf(payload.fiveHour.resetsAt, FIVE_HOURS) });
@@ -333,7 +388,10 @@ const claude: UsageProvider = {
     const local = readStatusline(ctx.home, ctx.now());
     if (!local?.account || local.account.id !== signIn.account?.id) return null;
     const windows = claudeStatuslineWindows(local);
-    return windows.length > 0 ? { plan: signIn.plan ?? null, windows, checkedAt: local.readAt } : null;
+    // a window that names no reset cannot be told to have started over: only a reading moments old counts for it; one
+    // whose window has started over never does
+    const current = !local.turnedOver && (windows.every((window) => window.resets_at !== null) || ctx.now() - local.readAt < FRESH_MS);
+    return windows.length > 0 ? { plan: signIn.plan ?? null, windows, checkedAt: local.readAt, current } : null;
   },
   async read(ctx, signIn) {
     const body = await requestJson(ctx, "https://api.anthropic.com/api/oauth/usage", {
@@ -355,6 +413,8 @@ const claude: UsageProvider = {
     return { plan: null, windows, credits: claudeCredits(body["extra_usage"]) };
   },
 };
+
+// ---- Codex: auth.json under CODEX_HOME, ~/.config/codex or ~/.codex; keychain `Codex Auth` ----
 
 function codexSignIn(source: string | null): SignIn | null {
   const tokens = record(record(parseJson(source))["tokens"]);
@@ -385,11 +445,13 @@ function codexFileFound(home: string): Found[] {
   return signIn ? [{ ...signIn, source: home, home: { kind: "dir", dir: home } }] : [];
 }
 
+/** the `Codex Auth` keychain item, which Codex's default home may keep its sign-in in instead of a file */
 async function codexKeychainFound(ctx: UsageContext): Promise<Found[]> {
   return keychainFound(await fromKeychain(ctx, "Codex Auth", [undefined], codexSignIn), "keychain")
     .map((found): Found => ({ ...found, home: { kind: "default" } }));
 }
 
+/** Codex's credits as its /status shows them: unlimited, a balance (credits, not money), or only that there are some */
 function codexCredits(value: unknown): UsageCredits | null {
   const credits = record(value);
   if (credits["unlimited"] === true) return { kind: "balance", balance: null, unlimited: true };
@@ -425,6 +487,7 @@ async function codexResets(ctx: UsageContext, signIn: SignIn, summary: unknown):
 const codex: UsageProvider = {
   id: "codex",
   async signIns(ctx) {
+    // CODEX_HOME points Codex elsewhere; ~/.codex-* is where a second account usually lives
     const homes = [ctx.env["CODEX_HOME"], join(ctx.home, ".config", "codex"), join(ctx.home, ".codex"), ...siblingDirs(ctx.home, ".codex-")];
     const found = [...new Set(homes.filter((home): home is string => Boolean(home)))].flatMap(codexFileFound);
     return found.length ? found : codexKeychainFound(ctx);
@@ -443,6 +506,8 @@ const codex: UsageProvider = {
     return { plan: text(body["plan_type"]), windows, resets: await codexResets(ctx, signIn, body["rate_limit_reset_credits"]), credits: codexCredits(body["credits"]) };
   },
 };
+
+// ---- Cursor: the app's state.vscdb, or the cursor-agent CLI's keychain item ----
 
 function cursorDatabase(ctx: UsageContext): string {
   return ctx.platform === "darwin"
@@ -464,6 +529,7 @@ function cursorAppSignIn(path: string): SignIn | null {
   }
 }
 
+/** a Cursor account by its token's subject, named by the email Cursor keeps beside it */
 function cursorAccount(token: string, email: string | null): Account | null {
   const id = text(jwtClaims(token)["sub"]);
   return id ? { id, label: email } : null;
@@ -494,6 +560,7 @@ const cursor: UsageProvider = {
     const remaining = number(plan["remaining"]);
     const used = number(plan["totalPercentUsed"]) ?? (limit && remaining !== null ? (limit - remaining) / limit * 100 : null);
     const resetsAt = isoTime(body["billingCycleEnd"]);
+    // the plan-wide share, then the two allowances inside it: Cursor's own models (Auto) and the rest (API)
     const windows = [[used, null], [number(plan["autoPercentUsed"]), "Cursor models"], [number(plan["apiPercentUsed"]), "Other models"]]
       .filter((entry): entry is [number, string | null] => entry[0] !== null)
       .map(([share, scope]): UsageWindow => ({ kind: "month", scope, used_percent: percent(share), resets_at: resetsAt, starts_at: null }));
@@ -501,9 +568,12 @@ const cursor: UsageProvider = {
   },
 };
 
+// ---- GitHub Copilot: the editor plugin's sign-in, else the GitHub CLI's ----
+
 interface GitHubToken {
   token: string;
   login: string | null;
+  /** from an editor's Copilot sign-in, not the GitHub CLI */
   editor: boolean;
 }
 
@@ -514,6 +584,7 @@ function copilotFileTokens(source: string | null): GitHubToken[] {
   });
 }
 
+/** every github.com account the GitHub CLI holds a working sign-in for; the active one alone on an older CLI */
 async function ghTokens(ctx: UsageContext): Promise<GitHubToken[]> {
   // only github.com: status checks every host it lists with that host's own credentials
   const accounts = record(record(parseJson(await ctx.run(["gh", "auth", "status", "--hostname", "github.com", "--json", "hosts"])))["hosts"])["github.com"];
@@ -524,6 +595,7 @@ async function ghTokens(ctx: UsageContext): Promise<GitHubToken[]> {
   const tokens = await Promise.all(accounts.map(async (entry): Promise<GitHubToken | null> => {
     const account = record(entry);
     const login = text(account["login"]);
+    // gh has already found a sign-in in error (a revoked token) refused
     if (!login || account["state"] !== "success") return null;
     // a GH_TOKEN/GITHUB_TOKEN sign-in has no stored token: a per-user lookup finds nothing
     const fromEnv = ["GH_TOKEN", "GITHUB_TOKEN"].includes(text(account["tokenSource"]) ?? "");
@@ -617,6 +689,8 @@ const copilot: UsageProvider = {
   },
 };
 
+// ---- Grok CLI: ~/.grok/auth.json ----
+
 const PERIOD_KINDS: Record<string, UsageWindow["kind"]> = {
   USAGE_PERIOD_TYPE_DAILY: "day", USAGE_PERIOD_TYPE_WEEKLY: "week", USAGE_PERIOD_TYPE_MONTHLY: "month",
 };
@@ -694,7 +768,7 @@ const antigravity: UsageProvider = {
     const dir = ctx.env["ANTIGRAVITY_APP_DATA_DIR"] || join(ctx.home, ".gemini", "antigravity-cli");
     const file = antigravitySignIn(readText(join(dir, "antigravity-oauth-token")));
     const keychain = ctx.platform === "linux"
-      ? antigravitySignIn(await ctx.run(["secret-tool", "lookup", "service", "gemini", "username", "antigravity"]))
+      ? await linuxKeyring(ctx, ["service", "gemini", "username", "antigravity"], antigravitySignIn, file === null)
       : await fromKeychain(ctx, "gemini", ["antigravity"], antigravitySignIn);
     return keychainOrFile(keychain, file, "keychain");
   },
@@ -724,20 +798,56 @@ const antigravity: UsageProvider = {
   },
 };
 
+// ---- OpenCode Go: the sign-in OpenCode 2 keeps in its own store, else <XDG data>/opencode/auth.json, else OPENCODE_API_KEY ----
+
 /** OpenCode's service may hold the write lock for a moment; a read waits this long, never more. */
 const OPENCODE_DB_BUSY_TIMEOUT_MS = 250;
 
+const OPENCODE_ORIGIN = "https://opencode.ai";
+/** the console a sign-in is for when it names none, as OpenCode 2.4.1 defaults it; it reads `console.opencode.ai` as this too */
+const OPENCODE_CONSOLE = `${OPENCODE_ORIGIN}/console`;
+
+/**
+ * A device or browser sign-in to the OpenCode console: `{"type":"oauth","access":…,"expires":…}`, its
+ * `metadata` naming the account (`accountID`, `email`), the workspace (`orgID`) and the console
+ * (`server`). OpenCode 2.4.1 asks the Go endpoint with the access token and the workspace in
+ * `x-opencode-org-id`, and asks nothing without a workspace. The token goes to opencode.ai alone:
+ * a sign-in to another console is listed without limits. An account is one person in one workspace;
+ * a sign-in that names neither is known by its row, and by the row's label when it names no email.
+ */
+function opencodeOauth(entry: Json, row: { id: string | null; label: string | null }): SignIn | null {
+  const token = text(entry["access"]);
+  if (!token) return null;
+  const metadata = record(entry["metadata"]);
+  const org = text(metadata["orgID"]);
+  const id = [text(metadata["accountID"]), org].filter(Boolean).join("__") || row.id;
+  const server = (text(metadata["server"]) ?? OPENCODE_CONSOLE).replace(/^https:\/\/console\.opencode\.ai(?=\/|$)/, OPENCODE_CONSOLE);
+  const origin = URL.parse(server)?.origin;
+  const publicConsole = origin === OPENCODE_ORIGIN;
+  // Console account and workspace IDs are local to their issuer. Keep non-public server names out of reports.
+  const accountId = id && !publicConsole ? `${createHash("sha256").update(origin ?? server).digest("hex")}:${id}` : id;
+  return {
+    token, expiresAt: number(entry["expires"]), opencodeOrg: publicConsole ? org : null,
+    account: accountId ? { id: accountId, label: text(metadata["email"]) ?? row.label } : null,
+  };
+}
+
 /**
  * OpenCode 2 keeps provider credentials itself, in the `credential` table of the store
- * `server/opencode.ts` reads: the live one is the active row whose value is `{"type":"key","key":…}`.
- * `auth.json` is the file OpenCode 1 wrote and 2 leaves standing, holding the key the service has
- * since replaced, so reading it alone reports a signed-in CLI as expired. The Go key is read first,
- * then the Zen key: the Go endpoint takes any console key, and answers 403 for one without a Go
- * subscription. A row is chosen as OpenCode chooses it: the active one, else the newest (rows it
- * imported from `auth.json` carry no flag). The store is OpenCode 2's when it has `session_v2`, as
- * `server/opencode.ts` tells them apart: 1.x stores have an empty `credential` table too.
+ * `server/opencode.ts` reads: a key is `{"type":"key","key":…}`, a console sign-in an OAuth value
+ * (opencodeOauth). `auth.json` is the file OpenCode 1 wrote and 2 leaves standing, holding the key
+ * the service has since replaced, so reading it alone reports a signed-in CLI as expired. The Go key
+ * is read first, then the Zen key: the Go endpoint takes any console key, and answers 403 for one
+ * without a Go subscription. A row is chosen as OpenCode chooses it: the active one, else the newest
+ * (rows it imported from `auth.json` carry no flag). An active key takes precedence over OAuth, but
+ * an imported key does not hide an active sign-in. OpenCode keeps the rows of earlier OAuth sign-ins,
+ * so only an active OAuth row counts. The store is OpenCode 2's when it has `session_v2`, as
+ * `server/opencode.ts` tells them apart: 1.x stores have an empty `credential` table too. Null when
+ * the file is not OpenCode 2's store (absent, OpenCode 1's, unreadable). A known store suppresses
+ * the old auth.json even when the store has no sign-in or its credentials cannot be read.
+ * A value past MAX_READ_BYTES is not read, as for the files.
  */
-function opencodeStore(path: string | null): { key: string | null } | null {
+function opencodeStore(path: string | null): { key: string | null; oauth: SignIn | null } | null {
   if (path === null) return null;
   let db: Database | undefined;
   let known = false;
@@ -747,16 +857,21 @@ function opencodeStore(path: string | null): { key: string | null } | null {
     const tables = db.query("select count(*) as n from sqlite_master where type = 'table' and name in ('session_v2', 'credential')").get() as { n: number };
     if (tables.n < 2) return null;
     known = true;
-    const selected = db.query("select case when length(value) <= ? then value end as value from credential where integration_id = ? order by active desc, time_created desc, id desc limit 1");
+    const selected = db.query("select id, label, active, case when length(value) <= ? then value end as value from credential where integration_id = ? order by active desc, time_created desc, id desc limit 1");
+    let key: { token: string; unflagged: boolean } | null = null;
+    let oauth: SignIn | null = null;
     for (const provider of ["opencode-go", "opencode"]) {
-      const row = selected.get(MAX_READ_BYTES, provider) as { value?: unknown } | null;
+      const row = selected.get(MAX_READ_BYTES, provider) as { id?: unknown; label?: unknown; active?: unknown; value?: unknown } | null;
       const entry = record(parseJson(text(row?.value ?? null)));
-      const key = entry["type"] === "key" ? text(entry["key"]) : null;
-      if (key) return { key };
+      const token = entry["type"] === "key" ? text(entry["key"]) : null;
+      if (token) key ??= { token, unflagged: row?.active === null };
+      if (entry["type"] === "oauth" && row?.active === 1) oauth ??= opencodeOauth(entry, { id: text(row.id), label: text(row.label) });
     }
-    return { key: null };
+    return { key: key?.token ?? null, oauth: !key || key.unflagged ? oauth : null };
   } catch {
-    return known ? { key: null } : null;
+    // no file or not a database: not a store this reader knows; OpenCode 2's store that will not
+    // answer now (busy past the timeout, damaged) still holds no key its old auth.json can stand in for
+    return known ? { key: null, oauth: null } : null;
   } finally {
     db?.close();
   }
@@ -782,23 +897,39 @@ const opencode: UsageProvider = {
     // xdg-basedir, as OpenCode resolves it: XDG_DATA_HOME, else ~/.local/share, on macOS too
     const dir = join(ctx.env["XDG_DATA_HOME"] || join(ctx.home, ".local", "share"), "opencode");
     const store = opencodeStore(opencodeDatabasePath(ctx.env, ctx.home));
-    if (store?.key) return [{ token: store.key, expiresAt: null, source: dir }];
-    // OpenCode 2 imports auth.json once, when it takes over a 1.x store, and never reads it again:
-    // a store without a key is a sign-out the file it left standing must not undo
+    const oauth = store?.oauth;
+    const found: Found[] = [];
+    if (oauth) found.push({ ...oauth, source: `${dir}#oauth` });
+    if (store?.key) {
+      found.push({ token: store.key, expiresAt: null, source: dir });
+      return found;
+    }
+    // OpenCode 2 imports auth.json once. The old file must not undo a sign-out in its current store.
     const file = store ? null : opencodeSignIn(readText(join(dir, "auth.json")));
     if (file) return [{ ...file, source: dir }];
-    // the variable OpenCode itself reads for both providers (models.dev)
+    // An expired sign-in is still listed, but cannot supply limits in place of the environment key.
     const token = text(ctx.env["OPENCODE_API_KEY"]);
-    return token ? [{ token, expiresAt: null, source: "env" }] : [];
+    if (token && (!oauth?.opencodeOrg || (oauth.expiresAt !== null && oauth.expiresAt <= ctx.now()))) {
+      found.push({ token, expiresAt: null, source: "env" });
+    }
+    return found;
   },
   async read(ctx, signIn) {
+    // a key names no account, so one without Go is not listed; an OAuth sign-in is an account,
+    // signed in whether or not it has Go, or a workspace to ask about
+    const signedIn: Reading | null = signIn.opencodeOrg === undefined ? null : { plan: null, windows: [] };
+    if (signIn.opencodeOrg === null) return signedIn;
     let body: Json;
     try {
-      body = await requestJson(ctx, "https://opencode.ai/zen/go/v1/usage", {
-        headers: { authorization: `Bearer ${signIn.token}`, accept: "application/json", "user-agent": USER_AGENT },
+      body = await requestJson(ctx, `${OPENCODE_ORIGIN}/zen/go/v1/usage`, {
+        ...(signIn.opencodeOrg ? { redirect: "manual" } as const : {}),
+        headers: {
+          authorization: `Bearer ${signIn.token}`, accept: "application/json", "user-agent": USER_AGENT,
+          ...(signIn.opencodeOrg ? { "x-opencode-org-id": signIn.opencodeOrg } : {}),
+        },
       });
     } catch (error) {
-      if (error instanceof UsageHttpError && error.status === 403) return null;
+      if (error instanceof UsageHttpError && error.status === 403) return signedIn;
       throw error;
     }
     const usage = record(body["usage"]);
@@ -838,6 +969,7 @@ async function readKeychain(service: string, account?: string): Promise<Keychain
     const output = await readCapped(child.stdout);
     if (output === null) child.kill();
     const code = await child.exited;
+    // the command is over: its timer must not fire during the login-session read below and pass for a prompt
     clearTimeout(timer);
     if (output === null) return { status: "missing" };
     if (code === 0) return { status: "found", value: output.trim() };
@@ -979,6 +1111,7 @@ export class UsageService {
    */
   invalidate(provider: UsageProviderId): void {
     this.searches.delete(provider);
+    // the hidden list as it is now: hiding an account starts no report, so the last report's may not name it yet
     const skipped = this.skipped();
     for (const [source, entry] of this.entries) {
       if (source.startsWith(`${provider}|`) && !(entry.usage && skipped.has(entry.usage.key))) this.entries.delete(source);
@@ -1048,6 +1181,8 @@ export class UsageService {
     const now = this.ctx.now();
     const missing = new Map(this.providers.flatMap((provider) => { const command = provider.missingCommand?.(this.ctx) ?? null; return command === null ? [] : [[provider.id, command] as const]; }));
     const skipped = this.skipped();
+    // an account shown again is looked up and read anew now, its provider's last search no longer standing for it;
+    // the provider's other accounts keep their readings, so one still hidden is not read for it
     const shownAgain = new Set([...this.lastSkipped].filter((key) => !skipped.has(key)));
     for (const [source, entry] of this.entries) {
       if (entry.usage && shownAgain.has(entry.usage.key)) { this.searches.delete(entry.usage.id); this.entries.delete(source); }
@@ -1068,6 +1203,7 @@ export class UsageService {
       const held = byKey.get(usage.key);
       if (!held || (held.problem !== null && usage.problem === null)) byKey.set(usage.key, usage);
     }
+    // No sign-in is read for a record, so a hidden account's is read as well
     for (const record of this.providers.flatMap((provider) => recordedUsages(provider.id, provider.recorded ?? [], this.ctx, (source) => this.recordOf(source, now)))) {
       const own = byKey.get(record.key);
       if (!own) byKey.set(record.key, record);
@@ -1106,6 +1242,8 @@ export class UsageService {
     // a hidden account its sign-in names keeps its last reading wherever it is found now, so its credentials are not used (#3333)
     const keptFor = (signIn: Found): Entry | undefined => {
       const ours = (source: string) => source.startsWith(`${provider.id}|`);
+      // one that names no account is the hidden one whose sign-in it holds, wherever that reading is kept, so the
+      // order sign-ins are judged in cannot read it before its old place lets the reading go
       if (!signIn.account) {
         if ("locked" in signIn) return undefined;
         const holder = holderOf(signIn);
@@ -1115,8 +1253,12 @@ export class UsageService {
       if (!this.lastSkipped.has(key)) return undefined;
       return [...this.entries].find(([source, entry]) => ours(source) && entry.usage?.key === key)?.[1];
     };
+    // which hidden account a sign-in is, from the hidden list alone, never from whether a reading of it is kept: the key
+    // it names, or, for one that names none, the holder of a hidden reading evicted before (dropped)
     const hiddenAs = (signIn: Found): { key: string; account: string | null } | undefined => {
       if ("locked" in signIn) return undefined;
+      // only a sign-in that names its account is that account by its key: one that names none is keyed by its place,
+      // which another sign-in found there does not make the hidden one (#3425 keeps the rest of that gap)
       if (signIn.account) {
         const own = accountKey(provider.id, signIn.account, signIn.source);
         if (this.lastSkipped.has(own)) return { key: own, account: signIn.account.label };
@@ -1130,11 +1272,14 @@ export class UsageService {
       const kept = keptFor(signIn);
       if (kept) return [source, { usage: kept.usage, readAt: kept.readAt, nextAt: kept.nextAt, holder: kept.holder }];
       const entry = this.entries.get(source);
-      // a hidden or removed account keeps its last reading: its credentials are not used (#3333)
+      // Reuse a reading only for the same holder, including during its Retry-After.
+      // Hidden or removed accounts keep their last reading without using their credentials (#3333).
       const key = entry?.usage?.key;
       const hidden = key !== undefined && this.lastSkipped.has(key);
-      const held = hidden && entry?.holder === holderOf(signIn);
-      const current = entry !== undefined && (held || (!hidden && now < entry.nextAt && !(forced && entry.usage?.problem !== "rate_limited")));
+      const current = entry !== undefined && entry.holder === holderOf(signIn) &&
+        // a forced refresh reads a rate-limited one again too: its backoff keeps the endpoint unasked, and a status-line
+        // reading that came meanwhile can stand in
+        (hidden || (now < entry.nextAt && !forced));
       if (current) return [source, { usage: entry.usage, readAt: entry.readAt, nextAt: entry.nextAt, holder: entry.holder }];
       if (hidden && entry?.usage) this.dropped.set(entry.usage.key, { provider: provider.id, holder: entry.holder, account: entry.usage.account });
       // a hidden account with no reading kept (evicted, or never read by this server) is listed unread, never read
@@ -1144,6 +1289,11 @@ export class UsageService {
       }
       return [source, await this.read(provider, signIn, hidden ? null : entry?.usage ?? null, now)];
     }));
+    // only a search that completed drops the places it did not find, a hidden one kept past invalidate (no search) included;
+    // a hidden account it did not name (gone, or a lookup that failed) keeps one reading for one such search, so it is not
+    // read when found again soon after; one still not named by the search after that is dropped, so gone accounts do not
+    // pile up (#3391), and is read again only as a first sighting is. A search that could not look everywhere (a missing
+    // command: `incomplete`) ages none, so a hidden account it could not reach stays unread until one can
     if (searched) {
       const named = new Set(read.flatMap(([, entry]) => entry.usage ? [entry.usage.key] : []));
       for (const [source, entry] of this.entries) {
@@ -1174,25 +1324,43 @@ export class UsageService {
       const known = account ?? found.account ?? null;
       return { key: accountKey(provider.id, known, found.source), account: known?.label ?? null };
     };
+    // the last numbers stay, named by what went wrong since - unless the place now holds another
+    // account's sign-in: those numbers and that name were someone else's
     const kept = previous !== null && (!found.account || previous.key === identity(null).key) ? previous : null;
-    const keep = (problem: UsageProblem, plan: string | null, wait: number) => settle({
+    const keep = (problem: UsageProblem, plan: string | null, wait: number, more: Pick<ProviderUsage, "failure" | "statusline_offer"> = {}) => settle({
       id: provider.id, ...(kept ? { key: kept.key, account: kept.account } : identity(null)),
-      plan: kept?.plan ?? plan, windows: kept?.windows ?? [], ...extras(kept ?? {}), problem, checked_at: kept?.checked_at ?? null,
+      plan: kept?.plan ?? plan, windows: kept?.windows ?? [], ...extras(kept ?? {}), problem, ...more, checked_at: kept?.checked_at ?? null,
     }, wait);
     if ("locked" in found) return keep("locked", null, FRESH_MS);
     const signIn: SignIn = found;
     const local = provider.readLocal?.(this.ctx, signIn) ?? null;
     const fromLocal = (reading: Reading): Entry => {
       const resets = reading.windows.flatMap((window) => window.resets_at === null ? [] : [Date.parse(window.resets_at)]);
+      // what the status line is not handed (a model's own week, extra usage) stays as the endpoint last gave it
+      const named = (window: UsageWindow) => reading.windows.some((own) => own.kind === window.kind && own.scope === window.scope);
+      const others = (kept?.windows ?? []).filter((window) => !named(window) && (window.resets_at === null || Date.parse(window.resets_at) > now));
+      // read again by the time the reading is too old to count (STALE_MS) or a window it names starts over
+      const until = [...resets, (reading.checkedAt ?? now) + STALE_MS].map((at) => at - now);
       return settle({ id: provider.id, ...identity(reading.account), plan: reading.plan ?? signIn.plan ?? null,
-        windows: reading.windows, problem: null, checked_at: new Date(reading.checkedAt ?? now).toISOString() }, Math.min(FRESH_MS, ...resets.map((reset) => reset - now)));
+        windows: [...reading.windows, ...others], ...extras(kept ?? {}), problem: null, checked_at: new Date(reading.checkedAt ?? now).toISOString() }, Math.min(FRESH_MS, ...until));
     };
-    if (local && now - (local.checkedAt ?? now) < FRESH_MS) return fromLocal(local);
+    // the numbers Claude's own status line drew, while they still describe every window: no request, no token
+    if (local?.current) return fromLocal(local);
+    // Claude's endpoint could not give the limits but its status line can stand in: offered only where it can be turned
+    // on (never on Windows, never once it is on), and only for the sign-in in the config directory the switch changes:
+    // another one's status line is not wrapped
+    const offer = (): Pick<ProviderUsage, "statusline_offer"> => {
+      if (provider.id !== "claude") return {};
+      const statusline = this.statusline();
+      return statusline.supported && !statusline.installed && this.switchesConfigOf(found.source) ? { statusline_offer: true } : {};
+    };
     const fallback = local !== null && !(kept?.checked_at && Date.parse(kept.checked_at) > (local.checkedAt ?? now)) ? local : null;
     if (signIn.expiresAt !== null && signIn.expiresAt <= now) return fallback ? fromLocal(fallback) : keep("expired", signIn.plan ?? null, RETRY_MS);
     const backoff = found.account ? `${provider.id}:${found.account.id}` : `${provider.id}#${createHash("sha256").update(signIn.token).digest("hex")}`;
     const until = this.backoffs.get(backoff);
-    if (until !== undefined && now < until) return fallback ? fromLocal(fallback) : keep("rate_limited", signIn.plan ?? null, until - now);
+    // looked at again within FRESH_MS though the backoff runs longer: a status-line reading may come meanwhile, and the
+    // backoff still keeps the endpoint unasked
+    if (until !== undefined && now < until) return fallback ? fromLocal(fallback) : keep("rate_limited", signIn.plan ?? null, Math.min(until - now, FRESH_MS), offer());
     this.backoffs.delete(backoff);
     try {
       const reading = await provider.read(this.ctx, signIn);
@@ -1205,17 +1373,14 @@ export class UsageService {
       if (error instanceof UsageHttpError && error.status === 429) this.backoffs.set(backoff, now + wait);
       if (fallback) return fromLocal(fallback);
       if (error instanceof UsageHttpError && (error.status === 401 || error.status === 403)) {
-        const expired = keep("expired", signIn.plan ?? null, RETRY_MS);
-        const refused = provider.id === "claude" && error.status === 403 && (signIn.expiresAt === null || signIn.expiresAt > now);
-        const statusline = this.statusline();
-        if (refused && expired.usage && statusline.supported && !statusline.installed && this.switchesConfigOf(found.source)) {
-          expired.usage = { ...expired.usage, statusline_offer: true };
-        }
-        return expired;
+        // a 403 for a token that has not expired is a refusal, not an expiry: the status line can stand in
+        const refused = error.status === 403 && (signIn.expiresAt === null || signIn.expiresAt > now);
+        return keep("expired", signIn.plan ?? null, RETRY_MS, refused ? offer() : {});
       }
-      if (error instanceof UsageHttpError && error.status === 429) return keep("rate_limited", signIn.plan ?? null, wait);
-      console.warn(`usage: ${provider.id} could not be read: ${error instanceof Error ? error.message : String(error)}`);
-      return keep("failed", signIn.plan ?? null, RETRY_MS);
+      if (error instanceof UsageHttpError && error.status === 429) return keep("rate_limited", signIn.plan ?? null, Math.min(wait, FRESH_MS), offer());
+      const failure = failureOf(error);
+      console.warn(`usage: ${provider.id} could not be read${failure ? ` (${failure})` : ""}: ${error instanceof Error ? error.message : String(error)}`);
+      return keep("failed", signIn.plan ?? null, RETRY_MS, { ...(failure ? { failure } : {}), ...offer() });
     }
   }
 }
@@ -1229,7 +1394,8 @@ function ownStands(own: ProviderUsage, recorded: RecordedUsage, now: number): bo
 function standingIn(own: ProviderUsage, record: RecordedUsage): ProviderUsage {
   return {
     id: own.id, key: own.key, account: own.account ?? record.account, plan: own.plan, windows: record.windows, problem: own.problem,
-    checked_at: record.checked_at, recorded: { ...record.recorded, signed_in: true }, ...(own.statusline_offer ? { statusline_offer: true as const } : {}),
+    checked_at: record.checked_at, recorded: { ...record.recorded, signed_in: true }, ...(own.failure ? { failure: own.failure } : {}),
+    ...(own.statusline_offer ? { statusline_offer: true as const } : {}),
   };
 }
 
@@ -1266,10 +1432,15 @@ export async function localSignInPlace(ctx: UsageContext, key: string): Promise<
   return null;
 }
 
+/** Whether a credential's text is JSON at all: one that is not cannot be told from a sign-in. */
 function isJson(text: string): boolean {
   try { JSON.parse(text); return true; } catch { return false; }
 }
 
+/**
+ * A credential file's sign-in; none when there is no file or it holds no sign-in (a Codex API key, a Claude
+ * file with only MCP sign-ins); "unknown" when it will not read, is too large or is not JSON.
+ */
 function credentialFile(path: string, parse: (source: string | null) => SignIn | null): SignIn | "unknown" | null {
   try { statSync(path); }
   catch (error) { return error instanceof Error && "code" in error && error.code === "ENOENT" ? null : "unknown"; }
@@ -1277,6 +1448,11 @@ function credentialFile(path: string, parse: (source: string | null) => SignIn |
   return text === null || !isJson(text) ? "unknown" : parse(text);
 }
 
+/**
+ * A keychain service's sign-ins, read under each account name the CLI may use: `inUse` the first that holds
+ * one (as fromKeychain takes it), `all` every one found, whichever is in use; "unknown" when any item is
+ * locked or is not JSON, even if another one reads.
+ */
 async function keychainState(ctx: UsageContext, service: string, accounts: Array<string | undefined>, parse: (value: string) => SignIn | null): Promise<{ inUse: SignIn | null; all: SignIn[] } | "unknown"> {
   const all: SignIn[] = [];
   if (ctx.platform !== "darwin") return { inUse: null, all };
@@ -1297,7 +1473,9 @@ const tokenDigest = (token: string): string => createHash("sha256").update(token
 export interface HomeSignIn {
   readonly key: string;
   readonly label: string | null;
+  /** a digest of the token in use: a sign-in the CLI wrote has a token of its own, one it left keeps one from before */
   readonly digest: string;
+  /** the digests of every token the home's sources hold (its file and its keychain item), the one in use among them */
   readonly digests: readonly string[];
   readonly expiresAt: number | null;
 }
@@ -1312,7 +1490,10 @@ export interface HomeSignIn {
  * Other homes are not looked at: their sign-ins are no login's into this one.
  */
 export async function homeSignIn(ctx: UsageContext, provider: "claude" | "codex", home: CredentialHome): Promise<HomeSignIn | "unknown" | null> {
+  // every source of the home is read on its own: one that cannot be read leaves the home unknown, whatever
+  // another gives, and only then are they weighed as the list weighs them
   let signIn: (SignIn & { source: string }) | undefined;
+  // every token a source holds, whichever one is in use: a token only moved between sources is not new
   const held: SignIn[] = [];
   if (provider === "claude") {
     const claudeAt = claudeHome(ctx, home);
@@ -1325,6 +1506,7 @@ export async function homeSignIn(ctx: UsageContext, provider: "claude" | "codex"
   } else {
     const dir = home.kind === "dir" ? home.dir : join(ctx.home, ".codex");
     const file = credentialFile(join(dir, "auth.json"), codexSignIn);
+    // the default home's keychain item is read too, file or not: a file in use does not make it readable
     const keychain = home.kind === "default" ? await keychainState(ctx, "Codex Auth", [undefined], codexSignIn) : { inUse: null, all: [] };
     if (file === "unknown" || keychain === "unknown") return "unknown";
     held.push(...(file === null ? [] : [file]), ...keychain.all);

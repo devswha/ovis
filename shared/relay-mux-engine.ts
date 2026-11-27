@@ -2,15 +2,17 @@ import {
   decodeFrame, encodeFrame, FrameType, HTTP_END_FLAGS, LIMITS_V1, MAX_FRAME_BYTES, MAX_LARGE_WS_MESSAGE_BYTES,
   MuxProtocolError, WS_CONTINUATION_CAPACITY, WS_DATA_FLAGS, WS_START_CAPACITY,
 } from "./relay-mux.ts";
+import type { HoldState } from "./account-devices-api.ts";
 import type { HeaderList, LimitsV1, MuxFrame, SessionError, StreamError } from "./relay-mux.ts";
+import type { BlockReceipt } from "./account-devices-api.ts";
 
 type Payload<T extends MuxFrame["type"]> = Extract<MuxFrame, { type: T }>["payload"];
 export type HttpRequest = Payload<typeof FrameType.HTTP_OPEN>;
 export type HttpResponse = Payload<typeof FrameType.HTTP_HEADERS>;
 export type WsRequest = Payload<typeof FrameType.WS_OPEN>;
-export type SessionFrame = Extract<MuxFrame, { type: 1 | 2 | 3 | 4 | 10 | 11 | 12 | 13 | 14 }>;
+export type SessionFrame = Extract<MuxFrame, { type: 1 | 2 | 3 | 4 | 10 | 11 | 12 | 13 | 14 | 0x40 | 0x41 | 0x42 }>;
 /** Setup frames only a phone sends; the others (WELCOME, PAIR_CHALLENGE, AUTH_OK) come from the PC. */
-const CLIENT_SETUP: readonly number[] = [FrameType.HELLO, FrameType.AUTH, FrameType.PAIR, FrameType.PAIR_REQUEST, FrameType.PAIR_REVEAL, FrameType.PAIR_CONFIRM];
+const CLIENT_SETUP: readonly number[] = [FrameType.HELLO, FrameType.AUTH, FrameType.PAIR, FrameType.PAIR_REQUEST, FrameType.PAIR_REVEAL, FrameType.PAIR_CONFIRM, FrameType.KEY_PROVE];
 type Traffic = "interactive" | "bulk" | "control";
 type CancelTimer = () => void;
 const U64_MAX = 0xffffffffffffffffn;
@@ -221,7 +223,8 @@ export class HttpStream extends MuxStream {
   }
   write(bytes: Uint8Array): Promise<void> {
     if (!this.live || this.stopped && this.engine.options.role === "client") return Promise.reject(new MuxStreamError("cancelled"));
-    check(!this.endQueued && !this.endedOut && !this.noBody && bytes.length > 0, "Invalid HTTP body write");
+    // noBody describes the response: it bars a server's body, never a client's upload after early 204/205 headers
+    check(!this.endQueued && !this.endedOut && !(this.noBody && this.engine.options.role === "server") && bytes.length > 0, "Invalid HTTP body write");
     check(this.engine.options.role === "client" || this.final, "Body before response headers");
     if (!this.engine.canQueue(this, bytes.length)) {
       this.reset("resource_exhausted");
@@ -247,10 +250,17 @@ export class HttpStream extends MuxStream {
         const result = await reader.read();
         if (!this.live || uploadStopped()) return;
         if (result.done) { this.end(); return; }
-        if (result.value.length) await this.write(result.value);
+        // A browser Request.body for a string/JSON upload (such as a base64 attachment) can yield
+        // the whole body as one chunk larger than QUEUE.nonterminal; slice to one HTTP_DATA frame
+        // at a time so stream flow control paces the producer instead of tripping resource_exhausted.
+        for (let offset = 0; offset < result.value.length && this.live && !uploadStopped(); offset += WS_CONTINUATION_CAPACITY) {
+          await this.write(result.value.subarray(offset, offset + WS_CONTINUATION_CAPACITY));
+        }
       }
     } catch (error) {
-      if (this.live && !uploadStopped()) this.reset("internal_error");
+      // the server stopping the upload (STOP_REQUEST, e.g. before a 413) ends it normally: its answer still arrives
+      if (uploadStopped()) return;
+      if (this.live) this.reset("internal_error");
       throw error;
     } finally {
       reader.releaseLock();
@@ -598,6 +608,8 @@ export class MuxEngine {
     this.setupTimer = this.timer(() => this.fail("timeout", "Mux setup timed out"), MUX_SETUP_MS);
   }
   get active(): boolean { return this.state === "active"; }
+  /** The local failure being sent, even if the peer closes the carrier before the send returns. */
+  get failureCode(): SessionError | undefined { return this.fatal?.code; }
   flush(): Promise<void> {
     if (this.state === "closed" || !this.sending && !this.scheduled) return Promise.resolve();
     return new Promise((resolve) => { this.idleWaiters.push(resolve); });
@@ -867,7 +879,7 @@ export class MuxEngine {
       while (this.generation === generation) {
         if (this.fatal) {
           const error = this.fatal;
-          const entry = this.entry({ type: FrameType.SESSION_ERROR, flags: 0, stream_id: 0, payload: { code: error.code, message: error.message } }, "control");
+          const entry = this.entry({ type: FrameType.SESSION_ERROR, flags: 0, stream_id: 0, payload: { code: error.code, message: error.message, ...(error.hold === undefined ? {} : { hold: error.hold }), ...(error.receipts?.length ? { receipts: error.receipts } : {}) } }, "control");
           if (this.fits(entry)) await this.options.send(entry.bytes);
           this.shutdown(error);
           return;
@@ -991,7 +1003,7 @@ export class MuxEngine {
   private dispatch(frame: MuxFrame, size: number): void {
     switch (frame.type) {
       case FrameType.RECEIVED: this.receipt(frame.payload); return;
-      case FrameType.SESSION_ERROR: this.shutdown(new MuxProtocolError(frame.payload.code, frame.payload.message)); return;
+      case FrameType.SESSION_ERROR: this.shutdown(new MuxProtocolError(frame.payload.code, frame.payload.message, frame.payload.receipts, frame.payload.hold)); return;
       case FrameType.PING: this.enqueueControl({ ...frame, type: FrameType.PONG }); return;
       case FrameType.PONG:
         if (frame.payload === this.probe) {
@@ -1009,7 +1021,8 @@ export class MuxEngine {
         this.timer(() => this.carrierLost(new MuxProtocolError("timeout", "GOAWAY drained")), frame.payload.drain_ms);
         return;
       case FrameType.HELLO: case FrameType.WELCOME: case FrameType.AUTH: case FrameType.AUTH_OK: case FrameType.PAIR:
-      case FrameType.PAIR_REQUEST: case FrameType.PAIR_CHALLENGE: case FrameType.PAIR_REVEAL: case FrameType.PAIR_CONFIRM: {
+      case FrameType.PAIR_REQUEST: case FrameType.PAIR_CHALLENGE: case FrameType.PAIR_REVEAL: case FrameType.PAIR_CONFIRM:
+      case FrameType.KEY_CHALLENGE: case FrameType.KEY_PROVE: case FrameType.KEY_PENDING: {
         const clientFrame = CLIENT_SETUP.includes(frame.type);
         check(this.deviceId === undefined && clientFrame === (this.options.role === "server"), "Unexpected setup frame");
         this.options.onSession?.(frame);
@@ -1258,14 +1271,14 @@ export class MuxEngine {
     }
     if (!hidden) this.ping();
   }
-  fail(code: SessionError, message: string): void {
+  fail(code: SessionError, message: string, receipts?: readonly BlockReceipt[], hold?: HoldState): void {
     if (!this.active) return;
     this.state = "failing";
-    this.fatal = new MuxProtocolError(code, message);
+    this.fatal = new MuxProtocolError(code, message, receipts, hold);
     for (const stream of this.streams) this.reset(stream, "upstream_lost", false);
     this.urgent.length = 0;
     this.controlQueued = 0;
-    this.timer(() => this.shutdown(this.fatal ?? new MuxProtocolError(code, message)), 5000);
+    this.timer(() => this.shutdown(this.fatal ?? new MuxProtocolError(code, message, receipts, hold)), 5000);
     this.kick();
   }
   carrierLost(error = new MuxProtocolError("internal_error", "Carrier lost")): void { this.shutdown(error); }

@@ -40,9 +40,11 @@ export interface AgentCommandSource {
   readonly forms?: Record<string, CommandForm[]>;
   readonly terminalBound?: readonly string[];
   readonly agentHidden?: readonly string[];
+  readonly chatPaletteHidden?: readonly string[];
   readonly pin?: string | readonly string[];
   readonly skillsOverrideBuiltins?: boolean;
 }
+/** omo loads the first skill of a name, in root order (its own, ~/.agents, then the bundled one). */
 const omoFirstByName: AgentCommandSource = {
   ...omo,
   discover(ctx) {

@@ -1,11 +1,13 @@
 import { expect, it, spyOn } from "bun:test";
 import * as darwinProcess from "./darwin-process.ts";
+import * as fs from "node:fs";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { heldOmoProcess, heldRuntime, heldSessionIds, isOmoProcess, omoAgentDir, omoPanes, omoProcessIdentity, omoSessionFolder, omoCandidates, omoTranscriptsOfCwd, selectOmoTranscript, withOmoDescendants, type OmoRuntime, type ProcessInfo } from "./omo.ts";
 import * as client from "./herdr/client.ts";
+import * as directory from "./directory-entries.ts";
 import * as omoModule from "./omo.ts";
 import * as processStart from "./process-start.ts";
 import { processStartedAt } from "./process-start.ts";
@@ -98,8 +100,8 @@ it("reads session identity from bounded headers and rejects foreign cwd and esca
     session(join(home, "outside.jsonl"), "/project");
     symlinkSync(join(home, "outside.jsonl"), join(dir, "escaped.jsonl"));
     writeFileSync(join(dir, "broken.jsonl"), "{");
-    expect(omoCandidates("/project", home)).toEqual([{ path: join(dir, "valid.jsonl"), id: "session-1", createdAt: Date.parse("2026-09-27T00:00:00Z"), store: join(home, ".omo", "agent", "sessions"), identity: expect.any(String) }]);
-    expect(omoCandidates("/missing", home)).toEqual([]);
+    expect(omoCandidates("/project", home).files).toEqual([{ path: join(dir, "valid.jsonl"), id: "session-1", createdAt: Date.parse("2026-09-27T00:00:00Z"), store: join(home, ".omo", "agent", "sessions"), identity: expect.any(String) }]);
+    expect(omoCandidates("/missing", home).files).toEqual([]);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -223,8 +225,8 @@ it("binds an omo pane whose launcher moved its agent directory out of ~/.omo", (
     const bound = omoTranscriptsOfCwd(cwd, [pane], infos, home, moved).get(pane.pane_id)?.path;
     expect(bound).toBe(path);
     expect(parseOmpTranscript(readFileSync(bound!, "utf8")).map((turn) => turn.role)).toEqual(["user", "assistant"]);
-    expect(omoCandidates(cwd, home)).toEqual([]);
-    expect(omoCandidates(cwd, home, [], [join(home, ".omo", "agent"), agentDir]).map((file) => file.path)).toEqual([path]);
+    expect(omoCandidates(cwd, home).files).toEqual([]);
+    expect(omoCandidates(cwd, home, [], [join(home, ".omo", "agent"), agentDir]).files.map((file) => file.path)).toEqual([path]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -258,6 +260,30 @@ it("does not turn an ordinary pi into OmO or borrow another pane's OmO", () => {
   expect(withOmoDescendants(null, launcherRows)).toBeNull();
 });
 
+it("takes an OmO a shell or package runner started, not one another agent started as its tool", () => {
+  const shellOnly: ProcessInfo = { process_info: { shell_pid: 10, foreground_processes: [{ pid: 10, argv: ["C:\\pwsh.exe"] }] } };
+  const shell = { pid: 10, parent: 1, path: "C:\\pwsh.exe", commandLine: "pwsh.exe" };
+  const omo = (pid: number, parent: number): ProcessRow => ({ pid, parent, path: "C:\\node.exe", commandLine: 'node.exe "C:\\npm\\node_modules\\omo-ai\\bin\\omo.js"' });
+  const added = (rows: ProcessRow[]): number[] =>
+    (withOmoDescendants(shellOnly, rows)?.process_info?.foreground_processes ?? []).map((entry) => entry.pid).filter((pid) => pid !== 10);
+  expect(added([shell, { pid: 20, parent: 10, path: "C:\\Windows\\System32\\cmd.exe", commandLine: 'cmd.exe /d /s /c "omo.cmd"' }, omo(21, 20)])).toEqual([21]);
+  expect(added([shell, { pid: 30, parent: 10, path: "C:\\node.exe", commandLine: 'node.exe "C:\\npm\\node_modules\\npm\\bin\\npx-cli.js" omo-ai' }, omo(31, 30)])).toEqual([31]);
+  expect(added([shell, { pid: 40, parent: 10, path: "C:\\claude.exe", commandLine: "claude.exe" }, { pid: 41, parent: 40, path: "C:\\Windows\\System32\\cmd.exe", commandLine: "cmd.exe /c omo --print hi" }, omo(42, 41)])).toEqual([]);
+  expect(added([shell, { pid: 50, parent: 10, path: "C:\\node.exe", commandLine: 'node.exe "C:\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js"' }, omo(51, 50)])).toEqual([]);
+  // `Start-Process omo` from the pane's shell: the OmO runs in a console window of its own
+  const host = (pid: number, parent: number): ProcessRow => ({ pid, parent, path: "C:\\WINDOWS\\system32\\conhost.exe", commandLine: "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0xffffffff -ForceV1" });
+  expect(added([shell, omo(60, 10), host(61, 60)])).toEqual([]);
+  expect(added([shell, { pid: 70, parent: 10, path: "C:\\Windows\\System32\\cmd.exe", commandLine: "cmd.exe /c start omo" }, host(71, 70), omo(72, 70)])).toEqual([]);
+  expect(added([shell, omo(80, 10), { pid: 81, parent: 80, path: null, commandLine: "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4" }])).toEqual([]);
+  expect(added([shell, omo(90, 10)])).toEqual([90]);
+  // a host left by an earlier process that held the OmO's number is not the OmO's own console
+  expect(added([shell, { ...omo(95, 10), started: 2000 }, { ...host(96, 95), started: 1000 }])).toEqual([95]);
+  // herdr naming another agent as the pane's program does not make the OmO it runs as a tool the pane's
+  const claudeNamed: ProcessInfo = { process_info: { shell_pid: 10, foreground_processes: [{ pid: 40, argv: ["C:\\claude.exe"] }] } };
+  const rows = [shell, { pid: 40, parent: 10, path: "C:\\claude.exe", commandLine: "claude.exe" }, { pid: 41, parent: 40, path: "C:\\Windows\\System32\\cmd.exe", commandLine: "cmd.exe /c omo" }, omo(42, 41)];
+  expect(withOmoDescendants(claudeNamed, rows)).toEqual(claudeNamed);
+});
+
 it("does not list an OmO process twice when herdr already names it", () => {
   const once = withOmoDescendants(launcherInfo, launcherRows);
   expect(withOmoDescendants(once, launcherRows)).toEqual(once);
@@ -274,6 +300,112 @@ const writeSession = (dir: string, id: string, cwd: string): string => {
   writeFileSync(path, JSON.stringify({ type: "session", id, cwd, timestamp: "2026-10-02T16:47:10.905Z" }) + "\n");
   return path;
 };
+
+it("reads an OmO holder's chat when sidecars outnumber the session scan limit (#4499)", () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-sidecars-")));
+  try {
+    const cwd = join(home, "project");
+    const agentDir = join(home, ".omo", "agent");
+    const dir = join(agentDir, "sessions", omoSessionFolder(cwd));
+    const id = "held-session";
+    const path = writeSession(dir, id, cwd);
+    for (let index = 0; index < 4096; index++) writeFileSync(join(dir, `${index}.jsonl.claude-sdk-oauth-binding.json`), "");
+    const pid = process.pid;
+    holdRecord(dir, id, pid, { pid, processStartedAtMs: processStartedAt(pid), cwd });
+    const pane = { pane_id: "w:p1", cwd, agent_session: { agent: "pi", source: "herdr:pi", kind: "path", value: path } } as HerdrPane;
+    const infos = new Map([[pane.pane_id, { process_info: { foreground_processes: [{ pid, argv: ["omo"], cwd }] } }]]);
+    expect(omoTranscriptsOfCwd(cwd, [pane], infos, home, () => [`OMO_CODING_AGENT_DIR=${agentDir}`]).get(pane.pane_id)?.path).toBe(path);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+it("finds written and pending OmO holder sessions without Node", () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-no-node-")));
+  const which = Bun.which;
+  const node = spyOn(Bun, "which").mockImplementation((name, options) => name === "node" ? null : which(name, options));
+  try {
+    const cwd = join(home, "project");
+    const agentDir = join(home, ".omo", "agent");
+    const dir = join(agentDir, "sessions", omoSessionFolder(cwd));
+    const id = "held-session";
+    const path = writeSession(dir, id, cwd);
+    const pid = process.pid;
+    holdRecord(dir, id, pid, { pid, processStartedAtMs: processStartedAt(pid), cwd });
+    const pane = { pane_id: "w:p1", cwd } as HerdrPane;
+    const infos = new Map([[pane.pane_id, { process_info: { foreground_processes: [{ pid, argv: ["omo"], cwd }] } }]]);
+    const select = () => omoTranscriptsOfCwd(cwd, [pane], infos, home, () => [`OMO_CODING_AGENT_DIR=${agentDir}`]).get(pane.pane_id);
+    const written = select();
+    rmSync(path);
+    const pending = select();
+    expect([written?.path, pending?.pending]).toEqual([path, id]);
+  } finally {
+    node.mockRestore();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+it("caps all session-directory entries and does not scan again for a pending holder (#4499)", () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-bounded-")));
+  const cwd = join(home, "project");
+  const agentDir = join(home, ".omo", "agent");
+  const store = join(agentDir, "sessions");
+  const dir = join(store, omoSessionFolder(cwd));
+  const entries = directory.directoryEntries;
+  const list = fs.readdirSync;
+  const counts: number[] = [];
+  let bulk = 0;
+  const reader = spyOn(directory, "directoryEntries").mockImplementation(function* (path) {
+    if (path !== dir) { yield* entries(path); return; }
+    let count = 0;
+    try {
+      for (const entry of entries(path)) { count++; yield entry; }
+    } finally { counts.push(count); }
+  });
+  const bulkReader = spyOn(fs, "readdirSync").mockImplementation(((path: Parameters<typeof list>[0], options?: unknown) => {
+    const entries = Reflect.apply(list, fs, [path, options]);
+    if (path === dir) bulk += entries.length;
+    return entries;
+  }) as typeof list);
+  try {
+    const id = "unwritten-session";
+    const pid = process.pid;
+    holdRecord(dir, id, pid, { pid, processStartedAtMs: processStartedAt(pid), cwd });
+    for (let i = 0; i < 32_768; i++) writeFileSync(join(dir, `${i}.jsonl.binding.json`), "");
+
+    const { capped } = omoCandidates(cwd, home);
+    expect({ capped: capped.has(store), counts, bulk }).toEqual({ capped: true, counts: [8192], bulk: 0 });
+
+    counts.length = 0; bulk = 0;
+    const pane = { pane_id: "w:p1", cwd } as HerdrPane;
+    const infos = new Map([[pane.pane_id, { process_info: { foreground_processes: [{ pid, argv: ["omo"], cwd }] } }]]);
+    const selected = omoTranscriptsOfCwd(cwd, [pane], infos, home, () => [`OMO_CODING_AGENT_DIR=${agentDir}`]).get(pane.pane_id);
+    expect({ pending: selected?.pending, path: selected?.path, counts, bulk }).toEqual({ pending: null, path: null, counts: [8192], bulk: 0 });
+  } finally {
+    reader.mockRestore();
+    bulkReader.mockRestore();
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 20_000);
+
+it("does not pin a launch id to a second store when its own transcript scan was capped (#4499)", () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-incomplete-")));
+  try {
+    const cwd = join(home, "project");
+    const storeA = join(home, "agent-a");
+    const storeB = join(home, "agent-b");
+    const dirA = join(storeA, "sessions", omoSessionFolder(cwd));
+    const dirB = join(storeB, "sessions", omoSessionFolder(cwd));
+    const id = "resumed-session";
+    writeSession(dirA, id, cwd);
+    writeSession(dirB, id, cwd);
+    for (let i = 0; i < 4096; i++) writeFileSync(join(dirA, `other-${i}.jsonl`), "");
+    const pane = { pane_id: "w:p1", cwd } as HerdrPane;
+    const pidA = 2147483646, pidB = 2147483647;
+    const infos = new Map([[pane.pane_id, { process_info: { foreground_processes: [
+      { pid: pidA, argv: ["omo", "--session-id", id], cwd }, { pid: pidB, argv: ["omo"], cwd },
+    ] } }]]);
+    expect(omoTranscriptsOfCwd(cwd, [pane], infos, home, (pid) => [`OMO_CODING_AGENT_DIR=${pid === pidA ? storeA : storeB}`]).get(pane.pane_id)?.path).toBeNull();
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
 
 it("identifies an argv-silent omo runtime only through verified native holders", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-custom-")));

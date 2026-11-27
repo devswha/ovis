@@ -22,7 +22,7 @@ import { AgentMark } from "./AgentMark.tsx";
 import { OvisMark } from "./OvisMark.tsx";
 import { displayPaneTitle, StatusBadge } from "./Sidebar.tsx";
 import { PAGES } from "./SettingsDialog.tsx";
-import { folderName, taskRowLines, unsaidLine } from "../lib/paneName.ts";
+import { folderName, taskTitle, unsaidLine } from "../lib/paneName.ts";
 import { agentTabName } from "../lib/sidebarAgents.ts";
 import { autoTabLabel, customTabLabel, tabLabel } from "../lib/tabName.ts";
 import { shownTabLabels, subscribeTabLabels } from "../lib/tabLabels.ts";
@@ -41,9 +41,8 @@ import { browseEntries, folderQuery, folderQueryFor, homeRelative, matchFolders,
 import { currentSidebarPins, subscribeSidebarPins } from "../lib/sidebarPins.ts";
 import { recentDirectories } from "../lib/recent-directories.ts";
 
-import { availableTarget, groupMachinePanes, loadRecentTargets, rankMachinePanes, recentTargets, rememberTarget, targetKey, RECENT_KEY, type MachineBranches, type MachinePane, type RecentPane } from "../lib/machinePalette.ts";
+import { availableTarget, groupMachinePanes, loadRecentTargets, rankMachinePanes, recentTargets, rememberTarget, targetKey, RECENT_KEY, RECENT_SHOWN, type MachineBranches, type MachinePane, type RecentPane } from "../lib/machinePalette.ts";
 import { worktreeWorkspaceSignature, type WorkspaceBranch } from "../lib/worktreeBranches.ts";
-const RECENT_SHOWN = 3;
 const FOLDERS_SHOWN = 5;
 
 interface CommandPaletteProps {
@@ -723,7 +722,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
                 const named = givenTabName(row);
                 const branch = branches.get(row.machineId)?.get(pane.workspace_id)?.branch ?? null;
                 const title = named !== null && named !== paneTitle ? named
-                  : taskRowLines({ paneTitle, labelled: Boolean(pane.label?.trim()), folder, workspace: workspaceLabel, alias: branch }).title;
+                  : taskTitle({ paneTitle, labelled: Boolean(pane.label?.trim()), folder, workspace: workspaceLabel });
                 const under = unsaidLine(title, [title !== paneTitle && paneTitle !== folder ? paneTitle : null, ...(section.placeNamesWorkspace
                   ? [workspaceLabel, branch, folder]
                   : [named !== null ? "" : tabName(row) ?? "", folder])]);

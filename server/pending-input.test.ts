@@ -16,7 +16,7 @@ describe("pending target identity", () => {
     expect(samePendingIdentity({ ...identity, claudeSession: "before-clear" }, { ...identity, claudeSession: "after-clear" })).toBe(false);
     expect(samePendingIdentity({ ...identity, claudeSession: "same" }, { ...identity, claudeSession: "same" })).toBe(true);
     expect(samePendingIdentity({ ...identity, claudeSession: null }, { ...identity, claudeSession: "learned" })).toBe(true);
-    expect(samePendingIdentity({ ...identity, claudeSession: "known" }, { ...identity, claudeSession: null })).toBe(true);
+    expect(samePendingIdentity({ ...identity, claudeSession: "known" }, { ...identity, claudeSession: null })).toBe(true); // control: record unreadable now (a send refuses it in pendingContext, #2125)
   });
 
   it("permits identity parts that were unknown on either read (control #540)", () => {
@@ -52,6 +52,36 @@ function fixture() {
 }
 
 describe("bridge pending input", () => {
+  it("holds the pane when a joined turn behind a review-only Send now never shows working, rather than releasing its queue (#4838)", () => {
+    const { queue, enqueue, advance } = fixture();
+    queue.status("p1", "working");
+    const sent = enqueue(1, "a", "p1", "steered");
+    const next = enqueue(2, "a", "p1", "behind it");
+    expect(queue.claim(sent, false)).toBe(true);
+    queue.committing(sent, true);
+    // an early ready inside the joined window: the wait goes on leniently for the Send's own turn
+    queue.status("p1", "idle");
+    queue.settle(sent, { code: "submit_changed", message: "Check the terminal" }, "preserve-turn");
+    expect(sent.message.state).toBe("uncertain");
+    advance(150);
+    expect(queue.next("p1")).toBeNull();
+    expect(next.message.state).toBe("held");
+  });
+
+  it("still releases a lenient wait with no review-only row on its pane (control #4838)", () => {
+    const { queue, enqueue, advance } = fixture();
+    queue.status("p1", "working");
+    const sent = enqueue(1, "a", "p1", "steered");
+    const next = enqueue(2, "a", "p1", "behind it");
+    expect(queue.claim(sent, false)).toBe(true);
+    queue.committing(sent, true);
+    queue.status("p1", "idle");
+    queue.settle(sent);
+    advance(150);
+    expect(next.message.state).toBe("queued");
+    expect(queue.next("p1")).toBe(next);
+  });
+
   it("holds a message with no reason only when its sender asked for the hold, and the page tells the two kinds apart by that for the copy's whole life", () => {
     let id = 0;
     const data = new Map<string, string>();
@@ -318,7 +348,9 @@ describe("bridge pending input", () => {
     f.queue.status("p1", "working");
     expect(f.queue.claim(first, false)).toBe(true); f.queue.committing(first, true); f.queue.settle(first);
     expect(f.queue.next("p1")).toBeNull();
-    f.queue.status("p1", "done"); expect(f.queue.next("p1")).toBe(second);
+    // right after the Enter, that rest may be the end of a turn the steer started by landing as the work ended (#4118)
+    f.queue.status("p1", "done"); expect(f.queue.next("p1")).toBeNull();
+    f.queue.status("p1", "working"); f.queue.status("p1", "done"); expect(f.queue.next("p1")).toBe(second);
   });
 
   for (const settleBeforeIdle of [true, false]) it(`keeps the interruption's ready state from draining the queue (${settleBeforeIdle ? "settled" : "in flight"})`, () => {
@@ -512,6 +544,7 @@ describe("an owner counted per pane", () => {
   });
 });
 
+// #511: a saved copy's resend of a message accepted for an agent alone keeps that rule, whatever the copy says
 describe("agent-only pending messages", () => {
   it("says which held message was accepted for an agent alone, on its own pane only", () => {
     let id = 0;
@@ -538,6 +571,7 @@ describe("a pane moved to a new ID (#1503)", () => {
     expect(f.queue.list("a", "p2")).toMatchObject([{ id: queued.message.id, state: "held", error: { code: "pane_moved" } }]);
     expect(f.queue.list("b", "p2")).toMatchObject([{ id: other.message.id, state: "held" }]);
     expect(f.queue.list("a", "p9")).toMatchObject([{ id: elsewhere.message.id, state: "queued" }]);
+    // nothing goes out by itself under the new ID
     f.queue.status("p2", "idle");
     expect(f.queue.next("p2")).toBeNull();
     expect(f.receipts.filter((r) => r.owner === "a" && r.pane === "p1").at(-1)?.messages).toEqual([]);

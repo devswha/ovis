@@ -1,3 +1,8 @@
+/**
+ * A pane let go of while the window is out of use (Settings → Use alongside herdr's own window) keeps
+ * its last screen on a bridge that offers no read-only view (herdr-core lists no `watch`): there is
+ * no view to start the screen again from, so nothing resets it.
+ */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +12,7 @@ import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { shownRows } from "./shown-rows.ts";
 import terminalFixture from "../site/demo/fixtures/terminal.json";
+import { serveDemo } from "./demo-server.ts";
 
 interface Fixture {
   sent: Array<{ type: string; pane_id?: string }>;
@@ -42,17 +48,7 @@ try {
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n<script>(${installReleaseFixture.toString()})()</script>\n<script type="module"`));
   const prefix = "/herdr-web-ui/demo/app/";
-  server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  server = serveDemo(app, { prefix });
   const url = `http://127.0.0.1:${server.port}${prefix}`;
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: "dark" });
@@ -76,6 +72,8 @@ try {
       const probe = (document.querySelector(".pane-frame.is-current .pane-terminal") as unknown as { outputProbe?: () => Probe } | null)?.outputProbe?.();
       return probe !== undefined && probe.inFlight === 0 && probe.queued === 0;
     }, undefined, { timeout: 10_000 });
+    // the demo's shell replays a recording on attach, frame by frame: a mark pushed before its last
+    // frame would be drawn over by the rest of it, so the mark waits until that frame was written
     const lastFrame = terminalFixture.frames.at(-1)!.data.slice(-512);
     await page.waitForFunction((tail) => {
       const probe = (document.querySelector(".pane-frame.is-current .pane-terminal") as unknown as { outputProbe?: () => Probe & { written: string } } | null)?.outputProbe?.();

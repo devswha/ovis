@@ -6,13 +6,16 @@ import { chromium, type BrowserContext, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
+// A device that only watches opens the list and the sheet too, also when its pane learns the role with the list open.
+// All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-background-agent-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR || "";
 if (evidence) mkdirSync(evidence, { recursive: true });
 
 interface Case { kind?: string; strip?: boolean; role?: "watch"; late?: boolean }
-interface Log { requests: string[]; delivered: number; frames: string[]; reads?: number; roleReads?: number }
+interface Log { requests: string[]; delivered: number; frames: string[]; reads?: number }
 declare global { interface Window { bgCase: Case; bgLog: Log; bgRelease?: () => void; bgHold?: boolean; bgRole?: () => void } }
 
 const patch = `(() => {
@@ -22,17 +25,21 @@ const patch = `(() => {
   window.bgCase = window.bgCase || {};
   const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const fail = (code, message, status) => json({ error: { code, message } }, status);
-  const roleReleased = new Promise((resolve) => { window.bgRole = resolve; });
+  let roleWatching = false;
+  window.bgRole = () => {
+    roleWatching = true;
+    document.dispatchEvent(new Event("visibilitychange"));
+  };
   window.fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
     const method = (init?.method ?? "GET").toUpperCase();
     log.requests.push(method + " " + url.pathname);
     const c = window.bgCase;
     if (c.role === "watch" && url.pathname.endsWith("/api/health")) {
-      // late: the app's gate reads the role first and is answered; every read after it, the pane's own among them, waits for the script
-      if (c.late && url.searchParams.get("scope") === "bridge" && (log.roleReads = (log.roleReads ?? 0) + 1) > 1) await roleReleased;
+      // late: the app starts with drive, then learns watch on a later health read while the list is open
+      const role = c.late && !roleWatching ? "drive" : "watch";
       const body = await (await demoFetch(input, init)).json();
-      return json({ ...body, auth: { required: true, authenticated: true, role: "watch" } });
+      return json({ ...body, auth: { required: true, authenticated: true, role } });
     }
     if (c.strip && url.pathname.endsWith("/api/pane/omo-tasks")) {
       const body = await (await demoFetch(input, init)).json();
@@ -141,17 +148,7 @@ export async function runBackgroundAgentDetail(part: BackgroundAgentDetailPart):
   writeFileSync(join(app, "background-agent-patch.js"), patch);
   writeFileSync(index, html.replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script src="./background-agent-patch.js"></script>\n    <script type="module"'));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   const origin = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -344,7 +341,9 @@ export async function runBackgroundAgentDetail(part: BackgroundAgentDetailPart):
             assert.equal(await page.getByText("stale response").count(), 0);
           }
           pass(`${view.width}px ${view.theme}: late answers to a closed sheet and a left pane are dropped`);
+          // nothing of this is an action: no POST, no input, no focus, no stop
           const seen = await log(page);
+          // the app's own bookkeeping (a finish seen here, a connection breadcrumb) is the one thing it writes
           assert.deepEqual(seen.requests.filter((request) => !request.startsWith("GET ") && !request.startsWith("HEAD ") && !/^POST \/api\/(seen|connection-diagnostics)$/.test(request)), [], "only reads went out");
           assert.deepEqual(seen.requests.filter((request) => /\/api\/pane\/(input|keys|focus|close|clear|stop|prompt\/answer)$/.test(request)), [], "no pane action went out");
           assert.deepEqual(seen.frames.filter((frame) => ["input", "keys", "submit", "resize", "focus", "take-over"].includes(frame)), [], "no input or control frame went out");
@@ -411,6 +410,8 @@ export async function runBackgroundAgentDetail(part: BackgroundAgentDetailPart):
                 await page.evaluate(() => window.bgRole?.());
               }
               await page.locator(".composer .composer-text:disabled").waitFor();
+              // A watching device's composer locks what writes. The list and its rows only read, so they stay
+              // usable however often the pane draws again (they went dead on the next draw once)
               assert.deepEqual(await locks(page), { ".composer-text": [true], ".composer-attach": [true], ".composer-action": [true], ".bg-tasks-toggle": [false], ".bg-task-open": [false, false], ".bg-ended-toggle": [false] }, `${state}: a watching composer locks what writes and leaves the list alone`);
             }
             await openDetail(page);
@@ -426,6 +427,7 @@ export async function runBackgroundAgentDetail(part: BackgroundAgentDetailPart):
               assert.equal(await dialog(page).locator(".bg-agent-section").count(), 2, "refresh-error: the content as it last read stays");
             }
             if (state === "refresh-changed" || state === "session-swap") {
+              // the sheet showed the first session's agent: nothing of it stays, and nothing of the other session's is shown
               assert.equal(await dialog(page).locator(".bg-agent-section").count(), 0, `${state}: the first session's content is gone`);
               assert.equal(await dialog(page).getByText("another session's", { exact: false }).count(), 0, `${state}: the other session's agent is not shown`);
               assert.equal(await dialog(page).locator(".bg-agent-detail-title").textContent(), "Review the retry test for timing assumptions", `${state}: the title is the task's own`);

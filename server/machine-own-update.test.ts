@@ -12,6 +12,7 @@ import { CompletionTracker } from "./completion.ts";
 import type { PushService } from "./push.ts";
 import type { HerdrProfileState } from "./herdr-profile-state.ts";
 
+// Nothing is installed, stopped or started on any PC, and no user's herdr or Ovis is touched.
 const MACHINE_ID = "00000000-0000-4000-8000-000000000001";
 const SOCKET = "/home/fixture/.config/herdr/herdr.sock";
 const OFFERED = "f".repeat(40);
@@ -40,7 +41,7 @@ const managedOffer = (patch: Partial<UpdateStatus> = {}): UpdateStatus => ({ ...
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
 
-function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolean; now?: () => number; ownUpdate?: { pollMs?: number; startMs?: number; checkMs?: number } } = {}) {
+function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolean; now?: () => number; ownUpdate?: { pollMs?: number; startMs?: number; checkMs?: number }; previewProfile?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ovis-own-update-"));
   let descriptor = { pid: 4242, port: REGISTERED_PORT, token: OLD_TOKEN, socket_path: SOCKET, managed_remote: remote.managed ?? false, bridge_protocol: BRIDGE_PROTOCOL, bundle_version: remote.bundle ?? "35" };
   let heldBridge: { reached: ReturnType<typeof Promise.withResolvers<void>>; gate: ReturnType<typeof Promise.withResolvers<void>> } | null = null;
@@ -79,6 +80,7 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
       if (restarted && ++listingsSinceRestart === 2) listedAfterRestart.resolve();
       return listed;
     }
+    // a stop, a start or anything else that changes the PC is not this app's to do there
     operations.push(script);
     throw new Error(`Unexpected remote command: ${script}`);
   };
@@ -168,7 +170,7 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
   if (options.autoUpdate === false) writeFileSync(join(dir, "machine-settings.json"), JSON.stringify({ auto_update_bridges: false }));
   if (options.registered !== false) writeFileSync(join(dir, "machines.json"), JSON.stringify([{ id: MACHINE_ID, name: "Home server", target: { destination: "fixture@pc.invalid" }, enabled: true }]));
   const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("local offline"); },
-    { ...(options.ownUpdate ? { ownUpdate: options.ownUpdate } : {}), ...(options.now ? { now: options.now } : {}) });
+    { ...(options.ownUpdate ? { ownUpdate: options.ownUpdate } : {}), ...(options.now ? { now: options.now } : {}), ...(options.previewProfile ? { previewProfile: true } : {}) });
   cleanups.push(() => manager.stop());
   const shown: Machine[] = [];
   cleanups.push(manager.subscribe((event) => {
@@ -230,6 +232,8 @@ describe("a PC whose own Ovis is away (#2047)", () => {
     });
   }
 
+  // A setup at another SSH address is the user's to review there: the PC moves only once it connects there, and one
+  // cancelled or failed leaves it at its own address, where it waits for its own Ovis (#2075)
   for (const runtime of ["bundle-ready", null] as const) {
     it(`${runtime ? "a ready runtime" : "nothing of this app's"} at another address, cancelled at approval, starts nothing and leaves the PC at its own`, async () => {
       let clock = 0;
@@ -279,6 +283,7 @@ describe("a PC whose own Ovis is away (#2047)", () => {
     manager.action(job.id, { action: "approve" });
     const left = await until((machine) => !machine.updating && machine.state !== "connecting");
     expect(manager.job(job.id)).toMatchObject({ phase: "failed", error: expect.stringContaining("Unexpected remote command") });
+    // what was approved there, and only that: the runtime's install, then the start that failed
     expect(operations).toEqual(["install-bundle", expect.stringContaining('ovis-server" remote')]);
     const approved = [...operations];
     expect(left).toMatchObject({ state: "reconnecting", target: { destination: "fixture@pc.invalid" } });
@@ -465,6 +470,25 @@ describe("a PC whose own Ovis is away (#2047)", () => {
   });
 });
 
+describe("a preview app, whose own Ovis lives in a home of its own", () => {
+  it("neither connects to nor updates the released Ovis it finds on a PC over SSH", async () => {
+    const { installs, operations, requests, until } = pc({ status: managedOffer(), access: { port: OWN_PORT, tailscale: { serving_url: null } } }, { previewProfile: true });
+    const refused = await until((machine) => machine.action_required === "setup");
+    expect(refused.state).not.toBe("connected");
+    expect(refused.remote_ovis ?? null).toBeNull();
+    expect(installs).toEqual([]);
+    expect(operations).toEqual([]);
+    expect(requests).toEqual([]);
+  });
+
+  it("adds no PC to its account over SSH, and installs or starts no Ovis on one", () => {
+    const { manager, operations } = pc({ status: managedOffer() }, { registered: false, previewProfile: true });
+    expect(() => manager.setup({ destination: "fixture@pc.invalid", account_add: true })).toThrow("preview");
+    expect(() => manager.install({ destination: "fixture@pc.invalid" })).toThrow("preview");
+    expect(operations).toEqual([]);
+  });
+});
+
 describe("a PC whose own Ovis is older than this app", () => {
   it("updates itself through its own updater on reconnect, with automatic updates on, then connects", async () => {
     const { manager, installs, operations, until } = pc({ status: managedOffer(), access: { port: OWN_PORT, tailscale: { serving_url: null } } });
@@ -551,6 +575,7 @@ describe("a PC whose own Ovis is older than this app", () => {
     gate.resolve();
     const jobs = (manager as unknown as { jobs: Map<string, { public: { error: string | null } }> }).jobs;
     await until(() => [...jobs.values()].some((job) => /may still finish it there/.test(job.public.error ?? "")));
+    // never a cancel without the install's id: it could stop another device's install
     expect(requests).not.toContain("POST /api/updates/cancel");
   });
 
@@ -619,6 +644,7 @@ describe("a PC whose own Ovis is older than this app", () => {
   });
 
   for (const path of ["/api/updates", "/api/updates/install"]) it(`never follows a redirect from ${path} out of the tunnel`, async () => {
+    // a server on this PC's own loopback that a followed redirect would reach
     const hits: string[] = [];
     const canary = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) { hits.push(`${request.method} ${new URL(request.url).pathname}`); return Response.json({ accepted: true }, { status: 202 }); } });
     cleanups.push(() => canary.stop(true));
@@ -760,6 +786,7 @@ describe("a PC whose own Ovis is older than this app", () => {
     const { requests, until } = pc({ status: managedOffer({ port: OWN_PORT, serving_url: "https://home-server.example.ts.net" }), access: null }, { autoUpdate: false });
     const waiting = await until((machine) => machine.action_required === "update_bridge");
     expect(waiting.remote_ovis).toMatchObject({ updatable: true, address: `pc.invalid:${OWN_PORT}`, url: "https://home-server.example.ts.net" });
+    // it told both with its status: the route its token keeps closed to the bridge's is not asked
     expect(requests).not.toContain("GET /api/access");
   });
 
@@ -778,5 +805,14 @@ describe("a PC whose own Ovis is older than this app", () => {
     const failed = manager.job(job.id) as SetupJob;
     expect(failed).toMatchObject({ phase: "failed", action_required: "update_bridge", remote_ovis: { updatable: true, latest_version: "0.4.18", address: `pc.invalid:${REGISTERED_PORT}` } });
     expect(installs).toEqual([]);
+  });
+
+  it("gives the dialog the older Ovis's failure as a code with its versions, which the app words in its own language", async () => {
+    const { manager } = pc({ status: managedOffer() }, { registered: false });
+    const job = manager.setup({ destination: "fixture@pc.invalid" });
+    await (manager as unknown as { jobs: Map<string, { finished: Promise<void> }> }).jobs.get(job.id)?.finished;
+    const failed = manager.job(job.id) as SetupJob;
+    expect(failed.error_code).toEqual({ code: "own_ovis_older", version: "0.4.16", target: "0.4.18" });
+    expect(failed.error).toStartWith("This PC runs its own Ovis v0.4.16");
   });
 });

@@ -12,16 +12,18 @@ import {
   type ReactNode,
 } from "react";
 import { flushSync } from "react-dom";
-import { ArrowUp, ClipboardPaste, FileText, Folder, FolderGit2, GitBranch, LoaderCircle, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon } from "lucide-react";
+import { ArrowUp, ClipboardList, ClipboardPaste, FileText, Folder, FolderGit2, GitBranch, LoaderCircle, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon } from "lucide-react";
 
 import "./Composer.css";
 
 import type { AgentStatus, ClientRole, ConversationMetadata, PlanSummary, SlashCommand } from "../../shared/protocol.ts";
 import { skillSyntax } from "../../shared/skill-syntax.ts";
+import { labelledAgent } from "../../shared/supported-agents.ts";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { composerDraftKey, composerDrafts, underSendLock } from "../lib/composerDraft.ts";
 import { tally, usageCounters, useShownCount } from "../lib/usageCounters.ts";
 import { onQuoted } from "../lib/chatQuote.ts";
+import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { commentsWait, holdsQuoteLine, messageWithComments, replyComments, replyCommentsKey, type ReplyComment } from "../lib/replyComments.ts";
 import { ReplyCommentsChip, useReplyComments } from "./ReplyComments.tsx";
 import { paneStorageId } from "../../shared/machines.ts";
@@ -80,7 +82,7 @@ import { BackgroundTasks } from "./BackgroundTasks.tsx";
 import { MicButton, VoiceRecordingPill, useDictation } from "./VoiceInput.tsx";
 import { usePaneCommands } from "../lib/usePaneCommands.ts";
 import { useT } from "../lib/i18n.ts";
-import { offersRetry, userFailure, type UserFailure } from "../lib/userError.ts";
+import { failureReason, offersRetry, uploadFailure, type UserFailure } from "../lib/userError.ts";
 import { AttachmentTooLargeError } from "../lib/api.ts";
 import { modalOpen } from "../lib/focus.ts";
 
@@ -157,7 +159,8 @@ function readSlashUsage(): Record<string, number> {
   }
 }
 
-function ContextRing({ context }: { context: NonNullable<ConversationMetadata["context"]> }) {
+/** `focusable`: on desktop a keyboard reaches the ring and its focus shows the number; a phone keeps it inert */
+function ContextRing({ context, focusable }: { context: NonNullable<ConversationMetadata["context"]>; focusable: boolean }) {
   const t = useT();
   const left = contextLeftPercent(context);
   if (left === null || context.window === null) return null;
@@ -165,7 +168,7 @@ function ContextRing({ context }: { context: NonNullable<ConversationMetadata["c
   const detail = t("{used} of {window} tokens", { used: formatTokens(context.used), window: formatTokens(context.window) });
   const radius = 6;
   const circumference = 2 * Math.PI * radius;
-  return <span className={`composer-context${left <= 20 ? " is-low" : ""}`} title={`${label} · ${detail}`}>
+  return <span className={`composer-context${left <= 20 ? " is-low" : ""}`} tabIndex={focusable ? 0 : undefined} data-tooltip={`${label} · ${detail}`} title={`${label} · ${detail}`}>
     <svg viewBox="0 0 16 16" aria-hidden="true">
       <circle className="composer-context-track" cx="8" cy="8" r={radius} />
       <circle className="composer-context-used" cx="8" cy="8" r={radius}
@@ -173,19 +176,6 @@ function ContextRing({ context }: { context: NonNullable<ConversationMetadata["c
     </svg>
     <span className="visually-hidden">{label} · {detail}</span>
   </span>;
-}
-
-function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(() => window.matchMedia?.(query).matches === true);
-  useEffect(() => {
-    const media = window.matchMedia?.(query);
-    if (!media) return;
-    const refresh = () => setMatches(media.matches);
-    refresh();
-    media.addEventListener("change", refresh);
-    return () => media.removeEventListener("change", refresh);
-  }, [query]);
-  return matches;
 }
 
 export function Composer({
@@ -226,9 +216,12 @@ export function Composer({
   const mobile = useMediaQuery("(max-width: 640px), (pointer: coarse)");
   const viewOnly = role === "observe";
   const enterSends = enterSendsOn(settings, useMediaQuery("(pointer: coarse)"));
-  const usageEnabled = settings.showUsage && !mobile && machineId === "local" && planForPane(agent, metadata?.provider) !== null;
+  const holdShortcutEnabled = settings.shortcutOverrides["hold-message"] !== null;
+  // the agent the pane runs, for every decision of its kind; herdr's label is the one shown
+  const kind = labelledAgent(agent);
+  const usageEnabled = settings.showUsage && !mobile && machineId === "local" && planForPane(kind, metadata?.provider) !== null;
   const { report: usageReport } = useUsage(usageEnabled);
-  const usage = usageEnabled && usageReport !== null ? composerUsage(usageReport.providers, agent, settings.usageOrder, settings.usageHidden, metadata?.provider) : undefined;
+  const usage = usageEnabled && usageReport !== null ? composerUsage(usageReport.providers, kind, settings.usageOrder, settings.usageHidden, metadata?.provider) : undefined;
   const usageWindows = usage === undefined ? [] : statusWindows(usage);
   const usageLimit = usageWindows[0];
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -243,6 +236,7 @@ export function Composer({
   }, [autoFocus]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentsRef = useRef<Attachment[]>([]);
+  const attachmentPreviews = useRef(new Map<number, string>());
   const removedAttachments = useRef(new Set<number>());
   const fileRequest = useRef(0);
   const draftKey = composerDraftKey(paneStorageId(machineId, paneId));
@@ -283,10 +277,15 @@ export function Composer({
   const compositionStart = useRef(0);
   /** files detached by an edit in the box, by attachment id: the tile, its path as it was in `before`, the text before that edit, and what is left of the path */
   const erased = useRef(new Map<number, { attachment: Attachment; mention: PlacedMention; before: string; remains: PlacedMention | null }>());
-  const forgetErased = useCallback(() => {
-    for (const { attachment } of erased.current.values()) URL.revokeObjectURL(attachment.previewUrl);
-    erased.current.clear();
+  const releasePreview = useCallback((id: number) => {
+    const url = attachmentPreviews.current.get(id);
+    if (url) URL.revokeObjectURL(url);
+    attachmentPreviews.current.delete(id);
   }, []);
+  const forgetErased = useCallback(() => {
+    for (const id of erased.current.keys()) releasePreview(id);
+    erased.current.clear();
+  }, [releasePreview]);
   /** one line for assistive tech per file detached from the message: the tile going is what the screen shows */
   const announceDetached = useCallback((gone: readonly Attachment[]) => {
     if (gone.length > 0) announce(gone.map((item) => t("{name} detached from the message", { name: item.file.name })).join(" "));
@@ -299,11 +298,15 @@ export function Composer({
   const takeOut = useCallback((ids: readonly number[]) => {
     if (ids.length === 0) return;
     const gone = attachmentsRef.current.filter((item) => ids.includes(item.id));
-    for (const id of ids) { placed.current.delete(id); places.current.delete(id); removedAttachments.current.add(id); }
-    for (const item of gone) URL.revokeObjectURL(item.previewUrl);
+    for (const id of ids) {
+      placed.current.delete(id);
+      places.current.delete(id);
+      removedAttachments.current.add(id);
+      releasePreview(id);
+    }
     setAttachments((current) => current.filter((item) => !ids.includes(item.id)));
     announceDetached(gone);
-  }, [announceDetached]);
+  }, [announceDetached, releasePreview]);
   /** an orphaned place lasts only while the box is empty: anything written there is a new draft */
   const settleOrphans = useCallback((next: string) => {
     if (next === "") return;
@@ -401,7 +404,7 @@ export function Composer({
   attachmentsRef.current = attachments;
   textRef.current = text;
   caretRef.current = caret;
-  const syntax = skillSyntax(agent);
+  const syntax = skillSyntax(kind);
   /** the pane's `@` skills (OpenCode v2), listed with the files; a pane without them keeps the file menu alone */
   const atSkills = useMemo(() => atSkillCommands(commands), [commands]);
   const trigger = useMemo(() => activeTrigger(text, caret, { skills: syntax.skillTriggers.includes("$"), namespaced: syntax.namespaced, atSkills: atSkills.length > 0 }), [atSkills, syntax, caret, text]);
@@ -467,10 +470,11 @@ export function Composer({
       for (const release of [...openClaims.current]) release();
       uploadQueue.current = [];
       waitingMentions.current = [];
-      for (const attachment of attachmentsRef.current) URL.revokeObjectURL(attachment.previewUrl);
       forgetErased();
+      for (const url of attachmentPreviews.current.values()) URL.revokeObjectURL(url);
+      attachmentPreviews.current.clear();
     };
-  }, []);
+  }, [forgetErased]);
 
   // The app's faces swap in after the first paint (fonts/fonts.css, font-display: swap) and are
   // not as wide as the fallback they replace. No box changes size for that, so nothing else
@@ -513,22 +517,33 @@ export function Composer({
       status.removeAttribute("data-model");
       status.removeAttribute("data-hint-alone");
       status.removeAttribute("data-meta-empty");
+      surface?.removeAttribute("data-step-out");
       const clipped = (selector: string): boolean => {
         const item = status.querySelector<HTMLElement>(selector);
         return item !== null && item.scrollWidth > item.clientWidth;
       };
-      const first = composerModelDraw({
-        modelClipped: clipped(".composer-model"),
-        effortClipped: clipped(".composer-reasoning"),
-      });
-      if (first !== "full") status.setAttribute("data-model", first);
-      const model = status.querySelector<HTMLElement>(".composer-model");
-      const draw = model === null ? first : composerLabelDraw(first, {
-        modelClipped: model.scrollWidth > model.clientWidth,
-        modelWidth: model.clientWidth,
-        modelFloor: parseFloat(getComputedStyle(model).minWidth) || 0,
-      });
-      if (draw !== first) status.setAttribute("data-model", draw);
+      const drawModel = (): void => {
+        status.removeAttribute("data-model");
+        const first = composerModelDraw({
+          modelClipped: clipped(".composer-model"),
+          effortClipped: clipped(".composer-reasoning"),
+        });
+        if (first !== "full") status.setAttribute("data-model", first);
+        const model = status.querySelector<HTMLElement>(".composer-model");
+        const draw = model === null ? first : composerLabelDraw(first, {
+          modelClipped: model.scrollWidth > model.clientWidth,
+          modelWidth: model.clientWidth,
+          modelFloor: parseFloat(getComputedStyle(model).minWidth) || 0,
+        });
+        if (draw !== first) status.setAttribute("data-model", draw);
+      };
+      drawModel();
+      // the plan mode icon is never cut: where the row still pushes it out, the plan chip's step steps out for it
+      const mode = status.querySelector<HTMLElement>(".composer-mode");
+      if (surface && mode !== null && mode.getBoundingClientRect().left < status.getBoundingClientRect().left - 0.5) {
+        surface.setAttribute("data-step-out", "");
+        drawModel();
+      }
       const hint = hintRef.current;
       if (!hint) return;
       const meta = status.querySelector<HTMLElement>(".composer-status-meta")?.getBoundingClientRect();
@@ -567,7 +582,7 @@ export function Composer({
     return () => { observer.disconnect(); cancelAnimationFrame(frame); };
   }, []);
 
-  const triggerCommands = useMemo(() => (trigger?.kind === "slash" ? commandsForTrigger(commands, agent, trigger) : []), [agent, commands, trigger]);
+  const triggerCommands = useMemo(() => (trigger?.kind === "slash" ? commandsForTrigger(commands, kind, trigger) : []), [kind, commands, trigger]);
   const filteredCommands = useMemo(
     () => (trigger?.kind === "slash"
       ? rankSlashCommands(triggerCommands, trigger.query, slashUsage, trigger.start > 0 && text[trigger.start - 1] !== "\n")
@@ -587,7 +602,7 @@ export function Composer({
   const menuOpen = !menuDismissed && trigger !== null && choices.length > 0;
   const filesFailedShown = !menuDismissed && trigger?.kind === "file" && filesFailed && files.length === 0 && !menuOpen;
   const slashUnmatched = !menuDismissed && trigger?.kind === "slash" && trigger.query !== "" && choices.length === 0 && triggerCommands.length > 0
-    && !namesHiddenCommand(commands, trigger.query);
+    && !namesHiddenCommand(commands, trigger.query, trigger.prefix ?? "/");
   // clamped as the list is drawn, not by an effect after it: a Tab or Enter typed before that
   // effect's render found no row at the old index and did nothing
   const choiceIds = choices.map((choice) => typeof choice === "string" ? `file:${choice}` : `${choice.source}:${choice.name}`);
@@ -634,6 +649,21 @@ export function Composer({
   });
 
   const pasteCutNote = useRef<string | null>(null);
+
+  const syncTextarea = (element: HTMLTextAreaElement): void => {
+    const { value, selectionStart, selectionEnd } = element;
+    // a textarea reports CRLF and CR as LF: a draft that holds them (a pasted clipboard) is not edited by that
+    if (viewOnly || value === composerDrafts.read(draftKey).text.replace(/\r\n?/g, "\n")) return;
+    barePick.current = null;
+    syncPlaces(textRef.current);
+    movePlaces(editBetween(placesText.current, value, { caret: selectionStart, selected: selection.current }), value);
+    selection.current = { start: selectionStart, end: selectionEnd };
+    textRef.current = value;
+    setText(value);
+    setCaret(selectionStart);
+    setMenuDismissed(false);
+    setNote((current) => typeof current === "object" && current !== null && "failure" in current ? current : pasteCutNote.current);
+  };
 
   // the box clamps at its cap without a word: the cap is said once, as it is reached, through the
   // polite region (the status line shows it; a line that appears with its words is not announced)
@@ -790,9 +820,9 @@ export function Composer({
   const selectCompletion = useCallback(
     (choice: SlashCommand | string, currentTrigger: ActiveTrigger) => {
       const replacement = typeof choice === "string" ? `@${choice} `
-        : currentTrigger.kind === "slash" ? slashCommandReplacement(choice, agent, currentTrigger) : atSkillReplacement(choice);
+        : currentTrigger.kind === "slash" ? slashCommandReplacement(choice, kind, currentTrigger) : atSkillReplacement(choice);
       const completed = applyCompletion(text, currentTrigger, replacement);
-      barePick.current = typeof choice !== "string" && currentTrigger.kind === "slash" && sendsBarePick(choice, agent) ? completed.text : null;
+      barePick.current = typeof choice !== "string" && currentTrigger.kind === "slash" && sendsBarePick(choice, kind) ? completed.text : null;
       setTextAndCaret(completed.text, completed.caret);
       setMenuDismissed(true);
       if (typeof choice !== "string") {
@@ -809,7 +839,7 @@ export function Composer({
         });
       }
     },
-    [agent, machineId, onOpenHistory, setTextAndCaret, text],
+    [kind, machineId, onOpenHistory, setTextAndCaret, text],
   );
 
   const pumpUploads = useCallback(() => {
@@ -817,10 +847,20 @@ export function Composer({
       const attachment = uploadQueue.current.shift()!;
       if (removedAttachments.current.has(attachment.id)) continue;
       uploadsRunning.current += 1;
-      void onUploadImage(attachment.file)
+      void normalizeComposerImageFile(attachment.file)
+        .then((preview) => {
+          if (!mounted.current || removedAttachments.current.has(attachment.id)) return;
+          if (preview !== attachment.file && !attachmentPreviews.current.has(attachment.id)) {
+            const previewUrl = URL.createObjectURL(preview);
+            attachmentPreviews.current.set(attachment.id, previewUrl);
+            setAttachments((current) => current.map((item) => item.id === attachment.id ? { ...item, previewUrl } : item));
+          }
+          // If JPEG preparation fails, it must still have the original file and type.
+          return onUploadImage(preview.type === "image/jpeg" ? attachment.file : preview);
+        })
         .then(
           (path) => {
-            if (!mounted.current || removedAttachments.current.has(attachment.id)) return;
+            if (path === undefined || !mounted.current || removedAttachments.current.has(attachment.id)) return;
             waitingMentions.current.push({ id: attachment.id, path, name: attachment.file.name });
             placeWaitingMentions();
           },
@@ -833,7 +873,7 @@ export function Composer({
               setNote(attachment.leftOut ? `${error.message} ${attachment.leftOut}` : error.message);
               return;
             }
-            const failure = userFailure(error);
+            const failure = uploadFailure(error);
             setNote({ attachment, failure });
           },
         )
@@ -857,13 +897,13 @@ export function Composer({
         ? t("Only the first {count} of {total} files were taken.", { count: images.length, total: incoming.length })
         : null;
       const added = images.map<Attachment>((file) => {
-        const uploadFile = normalizeComposerImageFile(file);
+        const id = ++attachmentSequence;
+        const previewUrl = (PREVIEW_TYPES as readonly string[]).includes(file.type) ? URL.createObjectURL(file) : "";
+        if (previewUrl) attachmentPreviews.current.set(id, previewUrl);
         return {
-          id: ++attachmentSequence,
-          file: uploadFile,
-          previewUrl: (PREVIEW_TYPES as readonly string[]).includes(uploadFile.type)
-            ? URL.createObjectURL(uploadFile)
-            : "",
+          id,
+          file,
+          previewUrl,
           path: null,
           state: "uploading",
           leftOut,
@@ -893,7 +933,7 @@ export function Composer({
     removedAttachments.current.add(attachment.id);
     places.current.delete(attachment.id);
     placed.current.delete(attachment.id);
-    URL.revokeObjectURL(attachment.previewUrl);
+    releasePreview(attachment.id);
     setAttachments((current) => current.filter((item) => item.id !== attachment.id));
     setNote((current) => typeof current === "object" && current !== null && "failure" in current && current.attachment.id === attachment.id ? null : current);
     if (inserted) {
@@ -909,7 +949,7 @@ export function Composer({
       // would wait for the next edit: try them now
       placeWaitingMentions();
     }
-  }, [movePlaces, placeWaitingMentions, setText, syncPlaces]);
+  }, [movePlaces, placeWaitingMentions, releasePreview, setText, syncPlaces]);
 
   /** `clearDraft`: the terminal draft a DraftRefusal named, which the user asked to clear and send over;
    * `sendAnyway`: the user saw the box a DraftRefusal showed and sends over it; `now`: Ctrl+Enter; `hold`: Alt+Enter. */
@@ -951,7 +991,11 @@ export function Composer({
       textRef.current = rest;
       caretRef.current = rest.length;
       setNote(edited ? t("Sent as it was. Your changes made while it was sending stayed here and were not sent.") : null);
-      for (const attachment of sentAttachments) { URL.revokeObjectURL(attachment.previewUrl); places.current.delete(attachment.id); placed.current.delete(attachment.id); }
+      for (const attachment of sentAttachments) {
+        releasePreview(attachment.id);
+        places.current.delete(attachment.id);
+        placed.current.delete(attachment.id);
+      }
       setAttachments((current) => current.filter((attachment) => !sentAttachments.includes(attachment)));
     };
     const ended = (): void => { composerDrafts.end(draftKey, sendId); replyComments.release(sentComments); };
@@ -986,7 +1030,7 @@ export function Composer({
     return underSendLock(draftKey, () => {
       try { return claim(); } finally { release(); }
     });
-  }, [attachments, carried, commentsKey, connected, dictation.forget, draftKey, machineId, onClaim, onOpenHistory, onSend, roomless, sending, t, terminalTyped, text, uploading, viewOnly]);
+  }, [attachments, carried, commentsKey, connected, dictation.forget, draftKey, forgetErased, machineId, movePlaces, onClaim, onOpenHistory, onSend, releasePreview, roomless, sending, syncPlaces, t, terminalTyped, text, uploading, viewOnly]);
   const sendRef = useRef(send);
   sendRef.current = send;
   const connectedRef = useRef(connected);
@@ -1175,7 +1219,7 @@ export function Composer({
         return;
       }
       const altEnter = event.key === "Enter" && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
-      const hold = altEnter && !mobile;
+      const hold = altEnter && !mobile && holdShortcutEnabled;
       const shouldSend = !altEnter && event.key === "Enter" && (enterSends
         ? !event.shiftKey && !event.metaKey && !event.ctrlKey
         // not with Alt: Windows reports AltGr as Ctrl+Alt, and Cmd+Option is no send either (#3460)
@@ -1199,7 +1243,7 @@ export function Composer({
       event.preventDefault();
       send(undefined, false, sendNow, hold);
     },
-    [acceptSuggestion, agentStatus, carried.length, choices, connected, menuDismissed, menuOpen, mobile, offered, onAbort, selectCompletion, selectedIndex, send, sendBeside, setTextAndCaret, enterSends, trigger, waitingAnswer],
+    [acceptSuggestion, agentStatus, carried.length, choices, connected, holdShortcutEnabled, menuDismissed, menuOpen, mobile, offered, onAbort, selectCompletion, selectedIndex, send, sendBeside, setTextAndCaret, enterSends, trigger, waitingAnswer],
   );
 
   const onPaste = useCallback(
@@ -1260,8 +1304,14 @@ export function Composer({
     : hint === "no-room" ? t("{max}-character limit · {count} over", { max: formatChars(MAX_COMPOSER_CHARS), count: formatChars(roomless?.missing ?? 0) })
     : hint === "near-limit" ? composerFull(text.length, MAX_COMPOSER_CHARS) ? t("{max}-character limit", { max: formatChars(MAX_COMPOSER_CHARS) }) : t("{count} characters left", { count: MAX_COMPOSER_CHARS - text.length })
     : hint === "uploading" ? t("Uploading file…") : offlineSentence;
+  const failed = note !== null && typeof note === "object" && "failure" in note ? note : null;
+  const failedReason = failed === null ? null : failureReason(failed.failure);
+  const shownDetail = failed === null ? null
+    : failed.failure.cause !== null || (failed.failure.detail !== null && failedReason !== failed.failure.detail)
+      ? failed.failure.detail
+      : null;
   const noteLine = note === null ? null : typeof note === "string" ? note : "failure" in note
-    ? [note.failure.cause === null ? t("{name} could not be attached", { name: note.attachment.file.name }) : t("{name} could not be attached: {reason}", { name: note.attachment.file.name, reason: note.failure.cause }), note.attachment.leftOut].filter((part) => part !== null).join(" ")
+    ? [failedReason === null ? t("{name} could not be attached", { name: note.attachment.file.name }) : t("{name} could not be attached: {reason}", { name: note.attachment.file.name, reason: failedReason }), note.attachment.leftOut].filter((part) => part !== null).join(" ")
     : note.note;
   const strip = mobile ? null : composerStrip({ cwd, branch, repo: worktreeRepo });
   const worktree = worktreeRepo !== null;
@@ -1286,7 +1336,7 @@ export function Composer({
     observer.observe(stripElement);
     return () => observer.disconnect();
   }, [strip?.branch, strip?.folder, strip?.path, worktree, facesLoaded, t]);
-  useLayoutEffect(fitStatus, [fitStatus, agent, metadata?.model, metadata?.reasoning_effort,
+  useLayoutEffect(fitStatus, [fitStatus, agent, metadata?.model, metadata?.reasoning_effort, metadata?.permission_mode,
     metadata?.context?.window, mobile, usageCaption, usage?.problem, hintText, dictation.shown, backgroundTasks,
     plan?.done, plan?.total, plan?.current, statusCompact, facesLoaded, t]);
   const menuId = `composer-menu-${paneId}`;
@@ -1341,10 +1391,10 @@ export function Composer({
           <TriangleAlert className="composer-note-icon" aria-hidden="true" />
           <div className="composer-note-text">
             {noteLine}
-            {typeof note === "object" && "failure" in note && (note.failure.advice !== null || note.failure.detail !== null) && <details className="composer-note-details">
+            {failed !== null && (failed.failure.advice !== null || shownDetail !== null) && <details className="composer-note-details">
               <summary>{t("Details")}</summary>
-              {note.failure.advice !== null && <p>{note.failure.advice}</p>}
-              {note.failure.detail !== null && <code>{note.failure.detail}</code>}
+              {failed.failure.advice !== null && <p>{failed.failure.advice}</p>}
+              {shownDetail !== null && <code>{shownDetail}</code>}
             </details>}
           </div>
           {/* the draft named above, never what has replaced it since: the server checks; a box it could
@@ -1516,23 +1566,25 @@ export function Composer({
 
         <textarea
           ref={textareaRef}
-        onCompositionStart={() => {
-          composingRef.current = true;
-          compositionStart.current = readSelection().start;
-        }}
-        onCompositionEnd={() => {
-          composingRef.current = false;
-          const waiting = commitWait.current;
-          if (waiting !== null) {
-            if (waiting.timer !== null) clearTimeout(waiting.timer);
-            waiting.timer = null;
-            // WebKit updates the value with an input event after compositionend: send the committed word
-            setTimeout(sendCommitted);
-          }
-          // after the input that commits the candidate, which WebKit sends after compositionend, and
-          // in a frame, after the caret of dictation held through the composition has landed
-          setTimeout(() => requestAnimationFrame(() => { if (mounted.current) placeWaitingMentions(); }), 0);
-        }}
+          onCompositionStart={() => {
+            composingRef.current = true;
+            compositionStart.current = readSelection().start;
+          }}
+          onCompositionEnd={(event) => {
+            composingRef.current = false;
+            // Some commits change the DOM value without delivering an input event.
+            syncTextarea(event.currentTarget);
+            const waiting = commitWait.current;
+            if (waiting !== null) {
+              if (waiting.timer !== null) clearTimeout(waiting.timer);
+              waiting.timer = null;
+              // WebKit updates the value with an input event after compositionend: send the committed word
+              setTimeout(sendCommitted);
+            }
+            // after the input that commits the candidate, which WebKit sends after compositionend, and
+            // in a frame, after the caret of dictation held through the composition has landed
+            setTimeout(() => requestAnimationFrame(() => { if (mounted.current) placeWaitingMentions(); }), 0);
+          }}
           className="composer-text"
           rows={1}
           maxLength={MAX_COMPOSER_CHARS}
@@ -1559,20 +1611,9 @@ export function Composer({
           onSelect={(event) => {
             selection.current = { start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd };
           }}
-          onChange={(event) => {
-            const box = event.target;
-            barePick.current = null;
-            // the places follow the edit the box made, over the selection it had (#3216)
-            syncPlaces(textRef.current);
-            // an edit in the box, even one that empties it or types over all of it, moves them to where it began
-            movePlaces(editBetween(placesText.current, box.value, { caret: box.selectionStart, selected: selection.current }), box.value);
-            selection.current = { start: box.selectionStart, end: box.selectionEnd };
-            textRef.current = box.value;
-            setText(box.value);
-            setCaret(box.selectionStart);
-            setMenuDismissed(false);
-            setNote((current) => typeof current === "object" && current !== null && "failure" in current ? current : pasteCutNote.current);
-          }}
+          // React's onChange can omit an input whose value its tracker already saw.
+          onInput={(event) => syncTextarea(event.currentTarget)}
+          onChange={(event) => syncTextarea(event.currentTarget)}
         />
         <textarea
           ref={measurementRef}
@@ -1623,7 +1664,7 @@ export function Composer({
             </button>
           )}
           {dictation.shown && <MicButton dictation={dictation} disabled={viewOnly} />}
-          <BackgroundTasks paneId={paneId} count={backgroundTasks} omo={agent === "omo"} subagents={agent === "claude" || agent === "opencode"} plan={plan} />
+          <BackgroundTasks paneId={paneId} count={backgroundTasks} omo={kind === "omo"} subagents={kind === "claude" || kind === "opencode"} plan={plan} />
           {agent === "claude" && <Artifacts paneId={paneId} status={agentStatus} />}
           {agent === "omp" && <OmpBtw paneId={paneId} />}
         </div>
@@ -1657,7 +1698,16 @@ export function Composer({
                   </>}
                 </span>
               </span>}
-              {metadata?.context && <ContextRing context={metadata.context} />}
+              {/* plan mode (Claude Code's, or a Codex Ovis started) is the one mode the pill marks: in words on a desktop, as an
+                  icon on a phone, where the row has no room for them; every other mode draws nothing */}
+              {metadata?.permission_mode === "plan" && (mobile
+                ? <span className="composer-mode" role="img" aria-label={t("Plan mode")} title={t("Plan mode")}>
+                  <ClipboardList aria-hidden="true" />
+                </span>
+                : <span className="composer-mode is-text">
+                  <span className="composer-reasoning-dot" aria-hidden="true">·</span>{t("Plan mode")}
+                </span>)}
+              {metadata?.context && <ContextRing context={metadata.context} focusable={!mobile} />}
               {usage !== undefined && isCurrent(usage) && usageLimit !== undefined && <span
                 className={`composer-usage${usageLimit.used_percent >= HIGH_PERCENT ? " is-high" : ""}${usage.recorded ? " is-recorded" : ""}`}
                 title={`${usageName(usage)}${usageRecorded ? `\n${usageRecorded.join("\n")}` : ""}\n${usageDetail}`}

@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import type { Page } from "playwright-core";
 import { createServer } from "../server/index.ts";
-import { HerdrError, herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+import { HerdrError, herdrRpc, paneSendKeys, paneSendText, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { UsageService } from "../server/usage.ts";
 import { contextMenuKey } from "./context-menu-key.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 type State = {
   readonly selector: string;
@@ -105,6 +106,7 @@ try {
     usage: new UsageService(undefined, []),
   });
   const origin = `http://127.0.0.1:${server.port}`;
+  checkChromeTmpdir();
   browser = await chromium.launch({
     executablePath: process.env.CHROME_PATH ?? (process.platform === "darwin"
       ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -116,7 +118,7 @@ try {
     // Browser locale alone does not override the app's remembered language.
     // Preserve a language changed through Settings across subsequent reloads.
     if (!localStorage.getItem("ovis:settings")) {
-      // Two lines: the task row (pane title over its place) is what this script reads; One line,
+      // Two lines: the workspace's name over what its pane is on is what this script reads; One line,
       // the default, is ui-regression's sidebar-rows check
       localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", alertsOn: false, sidebarRows: "two" }));
       localStorage.setItem(legacyFoldKey, "1");
@@ -237,10 +239,24 @@ try {
   assert.equal((await sessionSnapshot()).panes.find((pane) => pane.pane_id === split.pane.pane_id)?.label, renamedSplit);
   assert.equal((await sessionSnapshot()).workspaces.find((workspace) => workspace.workspace_id === other.workspaceId)?.label, other.label,
     "renaming a pane leaves herdr's workspace name unchanged");
-  await page.waitForFunction(({ selector, title }) => document.querySelector(selector)?.textContent === title,
-    { selector: `${otherWorkspace} .workspace-name`, title: renamedSplit });
-  assert.ok((await page.locator(`${otherWorkspace} .workspace-place`).textContent())?.includes(other.label),
-    "the task row shows its representative pane title and keeps the workspace name beneath it");
+  await page.waitForFunction(({ selector, title }) => document.querySelector(selector)?.textContent?.split(" · ")[0] === title,
+    { selector: `${otherWorkspace} .workspace-place`, title: renamedSplit });
+  assert.equal(await page.locator(`${otherWorkspace} .workspace-name`).textContent(), other.label,
+    "a two-line row leads with the workspace's name and says its pane's title first beneath it");
+  assert.ok(!(await page.locator(`${otherWorkspace} .workspace-place`).textContent())?.split(" · ").includes(other.label),
+    "the line under the workspace's name does not say that name again");
+  // A shell at its home folder titles its terminal "~" (bash's `user@host: ~`), which names no
+  // project: the line under the workspace's name leaves it out, as it leaves out a title that is its folder.
+  const loneWorkspace = workspaceSelector(lone.workspaceId);
+  await paneSendText(lone.paneId, "printf '\\033]2;~\\007'");
+  await paneSendKeys(lone.paneId, ["Enter"]);
+  // the row's tooltip ends with the pane's own title: wait until "~" has reached this browser
+  await page.waitForFunction((selector) => document.querySelector(selector)?.getAttribute("title")?.split(" — ").includes("~") === true,
+    `${loneWorkspace} .workspace-select`);
+  assert.equal(await page.locator(`${loneWorkspace} .workspace-name`).textContent(), lone.label,
+    "a shell titled ~ leads its two-line row with the workspace name");
+  assert.equal(await page.locator(loneWorkspace).evaluate((row) => row.querySelector(".workspace-place")?.textContent?.split(" · ").includes("~") ?? false), false,
+    "the line under it does not say ~");
   for (const width of [1280, 768, 375]) {
     await page.setViewportSize({ width, height: 900 });
     if (await page.locator(".drawer-toggle").isVisible()

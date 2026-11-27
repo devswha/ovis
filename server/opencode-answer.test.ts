@@ -1,11 +1,11 @@
 import { describe, expect, it, spyOn } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { InteractivePrompt, PromptAnswer } from "../shared/protocol.ts";
-import { handlePromptRequest, promptWaitEnded } from "./prompt.ts";
+import type { HerdrPane, InteractivePrompt, PromptAnswer } from "../shared/protocol.ts";
+import { handlePromptRequest, OpenCodePromptState, promptWaitEnded, shownPromptText } from "./prompt.ts";
 import * as service from "./opencode-service.ts";
 import type { OpenCodeFormInfo } from "./opencode-service.ts";
 
@@ -18,6 +18,14 @@ async function fixture(run: (f: {
   closed: boolean;
   replies: unknown[];
   sent: string[];
+  version: string;
+  permissions: unknown[];
+  permissionReplies: { path: string; body: unknown }[];
+  permissionReply?: () => Response;
+  permissionListing?: () => Promise<Response>;
+  /** GET /api/session/{id}/message/{messageID} answers, by message id */
+  messages: Record<string, unknown>;
+  messageReads: number;
   listing?: () => Promise<Response>;
   replying?: () => Promise<Response>;
   snapshot?: () => Promise<void>;
@@ -25,8 +33,11 @@ async function fixture(run: (f: {
   working(): void;
   readResponse(): Promise<Response>;
   read(): Promise<InteractivePrompt>;
+  /** a prompt watch's read of its own state, of the pane as it ran the given session */
+  watch(state: OpenCodePromptState, session: string): Promise<string | null | undefined>;
   answer(prompt: InteractivePrompt, choice: Omit<PromptAnswer, "pane_id" | "prompt_id">, signal?: AbortSignal): Promise<Response>;
-  counted: { answers: number };
+  /** answers delivered, by the way they went */
+  counted: { answers: number; ways: (string | null)[] };
 }) => Promise<void>) {
   const root = mkdtempSync(join(tmpdir(), "opencode-answer-"));
   const path = join(root, "herdr.sock");
@@ -34,8 +45,8 @@ async function fixture(run: (f: {
   const session = "ses_fixture01";
   const url = new URL(`http://localhost/api/pane/prompt?pane_id=${paneId}`);
   const answerUrl = new URL("http://localhost/api/pane/prompt/answer");
-  const counted = { answers: 0 };
-  const options = { openCodeStateDir: root, onAnswered: () => { counted.answers += 1; } };
+  const counted = { answers: 0, ways: [] as (string | null)[] };
+  const options = { openCodeStateDir: root, onAnswering: () => (way: string | null) => { counted.ways.push(way); if (way !== null) counted.answers += 1; } };
   const f = {
     counted,
     serviceFile: join(root, "service.json"),
@@ -46,6 +57,10 @@ async function fixture(run: (f: {
       fields: [{ key: "q0", type: "string", custom: true }, { key: "q1", type: "string", custom: true }],
     }] satisfies OpenCodeFormInfo[],
     replies: [] as unknown[], sent: [] as string[],
+    version: "2.0.32", permissions: [] as unknown[], permissionReplies: [] as { path: string; body: unknown }[],
+    permissionReply: undefined as (() => Response) | undefined,
+    permissionListing: undefined as (() => Promise<Response>) | undefined,
+    messages: Object.fromEntries(commands.map(({ message }) => [message.data.id, message])) as Record<string, unknown>, messageReads: 0,
     listing: undefined as (() => Promise<Response>) | undefined,
     replying: undefined as (() => Promise<Response>) | undefined,
     snapshot: undefined as (() => Promise<void>) | undefined,
@@ -63,6 +78,10 @@ async function fixture(run: (f: {
       const { prompt } = JSON.parse(text) as { prompt: InteractivePrompt };
       return prompt;
     },
+    watch(state: OpenCodePromptState, value: string) {
+      const pane = { pane_id: paneId, agent: "opencode", agent_status: "blocked", agent_session: { agent: "opencode", source: "herdr:opencode", kind: "id", value } } as HerdrPane;
+      return shownPromptText(pane, [pane], { openCodeStateDir: root, openCodeState: state, ompLookups: new Map() });
+    },
     async answer(prompt: InteractivePrompt, choice: Omit<PromptAnswer, "pane_id" | "prompt_id">, signal?: AbortSignal) {
       const response = await handlePromptRequest(new Request(answerUrl, {
         method: "POST", signal, body: JSON.stringify({ pane_id: paneId, prompt_id: prompt.id, ...choice }),
@@ -77,7 +96,22 @@ async function fixture(run: (f: {
   const service = Bun.serve({
     hostname: "127.0.0.1", port: 0,
     async fetch(request) {
-      if (request.method === "GET" && new URL(request.url).pathname === "/api/info") return Response.json({ version: "2.0.32", pid: process.pid, urls: [], paths: { tmp: root } });
+      const { pathname } = new URL(request.url);
+      if (request.method === "GET" && pathname === "/api/info") return Response.json({ version: f.version, pid: process.pid, urls: [], paths: { tmp: root } });
+      if (request.method === "GET" && pathname.endsWith("/permission")) {
+        const listing = f.permissionListing;
+        f.permissionListing = undefined;
+        return listing ? listing() : Response.json({ data: f.permissions });
+      }
+      if (request.method === "GET" && pathname.startsWith("/api/session/ses_fixture01/message/")) {
+        f.messageReads += 1;
+        const message = f.messages[decodeURIComponent(pathname.split("/").at(-1)!)];
+        return message ? Response.json(message) : Response.json({ _tag: "NotFound" }, { status: 404 });
+      }
+      if (request.method === "POST" && pathname.includes("/permission/")) {
+        f.permissionReplies.push({ path: pathname, body: await request.json() });
+        return f.permissionReply?.() ?? new Response(null, { status: 204 });
+      }
       if (request.method === "GET") {
         const listing = f.listing;
         f.listing = undefined;
@@ -134,6 +168,7 @@ describe("OpenCode answer ordering", () => {
         expect((await f.answer(prompt, { custom_text: "answered" })).status).toBe(200);
         expect(f.replies).toHaveLength(1);
         expect(f.counted.answers).toBe(1);
+        expect(f.counted.ways.at(-1)).toBe("native");
       });
       expect(asked.mock.calls.length).toBeGreaterThanOrEqual(2);
       expect(asked.mock.calls.every((call) => call[2]?.onWindows === true)).toBe(true);
@@ -480,4 +515,180 @@ describe("OpenCode answer ordering", () => {
       } finally { release.resolve(Response.json(f.forms)); }
     });
   }, 3_000);
+
+  it("drops the card once the form is answered or cancelled elsewhere, with no fallback card while herdr still says blocked", async () => {
+    for (const [form, gone] of questions) {
+      await fixture(async (f) => {
+        f.forms = [form];
+        const prompt = await f.read();
+        expect(prompt).toMatchObject({ agent: "opencode", options: [{ label: "Red" }, { label: "Blue" }, {}] });
+        f.forms = [];
+        expect(await f.read(), gone).toBeNull();
+        expect((await f.answer(prompt, { option_index: 0 })).status).toBe(409);
+        expect(f.replies).toEqual([]);
+      });
+    }
+  });
+
+  it("keeps the fallback card of a permission it cannot show when a form beside it closes", async () => {
+    await fixture(async (f) => {
+      f.forms = [questions[0]![0]];
+      f.permissions = [asked("shell")];
+      f.messages = {};
+      expect((await f.read()).fallback).toBe(true);
+      f.forms = [];
+      expect((await f.read())?.fallback).toBe(true);
+    });
+  });
+
+  it("keeps the fallback card when a form closes on a read whose permission list failed", async () => {
+    await fixture(async (f) => {
+      f.forms = [questions[0]![0]];
+      expect((await f.read()).fallback).toBeUndefined();
+      f.forms = [];
+      f.permissionListing = async () => new Response(null, { status: 503 });
+      expect((await f.read())?.fallback).toBe(true);
+    });
+  });
+
+  it("keeps another session's fallback card when a watch still reading the pane's earlier session sees that session's form go", async () => {
+    await fixture(async (f) => {
+      const watch = new OpenCodePromptState();
+      f.forms = [questions[0]![0]];
+      expect(await f.watch(watch, "ses_fixture01")).toEqual(expect.any(String));
+      f.session = "ses_fixture02";
+      expect((await f.read()).fallback).toBe(true);
+      f.forms = [];
+      await f.watch(watch, "ses_fixture01");
+      expect((await f.read())?.fallback).toBe(true);
+    });
+  });
+});
+
+/** The question forms a real OpenCode 2.2.2 asked (server/fixtures/opencode-form-2.2.2.json), moved to the fixture's session, each with how it ended. */
+const formEvents = (JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "opencode-form-2.2.2.json"), "utf8")) as { events: { type: string; data: { id?: string; form?: OpenCodeFormInfo } }[] }).events;
+const questions = formEvents.filter((event) => event.type === "form.created").map((event) => [
+  { ...event.data.form!, sessionID: "ses_fixture01" },
+  formEvents.find((ended) => ended.type !== "form.created" && ended.data.id === event.data.form!.id)!.type,
+] as const);
+
+/** The permission requests a real OpenCode 2.2.2 asked (server/fixtures/opencode-permission-2.2.2.json), moved to the fixture's session. */
+const recorded: Record<string, unknown>[] = (JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "opencode-permission-2.2.2.json"), "utf8")) as { events: { type: string; data: Record<string, unknown> }[] })
+  .events.filter((event) => event.type === "permission.asked").map((event) => ({ ...event.data, sessionID: "ses_fixture01" }));
+/** Shell requests a real OpenCode 2.2.2 asked, each with the message its call is in and the command that ran (server/fixtures/opencode-permission-command-2.2.2.json). */
+const commands = (JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "opencode-permission-command-2.2.2.json"), "utf8")) as {
+  cases: { condition: string; executed: string; permission: { id: string } & Record<string, unknown>; message: { data: { id: string; content: { state: { input: Record<string, unknown> } }[] } } }[];
+}).cases.map((recorded) => ({ ...recorded, permission: { ...recorded.permission, sessionID: "ses_fixture01" } }));
+const command = (condition: string) => commands.find((recorded) => recorded.condition === condition)!;
+const asked = (action: string): Record<string, unknown> => action === "shell" ? command("long").permission : recorded.find((request) => request.action === action)!;
+
+describe("OpenCode permission card", () => {
+  it.each([[0, "once"], [1, "always"], [2, "reject"]] as const)("answers the pending request through its service: option %i is %s, no key typed", async (index, decision) => {
+    await fixture(async (f) => {
+      f.forms = [];
+      f.permissions = [asked("shell")];
+      const prompt = await f.read();
+      expect(prompt).toMatchObject({ kind: "approval", agent: "opencode", body: `$ ${command("long").executed}` });
+      expect(prompt.options).toHaveLength(3);
+      expect((await f.answer(prompt, { option_index: index })).status).toBe(200);
+      expect(f.permissionReplies).toEqual([{ path: `/api/session/ses_fixture01/permission/${String(asked("shell").id)}/reply`, body: { decision } }]);
+      expect(f.counted.answers).toBe(1);
+      expect(f.counted.ways).toEqual(["native"]);
+    });
+  });
+
+  it("drops the card once the request is answered elsewhere, with no fallback card while herdr still says blocked, and refuses an answer to it", async () => {
+    await fixture(async (f) => {
+      f.forms = [];
+      f.permissions = [asked("edit")];
+      const prompt = await f.read();
+      f.permissions = [];
+      expect(await f.read()).toBeNull();
+      expect((await f.answer(prompt, { option_index: 0 })).status).toBe(409);
+      expect(f.permissionReplies).toEqual([]);
+    });
+  });
+
+  it("reports a request OpenCode no longer holds as changed", async () => {
+    await fixture(async (f) => {
+      f.forms = [];
+      f.permissions = [asked("webfetch")];
+      f.permissionReply = () => Response.json({ _tag: "PermissionNotFoundError" }, { status: 404 });
+      const prompt = await f.read();
+      expect((await f.answer(prompt, { option_index: 1 })).status).toBe(409);
+      expect(f.permissionReplies).toHaveLength(1);
+    });
+  });
+
+  it("shows the command another call runs, though the request keeps its id", async () => {
+    await fixture(async (f) => {
+      f.forms = [];
+      f.permissions = [command("short").permission];
+      expect((await f.read()).body).toBe(`$ ${command("short").executed}`);
+      f.permissions = [{ ...command("long").permission, id: command("short").permission.id }];
+      expect((await f.read()).body).toBe(`$ ${command("long").executed}`);
+    });
+  });
+
+  it("shows the whole command a request's call runs, its message read again by no later read", async () => {
+    await fixture(async (f) => {
+      f.forms = [];
+      for (const { permission, executed } of commands) {
+        f.permissions = [permission];
+        const reads = f.messageReads;
+        expect((await f.read()).body).toBe(`$ ${executed}`);
+        expect((await f.read()).body).toBe(`$ ${executed}`);
+        expect(f.messageReads).toBe(reads + 1);
+      }
+    });
+  });
+
+  it.each(["version", "build", "shape", "session", "size", "message", "streaming"] as const)("leaves the request to the fallback card: %s not read", async (kind) => {
+    await fixture(async (f) => {
+      f.forms = [];
+      f.permissions = [asked("shell")];
+      if (kind === "version") f.version = "3.0.0";
+      if (kind === "build") f.version = "2.unknown";
+      if (kind === "shape") f.permissions = [{ ...asked("shell"), resources: "ls -la ." }];
+      if (kind === "session") f.permissions = [{ ...asked("shell"), sessionID: "ses_other" }];
+      const { message } = command("long");
+      const call = message.data.content[0]!;
+      const withState = (state: Record<string, unknown>) => ({ ...message, data: { ...message.data, content: [{ ...call, state: { ...call.state, ...state } }] } });
+      if (kind === "size") f.messages = { [message.data.id]: withState({ input: { command: "echo " + "x".repeat(12_000) } }) };
+      if (kind === "message") f.messages = {};
+      if (kind === "streaming") f.messages = { [message.data.id]: withState({ status: "streaming" }) };
+      expect((await f.read()).fallback).toBe(true);
+    });
+  });
+it("sends nothing to a service that is no longer a 2.x one when the answer comes", async () => {
+    await fixture(async (f) => {
+      f.forms = [];
+      f.permissions = [asked("shell")];
+      const prompt = await f.read();
+      // the answer's first read still sees 2.0.32; the service changes while the pane's binding is checked again
+      f.snapshot = async () => {
+        f.snapshot = async () => { f.version = "3.0.0"; service.forgetOpenCodeService(); };
+      };
+      expect((await f.answer(prompt, { option_index: 1 })).status).toBe(502);
+      expect(f.permissionReplies).toEqual([]);
+    });
+  });
+
+  it("shows no request an older read finishing late still listed, once a newer read saw it go", async () => {
+    await fixture(async (f) => {
+      f.forms = [];
+      f.permissions = [asked("shell")];
+      const prompt = await f.read();
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      const listed = [...f.permissions];
+      f.permissionListing = async () => { entered.resolve(); await release.promise; return Response.json({ data: listed }); };
+      const older = f.read();
+      await entered.promise;
+      f.permissions = [];
+      expect((await f.read())?.id).not.toBe(prompt.id);
+      release.resolve();
+      expect((await older)?.kind).not.toBe("approval");
+    });
+  });
 });

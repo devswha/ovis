@@ -23,7 +23,7 @@
  * a failed rest, never a finish.
  */
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
-import { herdrRpc } from "./herdr/client.ts";
+import { paneProcessInfo } from "./herdr/client.ts";
 import { gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, type GjcProcess } from "./gjc-runtime.ts";
 import type { OmoAsks } from "./omo-ask.ts";
 import { processStartedAtAsync } from "./process-start.ts";
@@ -55,6 +55,10 @@ function gjcAsksAfter(open: OmoAsks, entry: GjcEntry): OmoAsks {
   return open;
 }
 
+/**
+ * One transcript record applied to the parent turn so far, from a whole line or a projected
+ * record's complete JSON (never its text: a record too long to hold says nothing).
+ */
 export function gjcTurnAfter(turn: OmoTurn, line: OmoLine): OmoTurn {
   const text = "text" in line ? line.text : line.record;
   if (text === undefined) return turn;
@@ -98,7 +102,7 @@ export interface GjcDiscovery {
  * foreground process runs in now, not where the pane started — the same cwd the chat binds by.
  */
 export async function gjcPanes(panes: HerdrPane[], deps: GjcDiscovery = {}): Promise<Map<string, OmoPane>> {
-  const processInfo = deps.processInfo ?? ((paneId: string) => herdrRpc<NonNullable<ProcessInfo>>("pane.process_info", { pane_id: paneId }).catch(() => null));
+  const processInfo = deps.processInfo ?? ((paneId: string) => paneProcessInfo(paneId).then((process_info) => ({ process_info }), () => null));
   const transcript = deps.transcript ?? ((paneId: string, cwd: string) => gjcTranscriptForPane(paneId, cwd).catch(() => null));
   // awaited: every snapshot a pending message is checked against runs this, and macOS reads a start with `ps` (#1545)
   const startedAt = deps.startedAt ?? processStartedAtAsync;
@@ -152,6 +156,7 @@ export async function readOmoSnapshot(snapshot: OmoStatusDeps["snapshot"], omo: 
   return omo.apply(raw);
 }
 
+/** Provider labels cannot revoke native OmO; only discovery can. */
 export function reconcileProviderStatus(omo: OmoStatus, gjc: OmoStatus, pane: Pick<HerdrPane, "pane_id" | "agent">): boolean {
   const native = omo.runs(pane.pane_id);
   const leftOmo = !native && omo.named(pane.pane_id, pane.agent ?? null);

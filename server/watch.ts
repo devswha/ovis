@@ -1,6 +1,7 @@
 export interface WatchStreamOptions {
   onFrame: (data: string) => void;
-  onEnd: () => void;
+  onEnd: (reason?: string) => void;
+  onScreen?: (data: string, cols: number, rows: number, full: boolean) => void;
 }
 
 export class WatchStreamParser {
@@ -48,11 +49,15 @@ export class WatchStreamParser {
     // herdr 0.9.3 labels a frame `encoding:"ansi"`: what the bytes are; `bytes` itself is always base64
     if (record.type === "terminal.frame" && "encoding" in record && record.encoding === "ansi" && "bytes" in record && typeof record.bytes === "string") {
       const data = this.decoder.decode(Buffer.from(record.bytes, "base64"), { stream: true });
+      if ("width" in record && typeof record.width === "number" && Number.isInteger(record.width) && record.width > 0 && record.width <= 1000
+        && "height" in record && typeof record.height === "number" && Number.isInteger(record.height) && record.height > 0 && record.height <= 1000) {
+        this.options.onScreen?.(data, record.width, record.height, "full" in record && record.full === true);
+      }
       if (data) this.options.onFrame(data);
     } else if (record.type === "terminal.closed") {
       this.ended = true;
       this.flush();
-      this.options.onEnd();
+      this.options.onEnd("reason" in record && typeof record.reason === "string" ? record.reason : undefined);
     }
   }
 }
@@ -61,11 +66,16 @@ export interface PaneWatchOptions extends WatchStreamOptions {
   paneId: string;
   cols: number;
   rows: number;
+  /** The same socket the bridge's RPCs use, not the CLI's default session. */
   socketPath: string;
   killGraceMs?: number;
 }
 
 const STDERR_TAIL_CHARS = 4096;
+/**
+ * Its exit is waited for: a pane's next view starts after it, and its place among a connection's watches is its
+ * until then (core/connections.ts), so one that ignored the request would hold both for good.
+ */
 const KILL_GRACE_MS = 1_000;
 
 /** A read-only viewport; unlike terminal attach it never owns the pane's size. */
@@ -74,6 +84,7 @@ export class PaneWatch {
   private readonly proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
   private killed = false;
   private ended = false;
+  /** the process itself has exited; a child of its own may still hold its pipes open */
   private gone = false;
   private killer: ReturnType<typeof setTimeout> | undefined;
   private readonly readers: Array<{ cancel(): Promise<void> }> = [];
@@ -95,7 +106,9 @@ export class PaneWatch {
       },
     });
     // Drain both pipes before reporting the exit of a process that ended by itself: the last frame and
-    // failure diagnostics can arrive after the process-exit notification.
+    // failure diagnostics can arrive after the process-exit notification. One asked to end, or whose
+    // terminal closed, has nothing more to say: its exit is its process's own, whoever still holds its
+    // pipes (a launcher that does not `exec` leaves its child holding them for as long as that runs).
     const drained = Promise.all([this.readStdout(parser), this.readStderr()]);
     this.exited = this.proc.exited.then(async (code) => {
       clearTimeout(this.killer);

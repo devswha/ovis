@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { open, readdir, readFile, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
-import { answerVersion, ConversationUnavailable, HistoryChanged, TRANSCRIPT_WINDOW_BYTES, type ConversationPage, type RecognizedConversation } from "./conversation-shared.ts";
+import { ConversationUnavailable, paginateTurns, TRANSCRIPT_WINDOW_BYTES, type ConversationPage, type RecognizedConversation } from "./conversation-shared.ts";
 import { ompProcessMemory } from "./omp-process.ts";
 import { processStartedAt, processStartUpperBound } from "./process-start.ts";
 import { trimOutput } from "./tool-output.ts";
@@ -12,6 +12,7 @@ type Processes = { foreground_processes?: { pid?: number; argv?: unknown }[] };
 const unavailable = (): never => { throw new ConversationUnavailable("kiro_transcript_unavailable"); };
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** More session lock files than this in one store, stale ones too, is no answer, rather than an unbounded scan. */
 const MAX_LOCKS = 256;
 const LOCK_BYTES = 4096;
 
@@ -63,6 +64,7 @@ async function parentOf(pid: number): Promise<number> {
   return Number((await readFile(`/proc/${pid}/stat`, "utf8")).split(") ").pop()!.split(" ")[1]);
 }
 
+/** A lock as Kiro wrote it, read from the opened entry itself: a link, a FIFO or a grown file is no lock. */
 async function readLock(sessions: string, id: string): Promise<{ pid: number; opened: number } | null> {
   const file = await open(join(sessions, `${id}.lock`), constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0)).catch(() => null);
   if (file === null) return null;
@@ -108,6 +110,7 @@ export async function resolveKiroTranscript(info: Processes | null | undefined):
   const tui = (info?.foreground_processes ?? []).filter((proc) => Array.isArray(proc.argv) && isKiroChatProcess(proc.argv));
   if (tui.length === 0 || tui.some((proc) => typeof proc.pid !== "number")) return unavailable();
   try {
+    // each process is pinned by its start (stable on every read) and checked again after the lock is read
     const fronts: { pid: number; start: number }[] = [];
     for (const proc of tui) {
       const start = processStartedAt(proc.pid!);
@@ -132,13 +135,16 @@ export async function resolveKiroTranscript(info: Processes | null | undefined):
     if (sessions === null) return unavailable();
     const locks = (await readdir(sessions)).filter((name) => name.endsWith(".lock") && SESSION_ID.test(name.slice(0, -5)));
     if (locks.length > MAX_LOCKS) return unavailable();
+    // a lock left by an earlier process that had this pid was written before this one surely started
     const ours = (lock: { pid: number; opened: number } | null) => lock !== null && lock.pid === server.pid && lock.opened >= server.startedBy;
     const held: string[] = [];
     for (const name of locks) if (ours(await readLock(sessions, name.slice(0, -5)))) held.push(name.slice(0, -5));
     if (held.length !== 1) return unavailable();
     const [id] = held as [string];
     const transcript = await authorizeKiroTranscript(join(sessions, `${id}.jsonl`), sessions);
+    // the log is that session's own, not a link to another session of the store
     if (transcript === null || transcript.session !== id) return unavailable();
+    // nothing changed while it was read: the same processes, and the lock not moved to another session
     const same = ours(await readLock(sessions, id))
       && processStartedAt(server.pid) === server.start && isKiroAcpProcess(await commandLine(server.pid)) && await parentOf(server.pid) === server.parent
       && fronts.every((front) => processStartedAt(front.pid) === front.start);
@@ -276,24 +282,7 @@ export function projectKiro(text: string, identity: string, session: string) {
 export async function kiroConversation(binding: KiroTranscript, page: ConversationPage = {}): Promise<RecognizedConversation> {
   const text = await readKiro(binding);
   const { turns, history } = projectKiro(text, binding.identity, binding.session);
-  const cursor = (index: number) => `${history}:${index}:${digest(JSON.stringify(turns.slice(0, index))).slice(0, 16)}`;
-  const parse = (value: string | undefined, fallback: number) => {
-    if (value === undefined) return fallback;
-    const index = Number(value.split(":")[1]);
-    if (!Number.isSafeInteger(index) || index < 0 || index > turns.length || value !== cursor(index)) throw new HistoryChanged();
-    return index;
-  };
-  const end = parse(page.before, turns.length);
-  const since = parse(page.since, 0);
-  const asked = typeof page.prompts === "number" && Number.isFinite(page.prompts) ? Math.min(50, Math.max(1, Math.floor(page.prompts))) : null;
-  let back = Math.max(since, end - 50);
-  if (asked !== null) {
-    back = since;
-    for (let index = end - 1, users = 0; index >= since; index--) if (turns[index]!.role === "user" && ++users === asked) { back = index; break; }
-  }
-  const from = parse(page.from, back);
-  const start = Math.max(since, Math.min(from, end));
-  return { source: "kiro-transcript", turns: turns.slice(start, end), metadata: { model: null, reasoning_effort: null }, cursor: start > 0 ? cursor(start) : null, history_id: history, version: answerVersion(history, `${digest(text)}\0${start}\0${end}`) };
+  return paginateTurns({ source: "kiro-transcript", turns, history, metadata: { model: null, reasoning_effort: null }, textDigest: digest(text), page, supportsPrompts: true });
 }
 
 export async function kiroToolOutput(binding: KiroTranscript, ref: string): Promise<string | null> {

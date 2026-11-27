@@ -3,8 +3,9 @@ import { dirname, join } from "node:path";
 import { CONTEXT_STALE_MS, contextDirectorySafe, contextFilename, contextProfile, readContextFile } from "./statusline-context.ts";
 
 /**
- * The limits Claude Code hands its status line, kept by the wrapper that
- * server/statusline-install.ts installs when the user turns it on in Settings. Read here instead of asking
+ * The limits Claude Code hands its status line, kept by the line of a Claude Ovis starts
+ * (server/approvals/statusline.ts) and by the wrapper that server/statusline-install.ts installs when the user turns it
+ * on in Settings. Read here instead of asking
  * Anthropic: these are the numbers Claude's own line draws from, they need no token, and they
  * never leave the machine — the usage endpoint answers
  * 403 from some networks, where this file still holds the numbers.
@@ -15,21 +16,30 @@ import { CONTEXT_STALE_MS, contextDirectorySafe, contextFilename, contextProfile
  *   rate_limits.seven_day  { used_percentage, resets_at }
  */
 export interface StatuslinePayload {
+  /** when the file was last written: the status line renders on activity, so an idle pane's is old */
   readAt: number;
   account: { id: string; label: string | null } | null;
   fiveHour: StatuslineWindow | null;
   sevenDay: StatuslineWindow | null;
+  /** a window the payload named has started over since (and was dropped): the reading no longer describes it */
+  turnedOver: boolean;
 }
 
 export interface StatuslineWindow {
   usedPercent: number;
+  /** ISO time, from the payload's epoch seconds; null when it names none */
   resetsAt: string | null;
 }
 
+/**
+ * A payload older than this is not a reading: the five-hour window has turned over, so its number
+ * describes a window that is gone. The file survives a sleeping laptop, so its age is checked.
+ */
 export const STALE_MS = CONTEXT_STALE_MS;
 
 export const statuslinePath = (home: string): string => join(home, ".herdr", "statusline-last.json");
 
+/** The capture writes a few hundred bytes; a file past this is not one of its readings, and is not read. */
 const MAX_CAPTURE_BYTES = 64 * 1024;
 
 function readCapture(path: string, maxBytes = MAX_CAPTURE_BYTES): string | null {
@@ -67,7 +77,7 @@ export function parseStatusline(payload: unknown, readAt: number): StatuslinePay
   const account = record(record(body["_herdr"])["account"]);
   const accountId = text(account["id"]);
   if (fiveHour === null && sevenDay === null) return null;
-  return { account: accountId === null ? null : { id: accountId, label: text(account["label"]) }, readAt, fiveHour, sevenDay };
+  return { account: accountId === null ? null : { id: accountId, label: text(account["label"]) }, readAt, fiveHour, sevenDay, turnedOver: false };
 }
 
 export function readStatusline(home: string, now: number = Date.now()): StatuslinePayload | null {
@@ -79,8 +89,9 @@ export function readStatusline(home: string, now: number = Date.now()): Statusli
     if (text === null) return null;
     const payload = parseStatusline(JSON.parse(text), stat.mtimeMs);
     if (payload === null) return null;
-    if (payload.fiveHour && payload.fiveHour.resetsAt !== null && Date.parse(payload.fiveHour.resetsAt) <= now) payload.fiveHour = null;
-    if (payload.sevenDay && payload.sevenDay.resetsAt !== null && Date.parse(payload.sevenDay.resetsAt) <= now) payload.sevenDay = null;
+    const over = (window: StatuslineWindow | null) => window !== null && window.resetsAt !== null && Date.parse(window.resetsAt) <= now;
+    if (over(payload.fiveHour)) { payload.fiveHour = null; payload.turnedOver = true; }
+    if (over(payload.sevenDay)) { payload.sevenDay = null; payload.turnedOver = true; }
     return payload;
   } catch {
     return null;

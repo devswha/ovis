@@ -7,7 +7,10 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { openSettingsPage } from "./settings-page.ts";
+import { closeSettings } from "./settings-pages-harness.ts";
+import { serveDemo } from "./demo-server.ts";
 
+// No herdr session is opened, and nothing leaves the loopback.
 const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-declutter-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const patch = `(() => {
@@ -105,6 +108,12 @@ const filterFocused = (page: Page) => page.evaluate(() => document.activeElement
 const focusHeld = (page: Page) => page.evaluate(() => { const active = document.activeElement; return active !== null && active !== document.body && active.isConnected ? active.className || active.tagName : null; });
 const shownWorkspaces = (page: Page) => page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".machine-list .workspace-group")].filter((row) => !row.closest("[hidden]")).map((row) => row.querySelector(".workspace-name")?.textContent ?? "").sort());
 
+/**
+ * The phone's open drawer and the keyboard: it opens with the focus on its first control, never the filter's field,
+ * which would raise the phone's keyboard on every open; Tab goes round the drawer and the header's toggle drawn
+ * over its top row, so Shift+Tab reaches it and Tab still reaches the field; no + is found up there; Escape closes
+ * it, the focus on its toggle.
+ */
 async function drawerKeyboard(page: Page): Promise<void> {
   const focused = () => page.evaluate(() => {
     const active = document.activeElement as HTMLElement | null;
@@ -132,6 +141,7 @@ async function drawerKeyboard(page: Page): Promise<void> {
 }
 
 async function loneHost(browser: Browser, scene: Scene): Promise<void> {
+  // a fold stored while the Host had a header must not hide its workspaces now that nothing can open them
   const { context, page, errors } = await newPage(browser, scene, "", { "ovis:pc-collapsed:local": "1", "ovis:sidebar-filter-shown": "true" });
   try {
     assert.equal(await headers(page).count(), 0, `${sceneName(scene)}: a lone Host is drawn without its header`);
@@ -177,6 +187,7 @@ async function loneHost(browser: Browser, scene: Scene): Promise<void> {
   } finally { await context.close(); }
 }
 
+/** A device that only watches, in a phone's drawer: the lone Host keeps its New workspace row, off, its + dimmed, and the header over the drawer says why. */
 async function loneHostWatching(browser: Browser, scene: Scene): Promise<void> {
   const { context, page, errors } = await newPage(browser, scene, "demo_devices=watch");
   try {
@@ -347,8 +358,7 @@ async function filterEdges(browser: Browser, scene: Scene): Promise<void> {
       await openSettingsPage(page, "Appearance");
       await page.locator(".settings-dialog").getByRole("switch", { name: "Sidebar filter", exact: true }).click();
       await page.waitForFunction(() => localStorage.getItem("ovis:sidebar-filter-shown") === "false");
-      await page.keyboard.press("Escape");
-      await page.locator(".settings-dialog").waitFor({ state: "detached" });
+      await closeSettings(page);
       assert.equal(await page.locator(".sidebar-filter-input").inputValue(), "zz", "the field keeps its words");
       await page.getByRole("button", { name: "Clear filter", exact: true }).click();
       await page.getByRole("button", { name: "Close filter", exact: true }).click();
@@ -422,8 +432,7 @@ async function filterSetting(browser: Browser, scene: Scene): Promise<void> {
     await page.waitForFunction(() => localStorage.getItem("ovis:sidebar-filter-shown") === "true");
     assert.equal(JSON.parse(await page.evaluate(() => localStorage.getItem("ovis:settings") ?? "{}")).sidebarFilter, undefined, "kept out of ovis:settings");
     await capture(page, scene, "settings-appearance", true);
-    await page.keyboard.press("Escape");
-    await page.locator(".settings-dialog").waitFor({ state: "detached" });
+    await closeSettings(page);
     if (scene.phone && await page.locator(".sidebar.is-open").count() === 0) {
       await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
       await page.locator(".sidebar.is-open").waitFor();
@@ -446,15 +455,7 @@ try {
   writeFileSync(join(app, "sidebar-declutter.js"), patch);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script src="./sidebar-declutter.js"></script><script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    let file: string;
-    try { file = decodeURIComponent(path.slice(1)); } catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: "/" });
   url = `http://127.0.0.1:${server.port}/`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });

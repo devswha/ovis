@@ -3,7 +3,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import type { CommandForm, SlashCommand } from "../../shared/protocol.ts";
 import { hermesHome as resolveHermesHome, platformHermesHome } from "../hermes-home.ts";
 import type { AgentCommandContext, AgentCommandSource } from "./index.ts";
-import { environRecord, plainObject, readFrontmatter, readSkillText } from "./walk.ts";
+import { canonicalFile as canonical, environRecord, plainObject, readFrontmatter, readSkillText } from "./walk.ts";
 
 // Hermes 0.21.5 CommandDefs at 354724fb085162678964c116ceb4c40fc57c717c; CLI aliases are included.
 // Gateway-only commands are never CLI rows. Runtime-only plugin commands are not listed.
@@ -136,11 +136,14 @@ const CORE_NAMES = new Set([...Object.keys(BUILTINS), "start", "topic", "pause",
 const TERMINAL_BOUND = ["model", "resume", "sessions", "config", "agents", "plugins", "skills", "skin",
   "reload-mcp", "reload_mcp", "update", "undo", "prompt", "compose", "palette", "tasks", "journey", "learning", "memory-graph",
   "subscription", "upgrade", "topup", "login", "debug"] as const;
+// new, reset and clear confirm first unless told now, --yes or -y (approvals.destructive_slash_confirm,
+// cli_loops_mixin.py:93-100, 191-202); curator's destructive subcommands ask on a stdin the CLI does not read
 const CONFIRMED: CommandForm[] = [
   { match: "bare", interaction: "terminal" },
   ...["now", "--yes", "-y"].map((sub): CommandForm => ({ match: { sub }, interaction: "none" })),
   { match: "other", interaction: "terminal" },
 ];
+// printed inline by the classic CLI and read by the result readers in server/dialogs/hermes.ts
 const RESULT_FORMS: Record<string, CommandForm[]> = {
   ...Object.fromEntries(
     [["help", "help"], ["status", "status"], ["version", "version"], ["v", "version"], ["profile", "profile"], ["reload-skills", "reload-skills"], ["reload_skills", "reload-skills"]]
@@ -156,6 +159,7 @@ const RESULT_FORMS: Record<string, CommandForm[]> = {
 const SKIP_DIRS = new Set([".git", ".github", ".hub", ".archive", ".curator_backups", ".locks", ".venv", "venv", "node_modules", "site-packages", "__pycache__", ".tox", ".nox"]);
 const SUPPORT_DIRS = new Set(["references", "templates", "assets", "scripts"]);
 
+/** Hermes continues beneath a skill root, pruning only its support directories. */
 function skillFiles(root: string): { path: string; fields: Readonly<Record<string, unknown>> }[] {
   const result: { path: string; fields: Readonly<Record<string, unknown>> }[] = [];
   const ancestors = new Set<string>();
@@ -202,9 +206,6 @@ function strings(value: unknown): string[] {
 /** Matches slugify_skill_name: underscores and spaces become hyphens; punctuation is removed. */
 function slug(name: string): string {
   return name.toLowerCase().replace(/[ _]/g, "-").replace(/[^\p{L}\p{N}_-]/gu, "").replace(/-{2,}/g, "-").replace(/^-+|-+$/g, "");
-}
-function canonical(path: string): string {
-  try { return realpathSync(path); } catch { return resolve(path); }
 }
 function projectRoot(cwd: string | null | undefined, home: string): string | null {
   if (!cwd) return null;
@@ -312,6 +313,7 @@ function discover(ctx: AgentCommandContext): SlashCommand[] {
 
 export const source: AgentCommandSource = {
   builtins: Object.keys(BUILTINS),
+  chatPaletteHidden: ["approvals", "reasoning", "yolo"],
   descriptions: BUILTINS,
   forms: RESULT_FORMS,
   terminalBound: TERMINAL_BOUND,

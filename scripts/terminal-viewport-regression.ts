@@ -45,7 +45,7 @@ try {
   const waitHighlight = async () => {
     try { await page.locator(".terminal-find-hit.is-current").first().waitFor(); }
     catch (error) {
-      console.error("Search diagnostic", { searches: JSON.stringify([searches[0], ...searches.slice(-2)]), native: await paneScrollInfo(paneId), dom: await page.evaluate(() => ({ text: document.querySelector(".find-bar")?.textContent, hits: document.querySelectorAll(".terminal-find-hit").length, rows: document.querySelector(".xterm-rows")?.childElementCount, screen: document.querySelector(".xterm-rows")?.textContent })) });
+      console.error("Search diagnostic", { searches: JSON.stringify([searches[0], ...searches.slice(-2)]), native: await paneScrollInfo(paneId), dom: await page.evaluate(() => ({ text: document.querySelector(".find-bar")?.textContent, hits: document.querySelectorAll(".terminal-find-hit").length, rows: document.querySelectorAll(".ghostty-row").length, screen: document.querySelector(".ghostty-text")?.textContent })) });
       if (process.env.UI_EVIDENCE_DIR) { mkdirSync(process.env.UI_EVIDENCE_DIR, { recursive: true }); await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "terminal-search-failure.png") }); }
       throw error;
     }
@@ -71,11 +71,13 @@ try {
     host: getComputedStyle(document.querySelector(".terminal-host")!).backgroundColor,
   }));
   assert.equal(backgrounds.viewport, backgrounds.host, "the terminal gutter follows the light theme instead of showing a black frame");
+  // equal backgrounds prove nothing if both stayed dark: the light theme must actually be on
   const [r, g, b] = (backgrounds.host.match(/\d+(\.\d+)?/g) ?? []).map(Number);
   assert.ok((0.2126 * r! + 0.7152 * g! + 0.0722 * b!) / 255 > 0.5, `the light theme paints a light terminal background (got ${backgrounds.host})`);
   assert.ok((await paneScrollInfo(paneId))!.max_offset_from_bottom > 100, "herdr holds the full history");
   const widths = await page.evaluate(() => ({ grid: document.querySelector(".pane-terminal")!.getBoundingClientRect().width, surface: document.querySelector(".terminal-surface")!.getBoundingClientRect().width }));
   assert.equal(widths.grid, widths.surface, "the grid takes the full width, with no column reserved beside it");
+  // Paging moves native history without reaching the program’s input.
   await page.locator(".xterm-helper-textarea").evaluate((node: HTMLTextAreaElement) => node.focus());
   const inputsBeforePaging = terminalInput.length;
   const pageRows = (await paneScrollInfo(paneId))!.viewport_rows - 1;
@@ -159,6 +161,8 @@ try {
   assert.equal(await page.evaluate(() => document.activeElement?.className), "xterm-helper-textarea", "the jump button leaves focus in the terminal");
   assert.equal(terminalInput.length, inputsBeforeJump, "the jump button sends no input to the program");
 
+  // A switch to the chat and back leaves herdr's view where it was: herdr shares it with its TUI and its other
+  // clients, so only a press on the jump button moves it, and back on the terminal that button is shown over it
   await pageToEdge(1);
   await jump.waitFor();
   const shared = (await paneScrollInfo(paneId))!.offset_from_bottom;
@@ -172,6 +176,8 @@ try {
   await until(async () => (await paneScrollInfo(paneId))!.offset_from_bottom === 0, "the jump button takes the shared view to the bottom");
   await jump.waitFor({ state: "detached" });
 
+  // The metrics poll: a quiet pane at the bottom backs off, output brings it back, and a view scrolled
+  // up into history keeps reading every second, since growing history there may send no output.
   const metricsReads: number[] = [];
   const countRead = (request: import("playwright-core").Request) => {
     if (request.method() === "GET" && request.url().includes("/api/pane/scroll?")) metricsReads.push(Date.now());
@@ -222,6 +228,7 @@ try {
       await Bun.sleep(4000);
       const followReads = metricsReads.filter((at) => at > followFrom).length;
       assert.ok(followReads <= 6, `a view following output at the bottom reads metrics at the follow pace, read ${followReads} times in 4 s`);
+      // A page on metrics that output has overtaken reads them again first: the program may have entered its alternate screen.
       await until(async () => Date.now() - metricsReads.at(-1)! > 400, "the follow pace leaves the metrics older than the busy cadence");
       const sent: string[] = [];
       const track = (request: import("playwright-core").Request) => { if (new URL(request.url()).pathname === "/api/pane/scroll") sent.push(request.method()); };
@@ -259,7 +266,7 @@ try {
   await until(async () => {
     const native = await paneScrollInfo(paneId);
     return !!native && native.viewport_rows < beforeFindRows
-      && native.viewport_rows === await page.locator(".xterm-rows > div").count();
+      && native.viewport_rows === await page.evaluate(() => document.querySelectorAll(".ghostty-row").length);
   }, "the search bar's native geometry is ready");
   await input.fill("mark_needle");
   await input.press("Enter");
@@ -280,7 +287,7 @@ try {
   await waitHighlight();
   const hit = (await page.locator(".terminal-find-hit.is-current").first().boundingBox())!;
   const screen = (await page.locator(".xterm-screen").boundingBox())!;
-  const wide = await page.evaluate(() => { const row = document.querySelector(".xterm-rows > div"); return row?.getBoundingClientRect().height ?? 0; });
+  const wide = await page.evaluate(() => { const row = document.querySelector(".ghostty-row"); return row?.getBoundingClientRect().height ?? 0; });
   assert.ok(hit.width > 20 && hit.height > 0 && wide > 0 && hit.x >= screen.x, "wide and combining text has visible cell-aligned emphasis");
   await page.evaluate((owner) => {
     const original = window.fetch;

@@ -9,6 +9,7 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
 // A second, tall form (steps, reference text, descriptions, a
 // custom answer) is answered by this script in the transport's place, for the "web" pane, and a
@@ -44,6 +45,14 @@ const ANSWERS_REVIEW = {
   multi_select: false, custom_option_index: null,
 };
 const PLAN = { ...FORM, id: "demo-plan", kind: "plan", title: "Ready to code?", steps: undefined };
+/** hook-vs-screen's long command ① as its hook request carries it: one line, wider than a desktop's card */
+const LONG_COMMAND = "find /usr/share/doc -maxdepth 2 -type f -name '*.gz' -newer /etc/hostname -size +1k -printf '%TY-%Tm-%Td %s %p\\n' 2>/dev/null | sort -r | head -n 5 | awk '{print $1, $2, $3}'";
+const LONG_APPROVAL = {
+  id: "demo-long-command", agent: "claude", kind: "approval", title: "Bash command", question: "Do you want to proceed?",
+  body: `List the newest docs\n${LONG_COMMAND}`,
+  options: [{ label: "Yes", description: null }, { label: "Yes, and don't ask again for: find", description: null }, { label: "No", description: null }],
+  multi_select: false, custom_option_index: null,
+};
 const NEXT = { ...PLAN, id: "demo-next", title: "One more thing", question: "Which region should the counters live in?" };
 const OTHER = { ...PLAN, id: "demo-other", agent: "omo", title: "Proofread", question: "Which chapters should the proofread cover?" };
 const LONG_LABEL = "Approve with the changes the reviewer listed: keep the rate limit per user and report, move the counters to the shared store, and return Retry-After. ".repeat(15).slice(0, 2166);
@@ -97,7 +106,7 @@ const layoutOf = (page: Page): Promise<Layout> => page.evaluate(() => {
       return hit ? `${hit.tagName.toLowerCase()}.${String(hit.className)} in ${named?.tagName.toLowerCase()}.${String(named?.className)}` : "nothing";
     })(),
     queue: queue === null ? null : box(queue),
-    cap: Math.max(app * 0.6, 240),
+    cap: Math.max(app * (card.classList.contains("is-question") ? 0.8 : 0.6), 240),
     scrolls: card.scrollHeight > card.clientHeight + 1,
     pageScrolls: document.documentElement.scrollHeight > window.innerHeight || document.documentElement.scrollWidth > window.innerWidth,
     placeholder: document.querySelector<HTMLTextAreaElement>(".composer-text")!.placeholder,
@@ -175,11 +184,20 @@ try {
   const form = `<script>(() => {
     const demo = window.fetch;
     const web = ${JSON.stringify(panes.web)};
+    if (window.testApprovalReflow) {
+      const DemoWebSocket = window.WebSocket;
+      window.WebSocket = Object.assign(function (...args) {
+        const socket = new DemoWebSocket(...args);
+        if (new URL(String(args[0]), location.href).pathname === "/ws") window.formSocket = socket;
+        return socket;
+      }, Object.fromEntries(["CONNECTING", "OPEN", "CLOSING", "CLOSED"].map((key) => [key, DemoWebSocket[key]])));
+    }
     window.formPrompt = null;
     window.panePrompts = {};
     window.formAnswers = [];
     window.formNext = null;
     window.formDelay = 0;
+    window.formAnswerGate = null;
     window.formReturned = 0;
     window.formReadFails = false;
     window.formFailedReads = 0;
@@ -195,7 +213,15 @@ try {
         if (window.formReadHold) return new Promise(() => {});
         if (window.formReadFails) { window.formFailedReads += 1; if (window.formHoldAfterFailure) window.formReadHold = true; return Promise.reject(new TypeError("Failed to fetch")); }
         const prompt = promptOf(url.searchParams.get("pane_id"));
-        if (prompt !== null) return json({ prompt, suggestion: null });
+        if (prompt !== null) {
+          if (window.formReflowGate) {
+            window.formReflowReadStarted = true;
+            const shown = "formReflowFirst" in window ? window.formReflowFirst : prompt;
+            delete window.formReflowFirst;
+            return window.formReflowGate.then(() => json({ prompt: shown, suggestion: null }));
+          }
+          return json({ prompt, suggestion: null });
+        }
       }
       if (url.pathname === "/api/pane/prompt/answer") {
         const answer = JSON.parse(init.body);
@@ -208,7 +234,8 @@ try {
           window.formNext = null;
           if (next === null) { if (answer.pane_id === web) window.formPrompt = null; else delete window.panePrompts[answer.pane_id]; }
           // window.formDelay: the answer takes that long to come back, as send_keys and the re-read do
-          return new Promise((done) => setTimeout(done, window.formDelay || 0)).then(() => { if (next !== null) window.formPrompt = next; window.formReturned += 1; return json({ ok: true }); });
+          const gate = window.formAnswerGate ?? new Promise((done) => setTimeout(done, window.formDelay || 0));
+          return gate.then(() => { if (next !== null) window.formPrompt = next; window.formReturned += 1; return json({ ok: true }); });
         }
       }
       return demo(input, init);
@@ -216,17 +243,7 @@ try {
   })();</script>`;
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${form}\n    <script type="module"`));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   const url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.web)}`;
   if (shots !== null) mkdirSync(shots, { recursive: true });
   try {
@@ -240,7 +257,7 @@ try {
         throw error;
       };
       let evidenceSequence = 0;
-      const open = async ({ width, height, touch = false, finePointer = false, held = [], prompt = null, theme = "dark", language = "en", settings = {} }: { width: number; height: number; touch?: boolean; finePointer?: boolean; held?: string[]; prompt?: unknown; theme?: string; language?: string; settings?: Record<string, unknown> }): Promise<Opened> => {
+      const open = async ({ width, height, touch = false, finePointer = false, held = [], prompt = null, approvalReflow = false, theme = "dark", language = "en", settings = {} }: { width: number; height: number; touch?: boolean; finePointer?: boolean; held?: string[]; prompt?: unknown; approvalReflow?: boolean; theme?: string; language?: string; settings?: Record<string, unknown> }): Promise<Opened> => {
         const context = await browser.newContext({ viewport: { width, height }, locale: "en-US", hasTouch: touch, isMobile: touch && !finePointer });
         // a laptop with a touch screen: Chromium calls any screen with touch a coarse pointer, and
         // such a laptop's mouse is its first one. The app asks through matchMedia (useMediaQuery)
@@ -249,6 +266,8 @@ try {
           window.matchMedia = (query) => media(query === "(pointer: coarse)" ? "not all" : query);
         });
         await context.addInitScript(([owner, messages, settings]) => {
+          // The demo's opening turn is in another pane. Its completion droplet can cover this card.
+          Reflect.set(window, "__ovisDemoHoldTurn", true);
           localStorage.setItem("ovis:settings", settings!);
           const enterSends: unknown = JSON.parse(settings!).enterSends;
           if (typeof enterSends === "boolean") localStorage.setItem("ovis:enter-sends", String(enterSends));
@@ -261,6 +280,7 @@ try {
           Object.defineProperty(keyboard, "boundingRect", { get: () => new DOMRect(0, 0, 390, keyboard.height) });
           Object.defineProperty(navigator, "virtualKeyboard", { configurable: true, value: keyboard });
         });
+        if (approvalReflow) await context.addInitScript(() => { Reflect.set(window, "testApprovalReflow", true); });
         if (prompt !== null) await context.addInitScript((next) => { window.addEventListener("DOMContentLoaded", () => { (window as unknown as { formPrompt: unknown }).formPrompt = next; }); }, prompt);
         const page = await context.newPage();
         const evidence = evidenceDirectory ? await startBrowserEvidence({
@@ -281,7 +301,7 @@ try {
           if (prompt !== null) await setPrompt(page, prompt);
           await page.locator(".prompt-card").waitFor();
           if (prompt !== null) await page.locator(".prompt-card").getByText((prompt as { question: string }).question).waitFor();
-          await appFaces(page);
+          if (!approvalReflow) await appFaces(page);
           return {
             page,
             errors,
@@ -337,6 +357,79 @@ try {
         }
       }
       console.log("PASS the approval card sits outside the transcript, directly over the input card on its column, at 1440 and 390, dark and light");
+
+      for (const [firstFrame, optionIndex, fixed] of [["old", 0, false], ["blank", 1, false], ["fallback", 1, false], ["old", 0, true]] as const) {
+        const approval = {
+          id: "claude-wide", agent: "claude", kind: "approval", title: "Bash command", question: "Do you want to proceed?",
+          body: "touch probe.txt", multi_select: false, custom_option_index: null,
+          options: ["Yes", "Yes, and always allow access to /projects/demo from this project", "No"].map((label) => ({ label, description: null })),
+        };
+        const { page, errors, close } = await open({ width: 1440, height: 900, prompt: approval, approvalReflow: true });
+        try {
+          const card = page.locator(".prompt-card");
+          const option = card.locator(".prompt-card-option").nth(optionIndex);
+          assert.ok(await option.isEnabled());
+          await page.evaluate(([pane, narrow, firstFrame, fixed]) => {
+            const mock = window as unknown as {
+              formPrompt: unknown; formSocket: WebSocket; formReflowGate?: Promise<void>; finishReflow?: () => void; formReflowFirst?: unknown;
+            };
+            mock.formReflowFirst = firstFrame === "old" ? mock.formPrompt : firstFrame === "blank" ? null : {
+              id: "claude-fallback", agent: "claude", kind: "menu", fallback: true,
+              title: "Waiting for input", question: "The agent is waiting for input.",
+              body: null, multi_select: false, custom_option_index: null,
+              options: [{ label: "Enter", description: null }, { label: "Esc", description: null }],
+            };
+            mock.formReflowGate = new Promise((resolve) => { mock.finishReflow = resolve; });
+            mock.formPrompt = narrow;
+            mock.formSocket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({
+              type: "pane-geometry", pane_id: pane, cols: 40, rows: 44, ...(fixed ? { fixed: true } : {}),
+            }) }));
+          }, [panes.web, { ...approval, id: "claude-narrow", options: [approval.options[0], { label: "Yes, and always allow access to /projects/ demo from this project", description: null }, approval.options[2]] }, firstFrame, fixed] as const);
+          await page.waitForFunction(() => (window as unknown as { formReflowReadStarted?: boolean }).formReflowReadStarted === true);
+          assert.ok(await option.isDisabled(), `${fixed ? "mirrored" : "attached"} resize disables the approval until its redraw is read`);
+          assert.deepEqual(await answersOf(page), []);
+          await page.evaluate(() => {
+            const mock = window as unknown as { finishReflow: () => void; formReflowGate?: Promise<void>; formReflowReadStarted?: boolean };
+            mock.finishReflow();
+            mock.formReflowReadStarted = false;
+            mock.formReflowGate = new Promise((resolve) => { mock.finishReflow = resolve; });
+          });
+          await page.waitForFunction(() => Reflect.get(window, "formReflowReadStarted") === true);
+          assert.deepEqual(await card.locator(".prompt-card-body").allTextContents(), [approval.body], `keep the approval after the ${firstFrame} frame`);
+          assert.ok(await option.isDisabled(), `${firstFrame} is inconclusive; wait for the redraw`);
+          await page.evaluate(() => {
+            const mock = window as unknown as { finishReflow: () => void; formReflowGate?: Promise<void> };
+            mock.finishReflow();
+            delete mock.formReflowGate;
+          });
+          await card.getByText("Yes, and always allow access to /projects/ demo from this project").waitFor();
+          await option.click();
+          assert.deepEqual(await answersOf(page), [{ pane_id: panes.web, prompt_id: "claude-narrow", option_index: optionIndex }]);
+          assert.deepEqual(errors, []);
+        } catch (error) { await preserveFailure(page, error); } finally { await close(); }
+      }
+      console.log("PASS a Claude approval's first or second choice submits the refreshed card after a terminal resize");
+
+      for (const size of [{ width: 1280, height: 800 }, { width: 390, height: 844, touch: true }]) {
+        const { page, errors, shot, close } = await open({ ...size, theme: "light", prompt: LONG_APPROVAL });
+        try {
+          const body = page.locator(".prompt-card-body");
+          assert.equal(await body.textContent(), LONG_APPROVAL.body);
+          // the end of the command is in the box, not pushed out past its right edge
+          const fit = await body.evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            const range = document.createRange();
+            range.setStart(node.firstChild!, node.firstChild!.textContent!.length - 1);
+            range.setEnd(node.firstChild!, node.firstChild!.textContent!.length);
+            const end = range.getBoundingClientRect();
+            return { overflows: node.scrollWidth > node.clientWidth + 1, endInside: end.right <= box.right && end.left >= box.left };
+          });
+          assert.deepEqual(fit, { overflows: false, endInside: true }, `${size.width}: the long command wraps inside the card`);
+          assert.deepEqual(errors, []);
+          await shot(`approval-long-command-${size.width}-light`);
+        } catch (error) { await preserveFailure(page, error); } finally { await close(); }
+      }
+      console.log("PASS a long one-line command wraps inside the approval card to its end, at 1280 and 390");
 
       {
         const { page, errors, close } = await open({ width: 1440, height: 900 });
@@ -563,13 +656,19 @@ try {
       {
         const { page, errors, close } = await open({ width: 1440, height: 900, prompt: FORM });
         try {
-          await page.evaluate(() => { (window as unknown as { formDelay: number }).formDelay = 600; });
+          await page.evaluate(() => {
+            const formAnswerGate = new Promise<void>((resolve) => {
+              window.addEventListener("qa-release-form-answer", () => resolve(), { once: true });
+            });
+            Object.assign(window, { formAnswerGate });
+          });
           await page.locator(".prompt-card").getByRole("button", { name: /^1\. In memory/ }).click();
           await page.locator(".prompt-card-options[aria-busy=true]").waitFor();
           const elsewhere = page.locator(".app-header button:not([disabled]):visible").first();
           await elsewhere.focus();
           assert.equal(await elsewhere.evaluate((node) => document.activeElement === node), true);
           assert.equal(await page.locator(".prompt-card-options").getAttribute("aria-busy"), "true", "the answer is still on its way");
+          await page.evaluate(() => { window.dispatchEvent(new Event("qa-release-form-answer")); });
           await page.locator(".prompt-card").getByText(FORM.question).waitFor({ state: "detached" });
           assert.equal((await answersOf(page)).length, 1);
           assert.equal(await elsewhere.evaluate((node) => document.activeElement === node), true, "focus stays where the user put it while the answer was on its way");
@@ -619,7 +718,8 @@ try {
       }
 
       {
-        const { page, errors, close } = await open({ width: 390, height: 500, touch: true, prompt: FORM });
+        // longer than the ten lines a question's context shows, so its own box scrolls too
+        const { page, errors, close } = await open({ width: 390, height: 500, touch: true, prompt: { ...FORM, body: `${FORM.body}\n${FORM.body}` } });
         try {
           await page.locator(".prompt-card-custom .input").fill("sqlite");
           const before = await page.evaluate(() => {
@@ -640,6 +740,20 @@ try {
           assert.deepEqual(errors, []);
         } catch (error) { await preserveFailure(page, error); } finally { await close(); }
         console.log("PASS a prompt that replaces a scrolled one opens at its top");
+      }
+
+      {
+        const context = "The export button posts one job per click, and a user who double-clicks while the report is still rendering gets two jobs, two emails and two rows in the audit log; the counters below decide how a second click inside the window is refused. ".repeat(2).slice(0, 300);
+        const option = (label: string): { label: string; description: null } => ({ label: `${label}: ${"keep the counter for each user and report, refuse a second export inside the window with 429 and Retry-After, and note the refusal in the audit log. ".repeat(2)}`.slice(0, 200), description: null });
+        const LONG_QUESTION = { ...FORM, id: "demo-long-question", steps: undefined, body: context, options: [option("In memory"), option("Redis"), option("Postgres")], custom_option_index: null };
+        const { page, errors, close } = await open({ width: 402, height: 874, touch: true, prompt: LONG_QUESTION });
+        try {
+          const body = await page.locator(".prompt-card-body").evaluate((node) => ({ hidden: node.scrollHeight - node.clientHeight, height: node.clientHeight, whole: node.scrollHeight, line: parseFloat(getComputedStyle(node).lineHeight) }));
+          assert.equal((await layoutOf(page)).scrolls, true, "the long options run past the card: it scrolls");
+          assert.ok(body.hidden <= 1 && body.height > 4 * body.line, `the question's one-line context shows all of itself, not ${(body.height / body.line).toFixed(1)} of its ${(body.whole / body.line).toFixed(1)} lines`);
+          assert.deepEqual(errors, []);
+        } catch (error) { await preserveFailure(page, error); } finally { await close(); }
+        console.log("PASS a question's one-line context is not squeezed by long options on a phone");
       }
 
       {

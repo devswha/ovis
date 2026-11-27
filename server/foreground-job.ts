@@ -11,6 +11,10 @@ import { darwinArgv, darwinProcessGroup } from "./darwin-process.ts";
 
 export interface JobProcess { pid: number; name: string; argv: string[] }
 
+/**
+ * past this many processes found, the Linux lookup goes no level deeper, but it ends the level it is
+ * on, however wide: a terminal's foreground job, not a whole PC
+ */
 const JOB_MAX = 256;
 
 /** A Linux process's parent, group and command name from /proc/<pid>/stat; the name may hold spaces and parentheses. */
@@ -22,10 +26,18 @@ async function linuxStat(pid: number): Promise<{ parent: number; group: number; 
 }
 
 /** The children of every thread of a Linux process (/proc/<pid>/task/<tid>/children). */
-async function linuxChildren(pid: number): Promise<number[]> {
+async function linuxThreadChildren(pid: number): Promise<number[]> {
   const tasks = await readdir(`/proc/${pid}/task`);
   const lists = await Promise.all(tasks.map((task) => readFile(`/proc/${pid}/task/${task}/children`, "utf8")));
   return lists.flatMap((list) => list.split(" ").filter((word) => word !== "").map(Number));
+}
+
+/**
+ * A thread that ended while it was read hands its children to another thread, maybe one read already:
+ * the whole process is read once more, never only the threads that answered, or a child is lost.
+ */
+async function linuxChildren(pid: number): Promise<number[]> {
+  return linuxThreadChildren(pid).catch(() => linuxThreadChildren(pid));
 }
 
 async function linuxBelow(pid: number): Promise<JobProcess[]> {
@@ -65,11 +77,15 @@ function darwinBelow(pid: number): JobProcess[] | null {
   return found;
 }
 
+/**
+ * The processes below `pid` in its foreground job, nearest first; null when they cannot be read
+ * (`pid` gone, a platform without a foreground job), which is no proof that none runs there.
+ */
 export async function jobProcessesBelow(pid: number, platform: string = process.platform): Promise<JobProcess[] | null> {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   try {
     if (platform === "linux") return await linuxBelow(pid);
     if (platform === "darwin") return darwinBelow(pid);
-  } catch { }
+  } catch { /* the process ended, or its /proc entry is not ours to read */ }
   return null;
 }

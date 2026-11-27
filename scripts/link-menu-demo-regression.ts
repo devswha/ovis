@@ -6,10 +6,11 @@ import type { Browser, BrowserContext, Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
 // A desktop Chromium turns no held touch into a contextmenu,
 // so each long press is the touch-typed contextmenu the Android WebView sends for one (checked on
-// an emulator in the PR).
+// an emulator in the PR). Loopback only; no herdr.
 const app = mkdtempSync(join(tmpdir(), "herdr-link-menu-demo-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 
@@ -105,17 +106,7 @@ try {
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${harness}\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   origin = `http://127.0.0.1:${server.port}`;
   url = `${origin}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(PANE)}`;
   try {
@@ -166,6 +157,7 @@ try {
           assert.equal(await page.locator(".terminal-stack.is-chat").count(), 1, "the app did not fall to its crash screen");
           console.log("PASS android: an address no URL parser takes gets its sheet and is copied as written");
 
+          // other words keep the WebView's own long press (it selects them), and so does a mouse's menu on a link
           assert.equal(await longPress(page, words, "plain words here"), false, "a long press on other words is left to the WebView");
           assert.equal(await longPress(page, link, WORDS, "mouse"), false, "the contextmenu Android ends a dragged selection with is not the link's");
           assert.equal(await page.locator(".row-sheet").count(), 0, "neither opens the sheet");

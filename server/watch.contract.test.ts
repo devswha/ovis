@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServerMessage } from "../shared/protocol.ts";
+import { ownProcesses } from "../scripts/own-processes.ts";
 import { herdrRpc, sessionSnapshot } from "./herdr/client.ts";
 import { createServer, type ServerInstance } from "./index.ts";
 
@@ -10,6 +11,8 @@ async function until(predicate: () => boolean, label: string, ms = 10_000): Prom
   const deadline = Date.now() + ms;
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error(`${label} not observed within ${ms}ms`);
+    // These are real CLI processes and WebSocket deliveries; fake timers cannot
+    // advance their external lifecycle.
     await Bun.sleep(25);
   }
 }
@@ -49,13 +52,7 @@ class RecordingSocket {
   }
 }
 
-function processCount(pattern: string): number {
-  const found = Bun.spawnSync(["pgrep", "-f", pattern]);
-  if (found.exitCode !== 0 && found.exitCode !== 1) {
-    throw new Error(`pgrep failed (${found.exitCode}): ${found.stderr.toString()}`);
-  }
-  return found.stdout.toString().split("\n").filter(Boolean).length;
-}
+const processCount = (pattern: string): number => ownProcesses(new RegExp(pattern)).length;
 
 describe("WebSocket read-only live watch", () => {
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-watch-"));
@@ -124,6 +121,7 @@ describe("WebSocket read-only live watch", () => {
 
       const nonce = crypto.randomUUID().replaceAll("-", "");
       const marker = `watch-${nonce}`;
+      // The full marker occurs only in the command's output, not its typed echo.
       await herdrRpc("pane.send_text", { pane_id: paneId, text: `printf 'watch-%s\\n' '${nonce}'` });
       await herdrRpc("pane.send_keys", { pane_id: paneId, keys: ["Enter"] });
       const frame = await socket.waitFor(

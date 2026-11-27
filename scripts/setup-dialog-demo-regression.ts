@@ -20,6 +20,10 @@ const focusedName = (page: Page) => page.evaluate(() => {
 });
 
 
+/**
+ * A stand-in push service, put in after the demo transport as push-health-demo-regression.ts puts its own: Turn on
+ * alerts makes a subscription the demo's server takes, unless `pushStandIn.fails` is set (Brave with push off).
+ */
 const PUSH_STAND_IN = `<script>(() => {
   const push = { fails: false };
   window.pushStandIn = push;
@@ -76,9 +80,11 @@ try {
         localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: value, palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
         if (sessionStorage.getItem("seeded") === null) { localStorage.setItem("ovis:setup-guide", guide); sessionStorage.setItem("seeded", "1"); }
       }, [theme, WELCOME] as const);
+      // notifications allowed, and every one shown is recorded instead of reaching the desktop
       await context.addInitScript(() => {
         const shown: string[] = [];
         (window as unknown as { shownAlerts: string[] }).shownAlerts = shown;
+        // not yet asked: the guide asks only on Turn on alerts, and each ask is counted
         const asked = { count: 0 };
         (window as unknown as { permissionAsks: typeof asked }).permissionAsks = asked;
         class RecordedNotification { static permission: NotificationPermission = "default"; static requestPermission = () => { asked.count += 1; RecordedNotification.permission = "granted"; return Promise.resolve("granted" as NotificationPermission); }; constructor(title: string) { shown.push(title); } addEventListener() {} close() {} }
@@ -156,6 +162,7 @@ try {
         await settled(page);
         assert.equal(await focusedName(page), "Stay in touch", `the phone and alerts step's title takes the keyboard ${at}`);
         assert.equal((await steps.locator('[aria-current="step"]').textContent())?.replace(/\s+/g, ""), "Phoneandalerts", `the head marks Phone and alerts as the current step ${at}`);
+        // nothing asked the browser for permission on the way here; Turn on alerts asks it once
         const asks = () => page.evaluate(() => (window as unknown as { permissionAsks: { count: number } }).permissionAsks.count);
         assert.equal(await asks(), 0, `no permission asked before Turn on alerts ${at}`);
         await dialog.getByRole("button", { name: "Turn on alerts", exact: true }).click();
@@ -333,6 +340,9 @@ try {
     }
   }
 
+  // The usage-counts notice in the guide is the consent counts wait for (components/TelemetryControls.tsx): it is
+  // recorded only once its line is wholly in view and nothing covers it, and the page's own copy is not drawn under
+  // the guide. The demo sends no counts, so this page's /api/telemetry is a recorder that says they are on and unseen.
   {
     const context = await browser.newContext({ viewport: { width: 1280, height: 420 }, locale: "en-US", colorScheme: "dark" });
     await context.addInitScript((guide) => {
@@ -367,8 +377,17 @@ try {
       await page.goto(root);
       const dialog = page.getByRole("dialog", { name: DIALOG, exact: true });
       const line = dialog.locator(".setup-note-usage");
-      await dialog.getByRole("heading", { name: "Pick an agent", exact: true }).waitFor();
-      await line.waitFor({ state: "attached" });
+      const heading = dialog.getByRole("heading", { name: "Pick an agent", exact: true });
+      await heading.focus();
+      await line.evaluate((node) => {
+        const observer = new IntersectionObserver(([entry]) => {
+          if (entry) node.setAttribute("data-fixture-in-view", String(entry.isIntersecting && entry.intersectionRatio >= 0.99));
+        }, { threshold: [0, 1] });
+        observer.observe(node);
+      });
+      const lineClipped = line.and(page.locator('[data-fixture-in-view="false"]'));
+      const lineInView = line.and(page.locator('[data-fixture-in-view="true"]'));
+      await lineClipped.waitFor({ state: "attached" });
       const below = await line.evaluate((node) => {
         const body = node.closest(".modal-body")!.getBoundingClientRect();
         return node.getBoundingClientRect().bottom > body.bottom;
@@ -377,21 +396,30 @@ try {
       await frames(4);
       assert.equal(await seen(), 0, "a line below the fold is not recorded as seen");
       assert.equal(await page.locator(".update-notice.is-telemetry").count(), 0, "the page's own line is not drawn under the guide");
+      // a native showModal() dialog over the guide (as Add PC opens) covers the line too, though it has no aria-modal (#3882)
       await page.evaluate(() => { const native = document.createElement("dialog"); native.id = "native-over"; native.textContent = "native"; document.body.append(native); native.showModal(); });
       await line.evaluate((node) => node.scrollIntoView({ block: "nearest" }));
+      await lineInView.waitFor({ state: "attached" });
       await frames(4);
       assert.equal(await page.evaluate(() => (window as unknown as { counts: { seen: unknown[]; failed: number } }).counts.seen.length + (window as unknown as { counts: { failed: number } }).counts.failed), 0, "a line under a native modal dialog is not recorded");
       await line.evaluate((node) => { node.closest(".modal-body")!.scrollTop = 0; });
+      // Keep the native cover until the scroll reset reaches IntersectionObserver. Closing it restores focus,
+      // which schedules a record using the last intersection; the line must stay clipped until Settings owns focus.
+      await lineClipped.waitFor({ state: "attached" });
       await page.evaluate(() => { const native = document.getElementById("native-over") as HTMLDialogElement; native.close(); native.remove(); });
-      await frames(4);
       await page.keyboard.press("Control+Shift+Comma");
       const settings = page.getByRole("dialog", { name: "Settings", exact: true });
-      await settings.waitFor();
+      await settings.and(page.locator(":focus-within")).waitFor();
       await line.evaluate((node) => node.scrollIntoView({ block: "nearest" }));
+      await lineInView.waitFor({ state: "attached" });
       await frames(4);
       assert.equal(await seen(), 0, "a line under Settings is not recorded as seen");
+      // not even tried: a covered line makes no acknowledgement attempt, failed or not (#3894 CodeRabbit)
       assert.equal(await page.evaluate(() => (window as unknown as { counts: { failed: number } }).counts.failed), 0, "no acknowledgement is attempted while Settings covers the line");
-      await page.keyboard.press("Escape");
+      await Promise.all([
+        page.waitForEvent("console", { predicate: (message) => message.type() === "error" && message.text().startsWith("telemetry notice ") }),
+        page.keyboard.press("Escape"),
+      ]);
       await settings.waitFor({ state: "detached" });
       await page.waitForFunction(() => (window as unknown as { counts: { failed: number } }).counts.failed === 1);
       assert.equal(await seen(), 0, "a failed record is not counted");
@@ -399,6 +427,8 @@ try {
       await page.waitForFunction(() => (window as unknown as { counts: { seen: unknown[] } }).counts.seen.length === 1);
       await dialog.locator(".setup-note-usage").getByRole("button", { name: "Turn off", exact: true }).waitFor({ state: "attached" });
       assert.equal(await seen(), 1, "the next step's copy does not record it again");
+      // Turn off in the guide's copy is every copy's: the guide closed, the page's own line does not come back and
+      // no settings snapshot is told while counts are off
       await dialog.locator(".setup-note-usage").getByRole("button", { name: "Turn off", exact: true }).click();
       await page.waitForFunction(() => !(window as unknown as { counts: { on: boolean } }).counts.on);
       await dialog.locator(".setup-note-usage").waitFor({ state: "detached" });
@@ -485,6 +515,9 @@ try {
     }
     console.log(`PASS the phone and alerts step's body does not scroll in any state (${at})`);
   }
+  // Opening the guide reads nothing, sends nothing and turns nothing on: open then Set up later leaves no usage read, no
+  // shared-settings write, and this browser's settings byte for byte as they were. Only Continue on the agent step (the
+  // user's own press) reads the plan usage
   {
     const context = await browser!.newContext({ viewport: { width: 1920, height: 1080 }, locale: "en-US", colorScheme: "dark" });
     await context.addInitScript(([guide]) => {
@@ -498,7 +531,12 @@ try {
       let inner = window.fetch.bind(window);
       const recorder = ((input: RequestInfo | URL, init?: RequestInit) => {
         const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
-        if (url.pathname.startsWith("/api/")) sent.push(`${(init?.method ?? "GET").toUpperCase()} ${url.pathname}`);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (url.pathname.startsWith("/api/")) sent.push(`${method} ${url.pathname}`);
+        // plan usage turned off on another device: the server's shared settings say so, this browser's copy does not
+        if (url.pathname === "/api/preferences" && method === "GET" && sessionStorage.getItem("usage-off-elsewhere") !== null) {
+          return Promise.resolve(Response.json({ revision: 1000, settings: { showUsage: false }, muted_panes: [] }));
+        }
         return inner(input, init);
       }) as typeof window.fetch;
       Object.defineProperty(window, "fetch", { configurable: true, get: () => recorder, set: (next: typeof window.fetch) => { inner = next; } });
@@ -516,7 +554,10 @@ try {
     const sent = await page.evaluate(() => (window as unknown as { sent: string[] }).sent);
     assert.deepEqual(sent.filter((request) => request === "GET /api/usage" || request.startsWith("PUT /api/preferences") || request.startsWith("POST /api/preferences")), [], `opening the guide and Set up later read no usage and write no shared setting: ${sent.join(", ")}`);
     assert.equal(await page.evaluate(() => localStorage.getItem("ovis:settings")), settingsBefore, "Set up later leaves this browser's settings byte for byte as they were");
-    await page.locator(".setup-row .setup-row-open").click();
+    // the guide comes back from Settings → Agents: the sidebar's setup row is a checklist now
+    await page.keyboard.press("Control+Shift+Comma");
+    await openSettingsPage(page, "Agents");
+    await page.locator(".settings-dialog").getByRole("button", { name: "Open setup guide", exact: true }).click();
     await dialog.waitFor();
     await settled(page);
     assert.equal((await page.evaluate(() => (window as unknown as { sent: string[] }).sent)).includes("GET /api/usage"), false, "a guide reopened without Continue reads no usage");
@@ -533,10 +574,32 @@ try {
     assert.equal((await page.evaluate(() => (window as unknown as { sent: string[] }).sent)).includes("GET /api/usage"), false, "no usage read while the agent step only shows");
     await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
     await page.waitForFunction(() => (window as unknown as { sent: string[] }).sent.includes("GET /api/usage"));
+    // the guide turned plan usage on; then it is turned off on another device while this browser is closed: this
+    // browser's copy still says on, the server's settings say off, and the remembered Continue reads no usage
+    await page.waitForFunction(() => localStorage.getItem("ovis:setup-usage-armed") === "on");
+    await page.evaluate((guide) => {
+      sessionStorage.setItem("usage-off-elsewhere", "1");
+      localStorage.setItem("ovis:setup-guide", guide);
+    }, WELCOME);
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").showUsage), true, "this browser's copy still says plan usage is on");
+    await page.reload();
+    await dialog.getByRole("heading", { name: "Pick an agent", exact: true }).waitFor();
+    await dialog.locator(".setup-found .setup-tile").first().waitFor();
+    await page.waitForFunction(() => localStorage.getItem("ovis:setup-usage-armed") === null);
+    await settled(page);
+    // the sidebar still reads the usage once from this browser's stale copy; the guide's steps draw only once the
+    // agent catalog is in, so a read after it is the guide's
+    const offElsewhere = await page.evaluate(() => (window as unknown as { sent: string[] }).sent);
+    const catalogAt = offElsewhere.indexOf("GET /api/agent-catalog");
+    assert.ok(catalogAt >= 0, `the guide read the agent catalog: ${offElsewhere.join(", ")}`);
+    const byGuide = offElsewhere.slice(catalogAt);
+    assert.equal(byGuide.includes("GET /api/usage"), false, `usage turned off while this browser was closed is not read again by the guide: ${offElsewhere.join(", ")}`);
     await context.close();
-    console.log("PASS opening the guide and Set up later read no usage, write no shared setting and leave the settings as they were; Continue reads the usage");
+    console.log("PASS opening the guide and Set up later read no usage, write no shared setting and leave the settings as they were; Continue reads the usage, until usage is turned off");
   }
 
+  // Anywhere's QR code, then Tailscale (a new pairing code: the PC keeps one), then Anywhere again: the relay asks for a
+  // fresh offer carrying the PC's current code, never shows the old one.
   {
     const context = await browser!.newContext({ viewport: { width: 1920, height: 1080 }, locale: "en-US", colorScheme: "dark" });
     await context.addInitScript(([guide]) => {
@@ -573,7 +636,8 @@ try {
     await side.getByRole("tab", { name: /^Anywhere/ }).click();
     await page.waitForFunction((count) => (window as unknown as { sent: string[] }).sent.filter((request) => request === "POST /api/relay/offer").length > count, first);
     await side.locator(".setup-relay-tight .qr").waitFor();
-    assert.equal(await page.evaluate(() => localStorage.getItem("ovis:setup-usage-armed")), "1", "Continue on the agent step is remembered");
+    // "on" once the usage read turned plan usage on for the signed-in demo account
+    assert.ok(["1", "on"].includes(await page.evaluate(() => localStorage.getItem("ovis:setup-usage-armed") ?? "")), "Continue on the agent step is remembered");
     await page.evaluate(() => localStorage.setItem("ovis:settings", JSON.stringify({ ...JSON.parse(localStorage.getItem("ovis:settings") ?? "{}"), showUsage: true })));
     await page.reload();
     await dialog.waitFor();
@@ -588,6 +652,8 @@ try {
     console.log("PASS back to Anywhere after Tailscale asks for a fresh relay offer; turning plan usage off forgets the remembered Continue");
   }
 
+  // While the relay starts (Turn on pressed, its answer not in), the other ways wait: picking one could let the start
+  // close the device gate and spend that way's pairing code (#3962 CodeRabbit)
   {
     const context = await browser!.newContext({ viewport: { width: 1920, height: 1080 }, locale: "en-US", colorScheme: "dark" });
     await context.addInitScript(([guide]) => {
@@ -610,6 +676,12 @@ try {
     await tailscale.click({ force: true });
     await page.keyboard.press("ArrowRight");
     assert.equal(await side.getByRole("tab", { name: /^Anywhere/ }).getAttribute("aria-selected"), "true", "no other way is picked while the relay starts");
+    // Back and Continue again mount the step afresh while the start is still out: the ways still wait for it
+    await dialog.locator(".setup-foot").getByRole("button", { name: "Back", exact: true }).click();
+    await dialog.getByRole("heading", { name: "Pick a look", exact: true }).waitFor();
+    await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
+    await tailscale.waitFor();
+    assert.equal(await tailscale.getAttribute("aria-disabled"), "true", "the ways still wait for the start after the step is left and come back to");
     await page.waitForFunction(() => typeof (globalThis as { releaseDemoRelayStart?: () => void }).releaseDemoRelayStart === "function");
     await page.evaluate(() => (globalThis as { releaseDemoRelayStart?: () => void }).releaseDemoRelayStart?.());
     await side.locator(".setup-relay-tight .qr").waitFor();
@@ -657,6 +729,7 @@ try {
     console.log("PASS on a phone the phone step opens at its top, and Tailscale and Same Wi-Fi work for a browser on the PC (390x844)");
   }
 
+  // A pairing code runs out: the QR code goes back to the plain address, and New code asks for another on a press
   {
     const context = await browser!.newContext({ viewport: { width: 1920, height: 1080 }, locale: "en-US", colorScheme: "dark" });
     await context.addInitScript(([guide]) => {
@@ -683,11 +756,14 @@ try {
     assert.equal(await coded.count(), 0, "a code that ran out leaves the QR code");
     await side.getByRole("button", { name: "New code", exact: true }).click();
     await coded.waitFor();
+    // a store's QR code uses no pairing code: the way under it keeps its own
     await side.getByRole("button", { name: "Download on the App Store" }).click();
     await side.getByRole("img", { name: /^QR code that opens App Store/ }).waitFor();
     await side.getByRole("tab", { name: /Tailscale/ }).click();
     await coded.waitFor();
     assert.equal(await side.getByRole("button", { name: "New code", exact: true }).count(), 0, "a store badge leaves the way's code as it was");
+    // the PC keeps one pairing code: another way's tab (here Anywhere's) may replace it, so a way left drops its code,
+    // and back in view it shows New code, never a code the PC no longer takes
     await coded.waitFor();
     await side.getByRole("tab", { name: /^Anywhere/ }).click();
     await side.getByRole("tab", { name: /Tailscale/ }).click();

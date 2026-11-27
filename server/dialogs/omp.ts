@@ -2,7 +2,7 @@ import type { DialogReader } from "./registry.ts";
 import { pickerPlan } from "./interaction-plan.ts";
 import { piActiveTab } from "./pi-ask-tabs.ts";
 import { type InteractivePromptAnswer } from "../../shared/protocol.ts";
-import { ANSI_RE, KEY, type MenuRow, type ParsedPrompt, cleanLine, findLastIndex, finishPrompt, isDivider, own, keySteps, navigationKeys, nearestQuestion, normalizeText, wrapped } from "./shared.ts";
+import { ANSI_RE, KEY, type MenuRow, type ParsedPrompt, type TypedEditorAnswer, cleanLine, editorRowsMatch, findLastIndex, finishPrompt, isDivider, own, keySteps, navigationKeys, nearestQuestion, normalizeText, toggleMultiSelectKeys, wrapped } from "./shared.ts";
 
 /** the option markers: unicode, and the Nerd Font preset's icons (checkbox \uf096/\uf14a, radio \uf10c/\uf192, cursor \uf054) (#3282) */
 const OMP_MARKERS = "○●◉◯☐☑☒✓\uf096\uf14a\uf10c\uf192";
@@ -37,6 +37,7 @@ const OMP_EXPAND_HINT_RE = /\s\u00b7\s\S+\sexpand(?:\s\u00b7|$)/;
 
 export const OMP_TABS_HINT_RE = /(?:tab|⇥|\u{f0312}).*?(?:←|left).*?(?:→|right)|(?:←|left).*?(?:→|right).*?(?:tab|⇥|\u{f0312})/iu;
 
+/** OMP options have a marker; their descriptions and wrapped labels are indented below them. */
 function parseOmpRows(lines: string[], startDivider: number, endDivider: number): MenuRow[] | null {
   const rows: MenuRow[] = [];
   const marker = OMP_MARKERS;
@@ -107,6 +108,7 @@ function isOmpTabStripRow(rawLine: string): boolean {
   return (indentation === 2 || indentation === 4) && Boolean(raw.trim());
 }
 
+/** Stop at the final visible tab so following indented question text is never consumed as tabs. */
 function isOmpSubmitTabRow(rawLine: string): boolean {
   const cells = ompTabRowText(rawLine).trim().split(/\s{2,}/).map((cell) => cell.trim());
   return cells.at(-1) === "Submit";
@@ -144,6 +146,8 @@ function ompSteps(screen: string, before: number) {
   const index = piActiveTab(raw, markers);
   if (index === null) return null;
   return {
+    // The strip has no answered markers: leave steps unmarked unless review rows prove an answer.
+    // the review (Submit, last) draws no question of the call, so a move to it cannot be checked: questions only
     steps: labels.map((label, at) => ({ label, answered: false, current: at === index, can_navigate: at !== index && at < labels.length - 1 })),
     can_step_back: index > 0,
     can_step_next: index < labels.length - 2,
@@ -166,11 +170,13 @@ function ompReviewAnswers(panel: string[]): InteractivePromptAnswer[] | null {
     const note = OMP_REVIEW_NOTE_RE.exec(line);
     if (row) answers.push({ question: row[1]!.trim(), answer: row[2]?.trim() || null });
     else if (note && answers.length > 0 && answers.at(-1)!.note === undefined) answers.at(-1)!.note = note[1]!.trim();
+    // the warning over the rows ("1 unanswered question; Enter still submits.") stays the body
     else if (answers.length > 0) return null;
   }
   return answers.length > 0 ? answers : null;
 }
 
+/** The Submit tab is a separate review state: Enter submits, Esc cancels the native dialog. */
 function parseOmpSubmit(screen: string): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
   const hintIndex = findLastIndex(lines, (_, index) => OMP_REVIEW_HINT_RE.test(wrapped(lines, index)));
@@ -229,6 +235,33 @@ function findMenuDividers(lines: string[], hintIndex: number): [number, number] 
   return null;
 }
 
+/** Other opens a HookEditor panel in place of Ask, with the active question in its title. */
+export function ompCustomEditorMatches(screen: string, { prompt, text }: TypedEditorAnswer): boolean {
+  const lines = screen.replace(ANSI_RE, "").trimEnd().split(/\r?\n/u);
+  const tail = lines.at(-1)?.trim() ?? "";
+  if (/^(?:[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \S+|π) · /u.test(tail)) lines.pop();
+  while (lines.at(-1)?.trim() === "") lines.pop();
+  const bottom = lines.pop();
+  if (!bottom || !/^\s*╰─+╯\s*$/u.test(bottom)) return false;
+  const top = findLastIndex(lines, (line) => /^\s*╭/u.test(line));
+  const title = /^\s*╭─ Custom answer: (.*?) ─+╮\s*$/u.exec(lines[top] ?? "");
+  if (!title?.[1]) return false;
+  const panel = lines.slice(top + 1).map((line) => /^\s*│ (.*) │\s*$/u.exec(line)?.[1]?.trimEnd());
+  const field = panel.findIndex((line) => line === ">" || line?.startsWith("> "));
+  const hint = panel.findIndex((line, index) => index > field && /^(?:enter|⏎|\u{f0311})(?: or \S+)? submit\b/iu.test(line ?? ""));
+  if (field < 0 || hint < 0 || panel.some((line) => line === undefined)) return false;
+  const footer = panel.slice(hint).filter(Boolean).join(" ");
+  if (!/submit +(?:esc|⎋|\u{f12b7}) cancel +\S+ external editor$/iu.test(footer)
+    || !editorRowsMatch([title[1], ...panel.slice(0, field).flatMap((line) => line ? [line] : [])], normalizeText(prompt.question))) return false;
+  const first = panel[field]?.slice(2) ?? "";
+  const continuation = panel.slice(field + 1, hint);
+  if (!continuation.every((line) => line === "" || line?.startsWith("  "))) return false;
+  const rows = [first, ...continuation.map((line) => line?.slice(2) ?? "")];
+  // The default software caret adds a thin bar at the end of the last row.
+  const last = rows.pop()?.replace(/▏$/u, "") ?? "";
+  return editorRowsMatch([...rows, last], text) && !editorRowsMatch([...rows, last], "Type your answer");
+}
+
 function parseOmpQuestion(screen: string): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
   const clippedHintIndex = findLastIndex(lines, (_, index) => OMP_SINGLE_CLIPPED_HINT_RE.test(wrapped(lines, index)));
@@ -265,21 +298,15 @@ function parseOmpQuestion(screen: string): ParsedPrompt | null {
     ...(questionRows === OMP_QUESTION_ROWS && OMP_EXPAND_HINT_RE.test(hint) ? { ompQuestionCut: true as const } : {}),
     checkedOptionIndices: optionRows.flatMap((row, index) => row.checked ? [index] : []),
     customMenuIndex: customIndex, rejectWithEscapeIndex: null,
-    // OMP's Other row opens its own text prompt on Enter.
+    // OMP's Other row opens its own text prompt on Enter. The ordinary Enter in
+    // the question dialog selects an option, so keep the activation step explicit.
     ...(!multiSelect ? { customSteps: (text: string) => [
       ...keySteps(navigationKeys(customIndex - selectedIndex)),
       ...keySteps([KEY.enter]), { text }, ...keySteps([KEY.enter]),
     ] } : {}),
     ...(currentMulti ? { multiSteps: (choices: number[]) => {
-      const desired = new Set(choices);
-      const checked = new Set(optionRows.flatMap((row, index) => row.checked ? [index] : []));
-      const toggles = optionRows.flatMap((_, index) => desired.has(index) !== checked.has(index) ? [index] : []);
-      let cursor = selectedIndex;
-      const keys: string[] = [];
-      for (const index of toggles) {
-        keys.push(...navigationKeys(index - cursor), KEY.space);
-        cursor = index;
-      }
+      const checked = optionRows.flatMap((row, index) => row.checked ? [index] : []);
+      const { keys, cursor } = toggleMultiSelectKeys(optionRows.length, selectedIndex, checked, choices);
       // Current OMP advances/finishes the active question on Enter. Tab changes
       // the active question and would make that Enter answer a different row.
       // Enter on the Other row opens its text editor instead of advancing.
@@ -315,7 +342,8 @@ function parseOmpQuestion(screen: string): ParsedPrompt | null {
  * omp cuts a detail at the panel's edge or past its length (`[…120ch elided…]`) and summarizes a multi-line one
  * (`… +2 lines in the tool call`, or 18.13's one row ending ` …`): two calls could then draw the same panel, and
  * a card read for one would answer the other. So is ast_edit's `+N more ops` (its first rewrite only): none of
- * them is a card. Not the screen above it either: omp keeps redrawing the transcript there (a running tool's
+ * them is a card, but for a shell command the approval hub holds (server/approvals/omp.ts), whose card shows the held
+ * request's command whole (`approvalHeldOnly`). Not the screen above it either: omp keeps redrawing the transcript there (a running tool's
  * elapsed time) while it waits.
  * Known limit: some tools never show their whole call (edit names only the files, lsp and debug the action and
  * target), so two calls to them draw the same panel. A card read for the first answers the second only when
@@ -334,11 +362,14 @@ const OMP_PANEL_ROW_RE = /^[│|] ?(.*?)\s*[│|]$/;
  * The composer 18.13 mounts under the panel, empty, as each built-in `composer.shape` draws it (pi-tui
  * `components/composer/*.ts` and `components/editor.ts`, 18.13.2), its rows trimmed. The frame is drawn in the theme's
  * box glyphs (`+-|` in the ascii symbol preset); the prompt's `╰─ ` and `❯ ` and the field and rail caps are always
- * these. With `showHardwareCursor: false` the empty prompt holds omp's own cursor (`▏`, ascii `|`). The status row's
- * text is the user's status-line settings', and omp pads each segment group with a space. With no segments at all,
- * omp leaves the row out, and the gap over it.
+ * these. With `showHardwareCursor: false` the empty prompt holds omp's own cursor (`▏`, ascii `|`). `null` is the
+ * status row, whose text the user's status-line settings choose: read by its place and the space omp pads each
+ * segment group with (OMP_STATUS_ROW_RE). With no segments at all, omp leaves the row out, and the gap over it.
+ * A shape an extension adds, a hook's status line under the bar, a draft in the prompt (omp then also redraws the hint
+ * and the Deny row), or anything else under the panel matches none: the terminal answers.
  */
 const CURSOR = "(?: [▏|])?";
+/** a rule as omp draws one, across the pane: a run of its glyphs, never a word that holds some (`-rw-r--r--`) */
 const OMP_RULE = /^(?:─{4,}|-{4,})$/u;
 const OMP_STATUS_RULE = /^(?:─{4,}(?:[^─].*)?─|-{4,}(?:[^-].*)?-)$/u;
 const OMP_BOX_TOP = /^(?:╭─.*─╮|\+-.*-\+)$/u;
@@ -370,7 +401,7 @@ const OMP_COMPOSERS: readonly { rows: readonly (RegExp | null)[]; prompt: number
 ];
 /**
  * the status row as drawn: the band's powerline cap (Nerd Font preset), the space omp pads a segment group with, or with
- * no left group the band's gauge rule up to the right group's cap (ascii `-…< `)
+ * no left group the band's gauge rule up to the right group's cap (ascii `-…< `); never text from a line's first character
  */
 const OMP_STATUS_ROW_RE = /^(?:[\ue0b0-\ue0d4] | +|─+|-+< )\S/u;
 
@@ -388,11 +419,31 @@ function ompAboveComposer(lines: string[], raw: string[]): number {
   return composer === null ? findLastIndex(lines, (line) => line !== "") : composer.top - 1;
 }
 
+/**
+ * `lines` are the rows trimmed, `raw` the same rows untrimmed (the status row is read by its
+ * leading space).
+ */
 export function ompComposerPromptRow(lines: string[], raw: string[]): number | null {
   return ompEmptyComposer(lines, raw)?.prompt ?? null;
 }
 const OMP_CHOICE_RE = /^(?:([❯\uf054>])|  )\s?(\S.*)$/u;
+
+const OMP_BASH_TITLE = "Allow tool: bash";
+const OMP_COMMAND_PREFIX = "Command: ";
+
+/**
+ * The shell command a bash approval's details show, for the approval hub to bind a held request to (server/approvals/
+ * omp.ts): its `Command: ` row and every row under it (the expanded details wrap a long command and keep a multi-line
+ * one's lines), after the prompt's `Reason:` row when it has one. Null where omp cut it (`cut`: the compact summary of
+ * a long or multi-line command, or details that scroll); undefined for details with no command row.
+ */
+function ompBashCommand(details: string[], cut: boolean): string | null | undefined {
+  const at = details.findIndex((row) => row.startsWith(OMP_COMMAND_PREFIX));
+  if (at < 0) return undefined;
+  return cut ? null : [details[at]!.slice(OMP_COMMAND_PREFIX.length), ...details.slice(at + 1)].join("\n");
+}
 const OMP_REMEMBER_RE = /^(?:[☐☑\uf096\uf14a]|\[[ x]\]) Remember across sessions$/u;
+/** the toggle ticked: the grants under it are kept across sessions */
 const OMP_REMEMBERED_RE = /^(?:[☑\uf14a]|\[x\]) /u;
 
 const OMP_KEY_MODIFIERS: readonly [RegExp, string][] = [
@@ -408,6 +459,7 @@ const OMP_KEY_NAMES: Readonly<Record<string, string>> = {
   "↑": KEY.up, Up: KEY.up, "↓": KEY.down, Down: KEY.down,
 };
 
+/** One key of omp's hint as herdr's key name (`Ctrl+Q` → `ctrl+q`); null for one we cannot send as drawn (⌘, a word omp spells out). */
 function ompHintKey(drawn: string): string | null {
   const modifiers: string[] = [];
   let rest = drawn;
@@ -422,7 +474,8 @@ function ompHintKey(drawn: string): string | null {
 /**
  * The keys sent as drawn: Esc and a Ctrl+letter arrive the same on every terminal. Without extended key reporting a
  * terminal sends Ctrl+J and Ctrl+M as LF and CR, and Ctrl+Enter and Shift+Enter as CR, which omp reads as Enter (the
- * highlighted row on 18.13's menu, or an approve key bound to Enter); Ctrl+H and Ctrl+I as Backspace and Tab.
+ * highlighted row on 18.13's menu, or an approve key bound to Enter); Ctrl+H and Ctrl+I as Backspace and Tab. A choice
+ * whose key is none of these is answered by moving to its row, or the terminal answers it.
  */
 const OMP_DIRECT_KEY_RE = /^(?:esc|ctrl\+[a-gkln-z])$/;
 const OMP_SELECT_KEY_RE = /^(?:enter|space|ctrl\+[a-gkln-z])$/;
@@ -438,6 +491,8 @@ type OmpChoice = { label: string; cursor: boolean; toggle: boolean };
  * 18.13's choices, the last rows over the hint, read up from Deny: Approve, or the one row that
  * approves for the session and Approve over it; with grants, "Approve Once" (a grant may itself
  * read "Approve"), the grants over it, and the toggle that keeps them across sessions on top.
+ * `first` is the first row of the menu (the rows above it are the call's details), `approve` the choice
+ * that approves this call alone.
  */
 function ompChoices(rows: string[]): { choices: OmpChoice[]; first: number; approve: number } | null {
   const choices: OmpChoice[] = [];
@@ -468,6 +523,7 @@ function parseOmpApprovalPanel(screen: string): ParsedPrompt | null {
   if (full?.[5] !== undefined || (!full && !clipped)) return null;
   const [, chooseKeys, selectDrawn, approveDrawn] = (full ?? clipped)!;
   const approveKeys = ompHintKeys(approveDrawn!);
+  // with the hint cut, the deny key is not shown: Deny is answered by moving to it
   const denyKey = full ? ompHintKey(full[4]!) : null;
   if (!approveKeys || (full && (!denyKey || approveKeys.includes(denyKey)))) return null;
   const plainKey = approveKeys.find((key) => key !== KEY.escape && OMP_DIRECT_KEY_RE.test(key));
@@ -480,6 +536,7 @@ function parseOmpApprovalPanel(screen: string): ParsedPrompt | null {
   const card = { kind: "approval" as const, title: title[1]!, question: title[1]!, multi_select: false, custom_option_index: null };
   const internal = { responder: "omp-approval" as const, checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: null };
   if (chooseKeys === undefined) {
+    // 18.10 has no rows to move to: both answers need a key that arrives as drawn
     if (rows.length === 0 || !plainKey || !directDeny || rows.some((row) => OMP_DETAIL_CUT_RE.test(row))) return null;
     return finishPrompt("omp", {
       ...card, body: rows.join("\n").trim() || null,
@@ -494,10 +551,15 @@ function parseOmpApprovalPanel(screen: string): ParsedPrompt | null {
   const menu = ompChoices(rows);
   if (!menu) return null;
   const { choices, first, approve } = menu;
+  // a grant taken while the toggle is ticked outlives the session: the terminal answers that, where the box shows
   if (choices.some((choice) => choice.toggle && OMP_REMEMBERED_RE.test(choice.label))) return null;
-  if ((clipped && first >= OMP_APPROVAL_DETAIL_ROWS) || rows.slice(0, first).some((row) => OMP_DETAIL_CUT_RE.test(row))) return null;
+  const cut = (clipped !== null && first >= OMP_APPROVAL_DETAIL_ROWS) || rows.slice(0, first).some((row) => OMP_DETAIL_CUT_RE.test(row));
+  const command = title[1] === OMP_BASH_TITLE ? ompBashCommand(rows.slice(0, first), cut) : undefined;
+  if (cut && command === undefined) return null;
   const cursor = choices.findIndex((choice) => choice.cursor);
-  const offered = choices.flatMap((choice, row) => choice.toggle ? [] : [{ ...choice, row }]);
+  // the toggle answers nothing: it changes which grants the rows under it record. A held-only card answers through the
+  // hub alone, which takes Approve and Deny: a row it would send as keys could land on another call's dialog
+  const offered = choices.flatMap((choice, row) => choice.toggle || (cut && row !== approve && row !== choices.length - 1) ? [] : [{ ...choice, row }]);
   return finishPrompt("omp", {
     ...card, body: rows.slice(0, first).join("\n").trim() || null,
     options: offered.map((choice) => ({ label: choice.label, description: null })),
@@ -506,6 +568,8 @@ function parseOmpApprovalPanel(screen: string): ParsedPrompt | null {
     optionSteps: offered.map((choice) => choice.row === approve && plainKey ? keySteps([plainKey])
       : directDeny && choice.row === choices.length - 1 ? keySteps([directDeny])
       : keySteps([...navigationKeys(choice.row - cursor), selectKey])),
+    ...(command === undefined ? {} : { approvalCommand: command }),
+    ...(cut ? { approvalHeldOnly: true as const } : {}),
   });
 }
 
@@ -559,6 +623,10 @@ function parseOmpApproval(screen: string): ParsedPrompt | null {
  * scrollbar after every row. `●` marks the model the session runs; a rule sets recent and role
  * models apart, and ↑/↓ step over it. A model whose window the conversation already overflows
  * says `⦸ context>131k`: omp compacts the conversation with the model in use before it switches.
+ * Typing in the box filters the list. A leading `@` lists quick roles and Alt+P lists models for
+ * task subagents: both change the status line or the title, and are not read here. omp's
+ * `/model` opens its Models hub instead, which assigns roles, the default one saved for later
+ * sessions, so no card answers it.
  */
 const OMP_MODEL_TOP_RE = /^╭─ Switch Model ─/;
 const OMP_MODEL_STATUS_RE = /^Session-only switch\b/;
@@ -570,6 +638,7 @@ const OMP_MODEL_SCROLLBAR_RE = /[█│]$/;
 const OMP_MODEL_OVER_CONTEXT_RE = /⦸ context>(\S+)/;
 
 function ompModelPicker(lines: string[]): { rows: { label: string; cursor: boolean; current: boolean; overContext: string | null }[]; more: boolean } | null {
+  // the bottom border is the screen's last line: the picker is drawn over everything else
   let bottom = lines.length - 1;
   while (bottom >= 0 && !lines[bottom]!.trim()) bottom -= 1;
   if (bottom < 5 || !OMP_MODEL_BOTTOM_RE.test(lines[bottom]!.trim())) return null;
@@ -623,7 +692,8 @@ const OMP_HANDOFF_RE = /^\S\s+(Generating handoff…)\s+\((?:⎋|esc|escape)\s+t
 
 /**
  * omp's /handoff (18.8.7, same in 18.12.3) shows no dialog: one status line while it writes the
- * handoff document, which Esc cancels, right above omp's status bar and editor.
+ * handoff document, which Esc cancels. Read only while that line is the live status, right above
+ * omp's status bar and editor; a line left in the transcript above them is history.
  */
 function parseOmpHandoff(screen: string): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/).map((line) => line.trim());

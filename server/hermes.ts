@@ -2,11 +2,15 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 
 import type { ConversationMetadata, ConversationPart, ConversationTurn, HerdrPane } from "../shared/protocol.ts";
-import { herdrRpc } from "./herdr/client.ts";
+import { agentGet, paneProcessInfo } from "./herdr/client.ts";
+import { envEntry, psEnvironmentLine, readLinuxEnviron } from "./process-env.ts";
 import { answerVersion, ConversationNotStarted, ConversationUnavailable, type ConversationPage, HistoryChanged, type RecognizedConversation, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
+import type { HermesMessage } from "./dialogs/hermes-record.ts";
+import { readSqliteSnapshot, SnapshotUnavailable } from "./sqlite-snapshot.ts";
+import { FileBusyError, fileTask } from "./file-pool.ts";
 import { toolSummary } from "./transcript-records.ts";
 import { TOOL_OUTPUT_CHARS, trimOutput } from "./tool-output.ts";
 import { darwinTerminal } from "./darwin-process.ts";
@@ -14,6 +18,7 @@ import { processStartedAt } from "./process-start.ts";
 import { hermesSkillPrompt } from "./skill-activity.ts";
 import { hermesHome } from "./hermes-home.ts";
 import { userHome } from "./user-home.ts";
+import { isHermesInstalledLauncher } from "./agent-identity.ts";
 
 export interface HermesMessageRow {
   id: number;
@@ -71,6 +76,7 @@ function parseToolInput(rawArgs: unknown): { inputStr: string; inputObj: Record<
   return { inputStr: String(rawArgs), inputObj: {} };
 }
 
+/** Uses HERMES_HOME when set, otherwise Hermes's own default for this platform (hermes-home.ts). */
 export function defaultHermesHome(home = userHome(), env: Record<string, string | undefined> = process.env, platform: NodeJS.Platform = process.platform): string {
   return hermesHome(home, env, platform);
 }
@@ -82,10 +88,12 @@ export function hermesDbPath(hermesHome = defaultHermesHome()): string {
 const processHomes = new Map<string, { home: string | null; at: number }>();
 const PROCESS_HOME_TTL_MS = 30_000;
 
+/** The HERMES_HOME in one macOS `ps -E -o command=` line. */
 export function hermesHomeInPsLine(text: string): string | null {
   return [...text.matchAll(/(?:^|\s)HERMES_HOME=(.*?)(?=\s+[A-Za-z_][A-Za-z0-9_]*=|\s*$)/g)].at(-1)?.[1] || null;
 }
 
+/** The HERMES_HOME a process started with, cached because a process's environment does not change. */
 export async function processHermesHome(pid: number, argv: readonly string[] = []): Promise<string | null> {
   const key = `${pid}\0${argv.join("\0")}`;
   const known = processHomes.get(key);
@@ -93,15 +101,10 @@ export async function processHermesHome(pid: number, argv: readonly string[] = [
   let home: string | null = null;
   try {
     if (process.platform === "linux") {
-      home = (await readFile(`/proc/${pid}/environ`, "utf8")).split("\0").find((entry) => entry.startsWith("HERMES_HOME="))?.slice(12) || null;
+      const entries = await readLinuxEnviron(pid);
+      home = entries ? envEntry(entries, "HERMES_HOME") : null;
     } else if (process.platform === "darwin") {
-      const child = Bun.spawn(["/bin/ps", "-E", "-ww", "-p", String(pid), "-o", "command="], { stdout: "pipe", stderr: "ignore" });
-      const timer = setTimeout(() => child.kill(), 3000);
-      try {
-        const text = await new Response(child.stdout).text();
-        await child.exited;
-        home = hermesHomeInPsLine(text);
-      } finally { clearTimeout(timer); }
+      home = hermesHomeInPsLine((await psEnvironmentLine(pid)) ?? "");
     }
     if (home === null || !isAbsolute(home) || !(await stat(home)).isDirectory()) home = null;
   } catch { home = null; }
@@ -111,9 +114,11 @@ export async function processHermesHome(pid: number, argv: readonly string[] = [
   return home;
 }
 
+/** Recognizes the Hermes executable, including its installed Python launcher and entry script. */
 export function isHermesProcess(entry: { name?: string | null; argv0?: string | null; argv?: readonly string[] | null }): boolean {
   const binary = (entry.name ?? entry.argv0 ?? entry.argv?.[0] ?? "").toLowerCase();
   if (binary === "hermes" || binary === "hermes.exe" || binary.endsWith("/hermes") || binary.endsWith("\\hermes.exe")) return true;
+  if (isHermesInstalledLauncher(entry.argv ?? [])) return true;
   if (entry.argv && entry.argv.length > 1) {
     const first = (entry.argv[0] ?? "").toLowerCase();
     if (first.includes("python") || first.endsWith("py")) {
@@ -126,10 +131,12 @@ export function isHermesProcess(entry: { name?: string | null; argv0?: string | 
   return false;
 }
 
+/** Resolves process terminal identity to Hermes breadcrumb filename convention. */
 export function hermesTerminalId(pid: number): string | null {
   return hermesTerminal(pid)?.id ?? null;
 }
 
+/** hermesTerminalId with the start of the process it names; on macOS both come from one kernel record. */
 function hermesTerminal(pid: number): { id: string; startedAt: number | null } | null {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   try {
@@ -139,6 +146,7 @@ function hermesTerminal(pid: number): { id: string; startedAt: number | null } |
       return { id: `tty-${tty.slice(1).replaceAll("/", "-")}`, startedAt: processStartedAt(pid) };
     }
     if (process.platform === "darwin") {
+      // the kernel's record, as `ps -o tty=` read it, without a child process that holds the event loop
       const record = darwinTerminal(pid);
       if (!record) return null;
       const device = record.tty.startsWith("ttys") ? `dev-${record.tty}` : record.tty;
@@ -148,6 +156,7 @@ function hermesTerminal(pid: number): { id: string; startedAt: number | null } |
   return null;
 }
 
+/** Reads a breadcrumb written during this Hermes process's lifetime for the same canonical cwd. */
 export function hermesBreadcrumbSession(home: string, terminalId: string, cwd: string, startedAt: number): string | null {
   if (!Number.isFinite(startedAt)) return null;
   try {
@@ -175,21 +184,16 @@ export async function hermesTranscriptForPane(
     : null;
 
   if (sessionId === null) {
-    const info = await herdrRpc<{ agent: { agent_session?: { value?: unknown } } }>(
-      "agent.get",
-      { target: paneId },
-    ).catch(() => null);
-    if (typeof info?.agent?.agent_session?.value === "string" && info.agent.agent_session.value.length > 0) {
-      sessionId = info.agent.agent_session.value;
+    const agent = await agentGet(paneId).catch(() => null);
+    if (typeof agent?.agent_session?.value === "string" && agent.agent_session.value.length > 0) {
+      sessionId = agent.agent_session.value;
     }
   }
 
-  let hermesProcess: { pid: number; name?: string; argv0?: string; argv?: string[] } | undefined;
+  let hermesProcess: { pid: number; name?: string | null; argv0?: string | null; argv?: string[] | null } | undefined;
   if (configuredHome === undefined || sessionId === null) {
-    const processInfo = await herdrRpc<{
-      process_info?: { foreground_processes?: { pid: number; name?: string; argv0?: string; argv?: string[] }[] };
-    }>("pane.process_info", { pane_id: paneId }).catch(() => null);
-    hermesProcess = (processInfo?.process_info?.foreground_processes ?? []).find(isHermesProcess);
+    const processInfo = await paneProcessInfo(paneId).catch(() => undefined);
+    hermesProcess = (processInfo?.foreground_processes ?? []).find(isHermesProcess);
   }
 
   const processHome = configuredHome === undefined && hermesProcess !== undefined
@@ -290,6 +294,7 @@ export function hermesToolSummary(name: string, input: Record<string, unknown>):
   return toolSummary(name, input);
 }
 
+/** Reads a bounded tool result by call ID from the selected session and transcript generation only. */
 export function hermesToolOutput(sessionId: string, dbPath: string, ref: string, maxChars: number): string | null {
   const parsed = parseHermesOutputRef(ref);
   if (!parsed) return null;
@@ -494,6 +499,30 @@ function hermesMetadata(session: { model?: string | null; model_config?: string 
   return { model: session?.model ?? null, reasoning_effort: reasoningEffort };
 }
 
+/** How many of a session's last rows say which call waits: one turn's calls and the prompt that started it. */
+const HERMES_PENDING_ROWS = 64;
+
+/** The most of state.db (with its WAL) copied to read the call that waits; a bigger one leaves the screen's card. */
+export const HERMES_PENDING_BYTES = 64 * 1024 * 1024;
+
+/**
+ * A session's last rows, oldest first, for the call that waits on the user (dialogs/hermes-record.ts), read from a
+ * private copy of state.db (sqlite-snapshot.ts): Hermes writes it as it runs, and an open of the live file could write
+ * beside it. Each row's `tool_calls` as long as it is: a cut one would read as no call.
+ */
+export function hermesPendingMessages(dbPath: string, sessionId: string): HermesMessage[] {
+  return readSqliteSnapshot(dbPath, (db) => db.query<HermesMessage, [string, number]>(
+    "SELECT role, tool_calls, tool_call_id FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) ORDER BY id DESC LIMIT ?",
+  ).all(sessionId, HERMES_PENDING_ROWS).reverse(), null, HERMES_PENDING_BYTES, undefined, "always");
+}
+
+/** `hermesPendingMessages` on a file thread: copying state.db must not hold the server's thread. */
+export async function hermesPendingMessagesOffThread(dbPath: string, sessionId: string): Promise<HermesMessage[]> {
+  try { return await fileTask<HermesMessage[]>({ op: "hermes-pending", path: dbPath, session: sessionId }); }
+  catch (error) { throw error instanceof FileBusyError ? error : new SnapshotUnavailable(); }
+}
+
+/** Page contents name the cache version so WAL edits invalidate unchanged row counts. */
 export function hermesConversationPage(
   sessionId: string,
   dbPath: string,
@@ -607,11 +636,18 @@ const IMAGE_HINT = /^\[Image attached at: ([^\n\]]+)\]$/;
 /** The stand-in Hermes's text-only store projection leaves for each attached picture. */
 const SCREENSHOT_PLACEHOLDER = "[screenshot]";
 
+/** A path as a Markdown destination the file API reads back exactly: each segment percent-encoded, brackets and parentheses too. */
 const markdownPath = (path: string): string => path.split("/").map((segment) => encodeURIComponent(segment).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)).join("/");
 
 /**
- * Hermes stores a prompt with pictures as `caption\n\n[Image attached at: <path>]`, one line per picture,
- * then the `[screenshot]` its store writes for each picture it attached (tui_gateway/session_history.py).
+ * A prompt whose stored text ends in Hermes's own picture hints (`caption\n\n[Image attached at: <path>]`, one
+ * line per picture, then the `[screenshot]` Hermes's store writes for each picture it attached), split into
+ * its caption and a Markdown image of each local file, as Hermes's own history reads the block
+ * (tui_gateway/session_history.py), though a picture sent with Hermes's default caption is shown too: the chat shows each through the file API as any local Markdown image
+ * (src/lib/markdownImages.ts), or keeps the link. Null, and the text left as written, unless every hint
+ * names an absolute POSIX path and each has its `[screenshot]` (words alone attach nothing). The images go
+ * before the words, as the chat shows other agents' prompt pictures, so nothing in the words (an open code
+ * fence) can take them in.
  */
 export function hermesPromptPictures(text: string): { caption: string; images: string } | null {
   const split = text.indexOf("\n\n[Image attached at: ");
@@ -636,6 +672,7 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
 
       if (row.role === "user") {
         const text = typeof row.content === "string" ? row.content : "";
+        // the pictures come off the stored text first: a skill invocation's parser keeps only its request
         const pictures = hermesPromptPictures(text);
         const invocation = hermesSkillPrompt(pictures?.caption ?? text);
         turns.push({

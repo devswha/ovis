@@ -8,7 +8,7 @@ import type { BridgeDescriptor } from "./bridge.ts";
 import type { CompletionTracker } from "./completion.ts";
 import { MachineManager } from "./machines.ts";
 import type { PushService } from "./push.ts";
-import { forwardSaysReady, refusalHint, SshConnection, sshClient, sshVerboseLine, sweepSshDirs } from "./ssh.ts";
+import { forwardSaysReady, refusalHint, SshConnection, sshClient, sshVerboseLine, stdioSocketForward, sweepSshDirs } from "./ssh.ts";
 import { posixHost, type HostInspection } from "./remote-host.ts";
 
 // The direct mode Windows uses (its OpenSSH has no connection sharing), run here against a
@@ -84,6 +84,7 @@ esac
 echo ran
 `;
 
+// CI's runner image has no OpenSSH, so the real one cannot be relied on.
 const FAKE_SSH_KEYGEN = String.raw`#!/bin/sh
 for file; do :; done
 exec "$FAKE_BUN" -e '
@@ -140,6 +141,8 @@ describe.skipIf(process.platform === "win32")("SSH without connection sharing", 
     expect(ssh.connected()).toBe(true);
   });
 
+  // a PC's discovery answer is read only up to its cap: past it the command is stopped, and nothing it said is taken, so a
+  // PC cannot pad a list nor stream until the command's timeout
   it.each(["whitespace", "stdout", "stderr"])("stops reading a PC's herdr discovery past its cap: %s", async (flood) => {
     const { ssh, ask } = fixture({ FAKE_FLOOD: flood });
     await ssh.start(ask("unused"));
@@ -152,6 +155,7 @@ describe.skipIf(process.platform === "win32")("SSH without connection sharing", 
     await ssh.start(ask("unused"));
     expect(await ssh.run("true")).toBe("ran\n");
     expect(calls().some((line) => line.endsWith("sh -c 'true'"))).toBe(true);
+    // the sftp beside it, told to start that ssh rather than its own build's
     await ssh.upload(join(root, "calls"), String.raw`C:\Users\pc\bundle`);
     expect(calls().some((line) => line.startsWith(`sftp -S ${join(root, "bin", "ssh")} `))).toBe(true);
   });
@@ -286,6 +290,7 @@ describe.skipIf(process.platform === "win32")("SSH without connection sharing", 
       await expect(forwarding).rejects.toThrow("Connection cancelled");
     }, 5_000);
 
+    // a ProxyJump's ssh enters its own session before this ssh has even authenticated
     for (const [how, extra] of [["", {}], [", behind a ProxyJump", { FAKE_JUMP: "1" }], [", with LogVerbose", { FAKE_LOG_VERBOSE: "1" }]] as const) it(`never hands the bridge token to a process that took the port before ssh bound it${how}`, async () => {
       const { root, ssh, ask } = fixture({ ...extra });
       await ssh.start(ask("unused"));
@@ -352,6 +357,18 @@ describe("sweeping connection folders an earlier server left", () => {
   });
 });
 
+describe("which ssh reaches a Unix socket with -W", () => {
+  it("is OpenSSH 9.4 or newer, Windows' own build and Git for Windows' alike", () => {
+    expect(stdioSocketForward("OpenSSH_for_Windows_9.5p2, LibreSSL 3.8.2")).toBe(true);
+    expect(stdioSocketForward("OpenSSH_9.9p1, OpenSSL 3.2.3 3 Sep 2024")).toBe(true);
+    expect(stdioSocketForward("OpenSSH_10.2p1 Ubuntu-2ubuntu3.8, OpenSSL 3.5.5 27 Jan 2026")).toBe(true);
+    expect(stdioSocketForward("OpenSSH_9.4p1, OpenSSL 3.1.2")).toBe(true);
+    expect(stdioSocketForward("OpenSSH_9.2p1 Debian-2+deb12u3, OpenSSL 3.0.15 3 Sep 2024")).toBe(false);
+    expect(stdioSocketForward("OpenSSH_for_Windows_8.1p1, LibreSSL 3.0.2")).toBe(false);
+    expect(stdioSocketForward("ssh: not found")).toBe(false);
+  });
+});
+
 describe("which ssh says a forward is bound", () => {
   // Windows' own OpenSSH writes no -v line to a pipe: forward() must not wait for one from it, or every
   // Windows connect without Git for Windows times out after 25 s
@@ -363,6 +380,7 @@ describe("which ssh says a forward is bound", () => {
     expect(forwardSaysReady({}, "darwin")).toBe(true);
   });
 
+  // a failed forward's error is ssh's own words: the lines -v adds, prefixed or not, stay out of it
   it("keeps ssh's own words and drops what -v adds", () => {
     const stderr = [
       "OpenSSH_10.0p2, OpenSSL 3.5.1 1 Jul 2025",

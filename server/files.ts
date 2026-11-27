@@ -3,6 +3,7 @@ import { join, relative, sep } from "node:path";
 
 import type { MarkdownDocument, PaneDocuments } from "../shared/files.ts";
 import { fileTask } from "./file-pool.ts";
+import { gitEnvironment } from "./herdr-core/worktrees.ts";
 
 const CACHE_MS = 5_000;
 const MAX_ENTRIES = 5_000;
@@ -13,6 +14,7 @@ const SKIP: Record<string, true> = { ".git": true, node_modules: true, dist: tru
 const cache = new Map<string, { expires: number; files: string[] }>();
 
 export const GIT_LIST_MAX_BYTES = 16 * 1024 * 1024;
+/** How long one git listing may run, including a process it left holding its output. */
 export const GIT_LIST_DEADLINE_MS = 3_000;
 
 interface GitListOptions {
@@ -29,20 +31,12 @@ export function setGitListOptions(options: Partial<GitListOptions> = {}): void {
 }
 
 /** The same policy as `repo-diff.ts`: only read the repository, run no hook or helper, never prompt. */
-function gitEnvironment(): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [name, value] of Object.entries(process.env)) {
-    if (value === undefined || name === "GIT_DIR" || name === "GIT_WORK_TREE" || name === "GIT_INDEX_FILE" || name === "GIT_COMMON_DIR" || name === "GIT_EXTERNAL_DIFF" || name === "GIT_PAGER") continue;
-    env[name] = value;
-  }
-  return { ...env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" };
-}
-
 function gitListArgv(cwd: string): string[] {
   // an empty core.fsmonitor turns the hook off in every git: before 2.36, `false` names a program to run
   return [gitList.git, "--no-pager", "--no-optional-locks", "--literal-pathspecs", "-c", "core.fsmonitor=", "-C", cwd, "ls-files", "-z", "-co", "--exclude-standard"];
 }
 
+/** Split only a listing read whole: one whose last name lacks its NUL was cut short, so none of it is used. */
 function listedNames(output: Uint8Array): string[] | null {
   if (output.byteLength > 0 && output[output.byteLength - 1] !== 0) return null;
   return Buffer.from(output.buffer, output.byteOffset, output.byteLength).toString("utf8").split("\0").filter(Boolean);
@@ -87,6 +81,9 @@ async function gitFiles(cwd: string, limit = MAX_GIT_ENTRIES): Promise<string[] 
   }
 }
 
+/**
+ * Breadth first, each folder taking at most its share, so one huge folder cannot use up the walk.
+ */
 export function walkFiles(cwd: string): string[] {
   return walk(cwd).files;
 }

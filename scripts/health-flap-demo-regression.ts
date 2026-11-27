@@ -1,5 +1,8 @@
 /**
- * HEALTH_FLAP_RESULTS=<dir> keeps each scenario's record there.
+ * A PC known to have no terminal attach (a Windows herdr) keeps its chat lens and its "soon" mark
+ * through failed reads, and no failed read opens an attach. All files and HTTP traffic stay in this
+ * disposable, loopback-only app; no herdr session is opened. HEALTH_FLAP_RESULTS=<dir> keeps each
+ * scenario's record there.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -9,6 +12,7 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo as serveDemoFiles } from "./demo-server.ts";
 
 type Outcome = "ok" | "error" | "network";
 interface Frame { type: string; mode?: string; pane_id?: string }
@@ -103,6 +107,7 @@ export function installHealthFlap(): void {
     const send = socket.send.bind(socket);
     socket.send = (raw: string) => {
       const frame = JSON.parse(String(raw)) as Frame;
+      // an observer: the connection asks to watch only, as a second browser on a held pane does
       const sent = observe && frame.type === "role" ? { ...frame, mode: "observe" } : frame;
       if (/attach|watch|role|take|input|keys|submit|resize/.test(sent.type)) flap.sent.push({ type: sent.type, mode: sent.mode, pane_id: sent.pane_id });
       send(sent === frame ? raw : JSON.stringify(sent));
@@ -172,17 +177,7 @@ export async function serveDemo(): Promise<{ url: string; stop(): Promise<void>;
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n<script>(${installHealthFlap.toString()})()</script>\n<script type="module"`));
   const prefix = "/herdr-web-ui/demo/app/";
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemoFiles(app, { prefix });
   return { url: `http://127.0.0.1:${server.port}${prefix}`, dir: app, async stop() { await server.stop(true); rmSync(app, { recursive: true, force: true }); } };
 }
 
