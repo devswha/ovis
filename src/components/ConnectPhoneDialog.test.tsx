@@ -1484,7 +1484,9 @@ describe("the relay tab's QR code behind a press", () => {
     Object.defineProperty(page.window.navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { copied.push(value); } } });
     const url = signInLink(ONLINE.app, SERVER_ID, null);
     pcAccount = ACCOUNT_ID;
-    for (const options of [{ pcAdd: true, joinBySignIn: true, provider: "github" }, { signedIn: true, joinBySignIn: true }] as const) {
+    // the second is the tab that also pairs from here (beside its six digits), the third the QR code alone
+    for (const options of [{ pcAdd: true, joinBySignIn: true, provider: "github" }, { pcAdd: true, joinBySignIn: true, provider: "github", addsOverSsh: true }, { signedIn: true, joinBySignIn: true }] as const) {
+      copied.length = 0;
       await mount(options);
       const line = all('[data-testid="connect-pc-address"]', section());
       expect(line.map((node) => text(node))).toEqual([`This PC's address${url}`]);
@@ -1492,7 +1494,7 @@ describe("the relay tab's QR code behind a press", () => {
       expect(copy.map((node) => node.getAttribute("aria-label"))).toEqual(["Copy address"]);
       await act(async () => { copy[0]!.click(); });
       await flush();
-      expect(copied.at(-1)).toBe(url);
+      expect(copied).toEqual([url]);
       expect(minted()).toEqual([]);
       await page.render(null);
     }
