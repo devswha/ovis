@@ -22,6 +22,7 @@ import { directoryKey, withoutVerbatimPrefix } from "./codex.ts";
 import { darwinStartTime, sysctlCall } from "./darwin-process.ts";
 import { recentProcessTable } from "./gjc-runtime.ts";
 import { processAlive, processStartUpperBoundAsync } from "./process-start.ts";
+import { psEnvironmentLine } from "./process-env.ts";
 import { jobProcessesBelow, type JobProcess } from "./foreground-job.ts";
 import { descendantProcesses, type ProcessRow } from "./windows-processes.ts";
 import { userHome } from "./user-home.ts";
@@ -336,13 +337,7 @@ async function readClaudeSource(pid: number, home: string, platform: string, tab
     if (platform === "darwin") {
       const environ = darwinProcess.environment(pid);
       const read = environ === null ? unreadable : await environSource(environ);
-      const child = Bun.spawn(["/bin/ps", "-E", "-ww", "-p", String(pid), "-o", "command="], { stdout: "pipe", stderr: "ignore" });
-      const timer = setTimeout(() => child.kill(), 3000);
-      let text: string;
-      try {
-        text = await new Response(child.stdout).text();
-        await child.exited;
-      } finally { clearTimeout(timer); }
+      const text = (await psEnvironmentLine(pid)) ?? "";
       return { ...read, legacy: await namedDirectory(configDirInPsLine(text)) };
     }
     return unreadable;
@@ -802,6 +797,23 @@ export async function claudeProcessSession(
   table: () => Promise<ProcessRow[]> = recentProcessTable,
   unreadable: "none" | "throw" = "none",
 ): Promise<string | null> {
+  return (await claudeProcessRecord(home, pid, configDir, platform, table, unreadable))?.sessionId ?? null;
+}
+
+/**
+ * What a Claude process's PID record says of it (claudeProcessSession): its session, and what it waits on, where it
+ * says so. Claude Code 2.1.330 writes `status` (idle, busy or waiting) and, while waiting, `waitingFor`: `permission
+ * prompt` for an approval, `input needed` for a question, `dialog open` for any other dialog (its rewind list, `/model`,
+ * `/add-dir`'s confirmation), the same as `claude agents --json` reads from it (measured in an isolated config).
+ */
+async function claudeProcessRecord(
+  home: string,
+  pid: number,
+  configDir = join(home, ".claude"),
+  platform: string = process.platform,
+  table: () => Promise<ProcessRow[]> = recentProcessTable,
+  unreadable: "none" | "throw" = "none",
+): Promise<{ sessionId: string; waitingFor: string | null } | null> {
   if ((platform !== "linux" && platform !== "darwin" && platform !== "win32") || !Number.isSafeInteger(pid) || pid <= 0) return null;
   try {
     const path = join(configDir, "sessions", `${pid}.json`);
@@ -829,7 +841,8 @@ export async function claudeProcessSession(
       const started = fileTimeMs(record.procStart);
       if (started === null || (await table()).find((row) => row.pid === pid)?.started !== started) return null;
     } else if (await darwinProcessStart(pid) !== record.procStart.replace(/\s+/g, " ").trim()) return null;
-    return record.sessionId;
+    const waiting = "status" in record && record.status === "waiting" && "waitingFor" in record && typeof record.waitingFor === "string" ? record.waitingFor : null;
+    return { sessionId: record.sessionId, waitingFor: waiting };
   } catch (error) {
     if (error instanceof UnreadableClaudeRecord) throw error;
     // A closed process, absent/older native store or a torn write gives no identity.
@@ -861,6 +874,26 @@ async function readSmallFile(path: string, max: number): Promise<string | null> 
       if (length === bytes.length) return null;
     }
     return bytes.subarray(0, length).toString("utf8");
+  } finally { await file.close(); }
+}
+
+/** The last `max` bytes of a Claude record, read as readSmallFile reads one. */
+async function readClaudeFileTail(path: string, max: number): Promise<string> {
+  if (!await ownedClaudeFile(path)) throw Object.assign(new Error("Unverified Claude record"), { code: "EACCES" });
+  const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+  try {
+    const info = await file.stat();
+    if (!info.isFile() || !ownUid(info.uid)) throw Object.assign(new Error("Unverified Claude record"), { code: "EACCES" });
+    const start = Math.max(0, info.size - max);
+    const bytes = Buffer.alloc(info.size - start);
+    let length = 0;
+    while (length < bytes.length) {
+      const { bytesRead } = await file.read(bytes, length, bytes.length - length, start + length);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    // from the file's start, its first line is whole: a blank line ahead keeps it a line the caller reads
+    return `${start === 0 ? "\n" : ""}${bytes.subarray(0, length).toString("utf8")}`;
   } finally { await file.close(); }
 }
 
@@ -1215,6 +1248,91 @@ export async function claudeForegroundSession(
     return await claudeProcessSession(home, only.pid, dir);
   } catch {
     // two stores claim the process, or one cannot be read: no session to pin
+    return null;
+  }
+}
+
+const HISTORY_TAIL_BYTES = 256 * 1024;
+const PASTE_CACHE_MAX_BYTES = 4 * 1024 * 1024;
+const TRANSCRIPT_TAIL_BYTES = 1024 * 1024;
+
+/**
+ * Whether Claude Code's input box, holding only `box`, one folded paste (`[Pasted text #2 +12 lines]`), is `sent`,
+ * the chat's own message, put back by Claude after the turn it began was stopped (#3563). The words of the box are
+ * no proof: anyone's paste of as many lines reads the same. Claude's own records are: the last prompt the pane's
+ * session wrote to `history.jsonl` is that one paste holding exactly `sent` (inline, or in `paste-cache/<hash>.txt`
+ * when long), and Claude puts a stopped prompt's paste back under the next number with the same line count, while
+ * any paste after it takes a later one (both measured on 2.1.330). A turn that went on is no stop: the paste a person
+ * makes after its answer takes that same next number, so the session's transcript must hold no reply after its last
+ * prompt, as when Claude dropped the turn before answering. Anything else, or a record that cannot be read: false.
+ */
+export async function claudeRestoredPaste(
+  processes: readonly { pid: number; name?: string | null; argv0?: string | null; argv?: readonly string[] | null; cwd?: string | null }[],
+  box: string, sent: string, home = userHome(),
+): Promise<boolean> {
+  const shown = /^\[Pastedtext#(\d+)((?:\+\d+lines?)?)\]$/.exec(box.replace(/^❯/, "").replace(/\s+/g, ""));
+  const claude = processes.filter((entry) => isClaudeProcess({ name: entry.name ?? undefined, argv0: entry.argv0 ?? undefined, argv: entry.argv ?? undefined }));
+  if (shown === null || claude.length !== 1) return false;
+  const number = Number(shown[1]) - 1;
+  const only = claude[0]!;
+  try {
+    const dir = await processClaudeConfigDir(only.pid, only.argv ?? [only.argv0 ?? only.name ?? ""], home) || defaultClaudeConfigDir(home);
+    const session = await claudeProcessSession(home, only.pid, dir);
+    if (session === null) return false;
+    const lines = (await readClaudeFileTail(join(dir, "history.jsonl"), HISTORY_TAIL_BYTES)).split("\n");
+    let last: Record<string, unknown> | undefined;
+    // the first line of the tail may be cut: it is never read as a prompt
+    for (let index = lines.length - 1; index > 0 && last === undefined; index--) {
+      try {
+        const entry: unknown = JSON.parse(lines[index]!);
+        if (entry !== null && typeof entry === "object" && "sessionId" in entry && entry.sessionId === session) last = entry as Record<string, unknown>;
+      } catch { /* a line being written, or no prompt */ }
+    }
+    if (typeof last?.display !== "string" || last.display.replace(/\s+/g, "") !== `[Pastedtext#${number}${shown[2]}]`) return false;
+    const pastes = last.pastedContents !== null && typeof last.pastedContents === "object" ? Object.values(last.pastedContents) : [];
+    const paste: unknown = pastes.length === 1 ? pastes[0] : null;
+    if (paste === null || typeof paste !== "object" || !("id" in paste) || paste.id !== number || !("type" in paste) || paste.type !== "text") return false;
+    const content = "content" in paste && typeof paste.content === "string" ? paste.content
+      : "contentHash" in paste && typeof paste.contentHash === "string" && /^[0-9a-f]{8,128}$/.test(paste.contentHash)
+        ? await readSmallFile(join(dir, "paste-cache", `${paste.contentHash}.txt`), PASTE_CACHE_MAX_BYTES) : null;
+    const lf = (text: string): string => text.replace(/\r\n?/g, "\n");
+    // Claude keeps a paste with each tab as four spaces
+    if (content === null || lf(content) !== lf(sent).replace(/\t/g, "    ")) return false;
+    const transcript = await claudeTranscriptFile(home, session, [only.cwd], dir);
+    if (transcript === null) return false;
+    const records = (await readClaudeFileTail(transcript, TRANSCRIPT_TAIL_BYTES)).split("\n");
+    for (let index = records.length - 1; index > 0; index--) {
+      let entry: unknown;
+      // a record being written may be the reply: only a blank line is passed over
+      try { entry = JSON.parse(records[index]!); } catch { if (records[index]!.trim() === "") continue; return false; }
+      if (entry === null || typeof entry !== "object" || !("type" in entry)) continue;
+      if (entry.type === "assistant") return false;
+      if (entry.type === "user" && "origin" in entry && entry.origin !== null && typeof entry.origin === "object" && "kind" in entry.origin && entry.origin.kind === "human") return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What the pane's one Claude process says in its PID record it waits on in its terminal (claudeProcessRecord), or null:
+ * none said, no single Claude process, a `claude attach` client (which keeps no record), or a record that cannot be
+ * trusted.
+ */
+export async function claudeForegroundWaiting(
+  processes: readonly { pid: number; name?: string | null; argv0?: string | null; argv?: readonly string[] | null }[],
+  home = userHome(),
+): Promise<string | null> {
+  const claude = processes.filter((entry) => isClaudeProcess({ name: entry.name ?? undefined, argv0: entry.argv0 ?? undefined, argv: entry.argv ?? undefined }));
+  if (claude.length !== 1) return null;
+  const only = claude[0]!;
+  try {
+    const dir = await processClaudeConfigDir(only.pid, only.argv ?? [only.argv0 ?? only.name ?? ""], home) || defaultClaudeConfigDir(home);
+    // as claudeForegroundSession tells them: `attach` behind options in a background session's own Claude is no client
+    if (await claudeAttachSession(dir, only.pid, only.argv) !== null) return null;
+    return (await claudeProcessRecord(home, only.pid, dir))?.waitingFor ?? null;
+  } catch {
     return null;
   }
 }
