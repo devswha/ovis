@@ -27,6 +27,7 @@
   "scripts/docked-file-link-demo-regression.ts": 1,
   "scripts/drawer-modal-regression.ts": 1,
   "scripts/droplet-demo-regression.ts": 1,
+  "scripts/file-text-size-demo-regression.ts": 1,
   "scripts/files-documents-demo-regression.ts": 1,
   "scripts/files-panel-demo-regression.ts": 1,
   "scripts/font-swap-demo-regression.ts": 1,

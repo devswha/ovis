@@ -80,13 +80,22 @@ describe("the shared browser context", () => {
 });
 
 describe("the fake clock", () => {
-  test.skipIf(noBrowser)("starts before the page's first navigation, and is refused under a loaded page", async () => {
+  test.skipIf(noBrowser)("starts before the page loads anything, and is refused under a loaded page", async () => {
     const context = await appContext(browser);
     opened.push(context);
     const page = await context.newPage();
     await installClock(page, { time: new Date("2001-02-03T04:05:06Z") });
     await page.goto(origin);
     expect(await page.evaluate(() => new Date().getUTCFullYear())).toBe(2001);
-    await expect(installClock(page)).rejects.toThrow("before the page's first navigation");
+    await expect(installClock(page)).rejects.toThrow("before the page loads anything");
+  });
+
+  test.skipIf(noBrowser)("is refused under a document set with setContent, whose address is still about:blank", async () => {
+    const context = await appContext(browser);
+    opened.push(context);
+    const page = await context.newPage();
+    await page.setContent("<script>window.started = setInterval(() => {}, 1000);</script>");
+    expect([page.url(), await page.evaluate(() => typeof (window as unknown as { started: unknown }).started)]).toEqual(["about:blank", "number"]);
+    await expect(installClock(page)).rejects.toThrow("before the page loads anything");
   });
 });

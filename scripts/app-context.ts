@@ -18,10 +18,12 @@ export function appContext(browser: Browser, overrides: BrowserContextOptions = 
 }
 
 /**
- * Starts Playwright's clock on a page that has loaded nothing yet. A clock that starts or moves under a loaded app
- * page lets that page's timers take the new time before the next navigation unloads it (#4795), so it is refused there.
+ * Starts Playwright's clock on a page that has loaded nothing yet: no navigation, and no setContent, which loads a
+ * document while the address stays about:blank. A clock that starts or moves under a loaded page lets that page's
+ * timers take the new time before the next navigation unloads it (#4795), so it is refused there.
  */
 export async function installClock(page: Page, options?: Parameters<Page["clock"]["install"]>[0]): Promise<void> {
-  assert.equal(page.url(), "about:blank", "installClock: start the clock before the page's first navigation, not under a loaded page");
+  const untouched = page.url() === "about:blank" && await page.evaluate(() => document.head.childNodes.length === 0 && document.body.childNodes.length === 0);
+  assert.ok(untouched, "installClock: start the clock before the page loads anything (a goto, a setContent), not under a loaded page");
   await page.clock.install(options);
 }
