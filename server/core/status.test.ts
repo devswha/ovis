@@ -12,6 +12,7 @@ import * as omo from "../omo.ts";
 import * as records from "../omo-records.ts";
 import * as service from "../opencode-service.ts";
 import * as agyStore from "../agy-store.ts";
+import * as grokStore from "../grok-store.ts";
 import * as processStart from "../process-start.ts";
 import { closeOpenCodeNative, openCodeNativeState, openCodePaneService, PANE_VERIFIED_MS, trackVerifiedOpenCodePanes } from "../opencode-native.ts";
 import type { StatusCollectorDeps } from "../collector.ts";
@@ -637,6 +638,31 @@ describe("the status hub's OpenCode subagents", () => {
     await h.snapshot();
     handlers.onStatus("w1:p1", "idle", "claude");
     expect(h.last().bg).toBe(false);
+  });
+});
+
+describe("the status hub's grok tasks", () => {
+  it("drops the tasks a Grok restarted on the same session left running in its file (#3488)", async () => {
+    const path = join(root, "grok-updates.jsonl");
+    const update = (offset: number, value: Record<string, unknown>) => line({ timestamp: (at + offset) / 1000, params: { update: value } });
+    writeFileSync(path, update(0, { sessionUpdate: "user_message_chunk", content: { type: "text", text: "watch CI" } })
+      + update(10_000, { sessionUpdate: "background_tasks", tasks: [{ task_id: "watch", status: "running", started_at: new Date(at + 10_000).toISOString() }] }));
+    const h = hub();
+    const session = spyOn(grokStore, "resolveGrokSession").mockResolvedValue({ path, pid: 1, started: "100" });
+    const stubs = [session, spyOn(processStart, "processStartUpperBoundAsync").mockImplementation(async (pid) => pid === 1 ? at - 1000 : at + 600_000)];
+    try {
+      const grok = { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", agent_status: "idle", agent: "grok", agent_session: { agent: "grok", kind: "id", source: "herdr:grok", value: "s1" } } as unknown as HerdrPane;
+      await h.status.taskAgents.refresh([grok]);
+      expect(h.status.taskAgents.countOf("w1:p1")).toBe(1);
+      session.mockResolvedValue({ path, pid: 2, started: "200" });
+      setSystemTime(Date.now() + 30_000);
+      await h.status.taskAgents.refresh([grok]);
+      expect(session).toHaveBeenCalledTimes(2);
+      expect(h.status.taskAgents.countOf("w1:p1")).toBe(0);
+    } finally {
+      setSystemTime();
+      for (const stub of stubs) stub.mockRestore();
+    }
   });
 });
 

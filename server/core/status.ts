@@ -32,7 +32,7 @@ import { openCodeServiceOptions, readOpenCodeService } from "../opencode-service
 import { processStartUpperBoundAsync } from "../process-start.ts";
 import type { DeviceStore } from "../devices.ts";
 import { createGjcStatus, gjcPanes, readOmoSnapshot, reconcileProviderStatus } from "../gjc-status.ts";
-import { resolveGrokStore } from "../grok-store.ts";
+import { resolveGrokSession } from "../grok-store.ts";
 import { createLettaStatus, lettaPanes, lettaTitleName, lettaTitleStatus } from "../letta-status.ts";
 import type { HerdrMachineProfile } from "../herdr-profiles.ts";
 import { paneGet, paneProcessInfo, sessionSnapshot } from "../herdr/client.ts";
@@ -353,11 +353,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   });
   const taskAgents = new AgentTaskStatus({
     resolve: async (pane) => {
-      if (pane.agent === "grok") {
-        const path = await resolveGrokStore(pane);
-        return path === null ? null : { path, started: null, owner: null };
-      }
-      const store = await resolveAgyStore(pane);
+      const store = pane.agent === "grok" ? await resolveGrokSession(pane) : await resolveAgyStore(pane);
       return store === null ? null : { path: store.path, started: await processStartUpperBoundAsync(store.pid), owner: `${store.pid}:${store.started}` };
     },
     onReset: (paneId) => { if (isTaskAgent(agentNow.get(paneId))) newLifetime(paneId, null); },
