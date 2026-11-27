@@ -126,14 +126,14 @@ export interface VersionRun {
 /** `path`: the PATH the flag runs with, instead of this server's own (not on Windows) */
 export type RunVersion = (executable: string, args: readonly string[], timeoutMs: number, path?: string, signal?: AbortSignal) => Promise<VersionRun>;
 
-/** Reads at most VERSION_OUTPUT_BYTES, and nothing more once `stop` settles: a process the timeout ended may have left a child holding the pipe. */
-async function readBounded(stream: ReadableStream<Uint8Array>, stop: Promise<void>): Promise<string> {
+/** Reads nothing more once `stop` settles: a process the timeout ended may have left a child holding the pipe. */
+async function readBounded(stream: ReadableStream<Uint8Array>, stop: Promise<void>, limit: number): Promise<string> {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
   const stopped = stop.then(() => ({ done: true as const, value: undefined }));
   try {
-    while (size < VERSION_OUTPUT_BYTES) {
+    while (size < limit) {
       const { done, value } = await Promise.race([reader.read(), stopped]);
       if (done) break;
       chunks.push(value);
@@ -143,7 +143,7 @@ async function readBounded(stream: ReadableStream<Uint8Array>, stop: Promise<voi
     // the rest is not wanted: a process that keeps printing must not hold this read open
     await reader.cancel().catch(() => undefined);
   }
-  return new TextDecoder().decode(Buffer.concat(chunks).subarray(0, VERSION_OUTPUT_BYTES));
+  return new TextDecoder().decode(Buffer.concat(chunks).subarray(0, limit));
 }
 
 /** Ends `pid` and every process it started: its process group off Windows, its process tree on Windows. */
@@ -170,10 +170,18 @@ export function versionSpawn(executable: string, args: readonly string[], platfo
  * At `timeoutMs` the whole group is killed and its output no longer read: a version flag that starts
  * a child holding stdout open (an npm shim, a launcher) would otherwise outlast the timeout.
  */
-export const runVersion: RunVersion = async (executable, args, timeoutMs, path, signal) => {
+export const runVersion: RunVersion = (executable, args, timeoutMs, path, signal) =>
+  captureAgentCommand(executable, args, { timeoutMs, path: process.platform === "win32" ? undefined : path, signal, stdoutBytes: VERSION_OUTPUT_BYTES });
+
+export async function captureAgentCommand(executable: string, args: readonly string[], { timeoutMs, path, signal, stdoutBytes }: {
+  timeoutMs: number;
+  path?: string | undefined;
+  signal?: AbortSignal | undefined;
+  stdoutBytes: number;
+}): Promise<VersionRun> {
   if (signal?.aborted) return { stdout: "", stderr: "", exitCode: null, timedOut: false };
   const { cmd, windowsVerbatimArguments } = versionSpawn(executable, args);
-  const env = path === undefined || process.platform === "win32" ? undefined : { ...process.env, PATH: path };
+  const env = path === undefined ? undefined : { ...process.env, PATH: path };
   const child = Bun.spawn(cmd, { stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: process.platform !== "win32", windowsVerbatimArguments, windowsHide: true, env });
   let timedOut = false;
   let stopReading!: () => void;
@@ -186,7 +194,7 @@ export const runVersion: RunVersion = async (executable, args, timeoutMs, path, 
   let grace: ReturnType<typeof setTimeout> | undefined;
   const exited = child.exited.then((code) => { if (!signal?.aborted) grace = setTimeout(stopReading, EXIT_GRACE_MS); return code; });
   try {
-    const [stdout, stderr, exitCode] = await Promise.all([readBounded(child.stdout, stop), readBounded(child.stderr, stop), Promise.race([exited, stop.then(() => null)])]);
+    const [stdout, stderr, exitCode] = await Promise.all([readBounded(child.stdout, stop, stdoutBytes), readBounded(child.stderr, stop, VERSION_OUTPUT_BYTES), Promise.race([exited, stop.then(() => null)])]);
     return { stdout, stderr, exitCode, timedOut };
   } finally {
     signal?.removeEventListener("abort", abort);
@@ -194,7 +202,7 @@ export const runVersion: RunVersion = async (executable, args, timeoutMs, path, 
     clearTimeout(grace);
     if (!timedOut && process.platform !== "win32") killTree(child.pid);
   }
-};
+}
 
 interface Kept {
   fingerprint: string;

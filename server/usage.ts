@@ -20,8 +20,8 @@ import { createHash } from "node:crypto";
 import { closeSync, mkdtempSync, openSync, readdirSync, readSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { antigravityAuthMode } from "./agent-catalog-detect.ts";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { antigravityAuthMode, captureAgentCommand, catalogLocator, defaultLoginProbe } from "./agent-catalog-detect.ts";
 import { readStatusline, STALE_MS, type StatuslinePayload } from "./statusline.ts";
 import { installStatusline, removeStatusline, StatuslineInstallError, statuslineInstallState, type StatuslineInstallState } from "./statusline-install.ts";
 import type { ProviderUsage, UsageCredits, UsageFailure, UsageProblem, UsageProviderId, UsageReport, UsageResets, UsageWindow } from "../shared/protocol.ts";
@@ -52,7 +52,7 @@ export interface UsageContext {
   platform: NodeJS.Platform;
   fetch(url: string, init: RequestInit): Promise<Response>;
   keychain(service: string, account?: string): Promise<KeychainRead>;
-  run(argv: string[], timeoutMs?: number): Promise<string | null>;
+  run(argv: string[], timeoutMs?: number, signal?: AbortSignal): Promise<string | null>;
   has(command: string): boolean;
   now(): number;
 }
@@ -769,21 +769,60 @@ function antigravityWindows(groups: unknown): UsageWindow[] {
   return windows;
 }
 
-async function antigravityCliWindows(ctx: UsageContext): Promise<UsageWindow[]> {
-  const cli = record(parseJson(await ctx.run(["agy", "--print", "/usage", "--output-format", "json", "--print-timeout", "30s"], 35_000).catch(() => null)));
+async function antigravityCliWindows(ctx: UsageContext, limit = 35_000, signal?: AbortSignal): Promise<UsageWindow[]> {
+  if (limit < 1_000 || signal?.aborted) return [];
+  const argv = ["agy", "--print", "/usage", "--output-format", "json", "--print-timeout", signal ? "20s" : "30s"];
+  const cli = record(parseJson(await (signal ? ctx.run(argv, limit, signal) : ctx.run(argv, limit)).catch(() => null)));
   return cli["status"] === "SUCCESS" ? antigravityWindows(record(record(cli["command"])["data"])["groups"]) : [];
+}
+
+async function antigravityUsesApiKey(ctx: UsageContext): Promise<boolean> {
+  return await antigravityAuthMode(ctx.home, ctx.env["ANTIGRAVITY_APP_DATA_DIR"]) === "gemini-api-key";
+}
+
+async function antigravityCredentials(ctx: UsageContext, checkLocked: boolean) {
+  const dir = ctx.env["ANTIGRAVITY_APP_DATA_DIR"] || join(ctx.home, ".gemini", "antigravity-cli");
+  const file = antigravitySignIn(readText(join(dir, "antigravity-oauth-token")));
+  const keychain = ctx.platform === "linux"
+    ? await linuxKeyring(ctx, ["service", "gemini", "username", "antigravity"], antigravitySignIn, checkLocked || file === null)
+    : await fromKeychain(ctx, "gemini", ["antigravity"], antigravitySignIn);
+  return { file, keychain };
+}
+
+async function antigravityRefusedWindows(ctx: UsageContext, { token }: SignIn): Promise<UsageWindow[] | "api-key"> {
+  // Two HTTP attempts can already have taken 30 s. Keep the remaining lookup and CLI work within the route's budget.
+  const budget = 22_000;
+  const start = performance.now();
+  const signal = AbortSignal.timeout(budget);
+  const check = async (): Promise<"api-key" | "same-token" | "unknown"> => {
+    if (await antigravityUsesApiKey(ctx)) return "api-key";
+    if (signal.aborted || (ctx.platform === "linux" && !ctx.has("secret-tool"))) return "unknown";
+    const { file, keychain } = await antigravityCredentials(ctx, true);
+    if (keychain === "locked" || (file && file.token !== token) || (keychain && keychain.token !== token)) return "unknown";
+    return file || keychain ? "same-token" : "unknown";
+  };
+  const read = async (): Promise<UsageWindow[] | "api-key"> => {
+    const before = await check();
+    if (before !== "same-token") return before === "api-key" ? before : [];
+    const windows = await antigravityCliWindows(ctx, Math.floor(budget - (performance.now() - start)), signal);
+    if (windows.length === 0 || signal.aborted) return [];
+    // /usage doesn't name the OAuth token. Don't hand its numbers to a from-disk account after a
+    // mode switch, a replacement token, or when two credential stores could give different answers.
+    const after = await check();
+    return after === "same-token" ? windows : after === "api-key" ? after : [];
+  };
+  const stop = Promise.withResolvers<UsageWindow[]>();
+  const onAbort = () => stop.resolve([]);
+  signal.addEventListener("abort", onAbort, { once: true });
+  try { return await Promise.race([read(), stop.promise]); }
+  finally { signal.removeEventListener("abort", onAbort); }
 }
 
 const antigravity: UsageProvider = {
   id: "antigravity",
   async signIns(ctx) {
-    // In API-key mode the CLI no longer uses any OAuth credentials it left behind.
-    if (await antigravityAuthMode(ctx.home, ctx.env["ANTIGRAVITY_APP_DATA_DIR"]) === "gemini-api-key") return [];
-    const dir = ctx.env["ANTIGRAVITY_APP_DATA_DIR"] || join(ctx.home, ".gemini", "antigravity-cli");
-    const file = antigravitySignIn(readText(join(dir, "antigravity-oauth-token")));
-    const keychain = ctx.platform === "linux"
-      ? await linuxKeyring(ctx, ["service", "gemini", "username", "antigravity"], antigravitySignIn, file === null)
-      : await fromKeychain(ctx, "gemini", ["antigravity"], antigravitySignIn);
+    if (await antigravityUsesApiKey(ctx)) return [];
+    const { file, keychain } = await antigravityCredentials(ctx, false);
     return keychainOrFile(keychain, file, "keychain");
   },
   // Linux: the CLI keeps its sign-in in the Secret Service keyring, read here only through secret-tool
@@ -805,7 +844,8 @@ const antigravity: UsageProvider = {
     } catch (error) {
       // Starter plans can have CLI quota even when the quota service refuses the account.
       if (error instanceof UsageHttpError && error.status === 403) {
-        const windows = await antigravityCliWindows(ctx);
+        const windows = await antigravityRefusedWindows(ctx, signIn);
+        if (windows === "api-key") return null;
         if (windows.length > 0) return { plan: null, windows };
       }
       throw error;
@@ -1193,13 +1233,21 @@ export async function runCommand(argv: string[], timeoutMs = COMMAND_TIMEOUT_MS)
 }
 
 export function systemUsageContext(): UsageContext {
+  const locate = catalogLocator({ probe: defaultLoginProbe() });
   return {
     home: homedir(),
     env: process.env,
     platform: process.platform,
     fetch: (url, init) => fetch(url, init),
     keychain: readKeychain,
-    run: runCommand,
+    async run(argv, timeoutMs = COMMAND_TIMEOUT_MS, signal) {
+      if (argv[0] !== "agy") return runCommand(argv, timeoutMs);
+      const executable = await locate("agy");
+      if (executable === null || signal?.aborted) return null;
+      const path = [dirname(executable), ...(locate.searchPath?.() ?? "").split(delimiter).filter(isAbsolute)].join(delimiter);
+      const { stdout, exitCode, timedOut } = await captureAgentCommand(executable, argv.slice(1), { timeoutMs, path, signal, stdoutBytes: MAX_READ_BYTES + 1 });
+      return !timedOut && exitCode === 0 && Buffer.byteLength(stdout) <= MAX_READ_BYTES ? stdout.trim() : null;
+    },
     has: (command) => Bun.which(command) !== null,
     now: Date.now,
   };
@@ -1295,7 +1343,11 @@ export class UsageService {
 
   private async collect(refresh: boolean): Promise<UsageReport> {
     const now = this.ctx.now();
-    const missing = new Map(this.providers.flatMap((provider) => { const command = provider.missingCommand?.(this.ctx) ?? null; return command === null ? [] : [[provider.id, command] as const]; }));
+    // The configured mode must win over a fresh or hidden OAuth reading, not only over discovery.
+    const apiKey = this.providers.some((provider) => provider.id === "antigravity") && await antigravityUsesApiKey(this.ctx);
+    if (apiKey) this.invalidate("antigravity");
+    const providers = apiKey ? this.providers.filter((provider) => provider.id !== "antigravity") : this.providers;
+    const missing = new Map(providers.flatMap((provider) => { const command = provider.missingCommand?.(this.ctx) ?? null; return command === null ? [] : [[provider.id, command] as const]; }));
     const skipped = this.skipped();
     // an account shown again is looked up and read anew now, its provider's last search no longer standing for it;
     // the provider's other accounts keep their readings, so one still hidden is not read for it
@@ -1310,7 +1362,7 @@ export class UsageService {
       if (!skipped.has(key)) this.dropped.delete(key);
     }
     this.lastSkipped = skipped;
-    const usages = await Promise.all(this.providers.map((provider) => {
+    const usages = await Promise.all(providers.map((provider) => {
       const listed = (this.searches.get(provider.id)?.sources ?? []).flatMap((source) => this.entries.get(source)?.usage ?? []);
       return listed.length > 0 && listed.every((usage) => skipped.has(usage.key)) ? listed : this.collectProvider(provider, now, refresh, missing.has(provider.id));
     }));
@@ -1320,7 +1372,7 @@ export class UsageService {
       if (!held || (held.problem !== null && usage.problem === null)) byKey.set(usage.key, usage);
     }
     // No sign-in is read for a record, so a hidden account's is read as well
-    for (const record of this.providers.flatMap((provider) => recordedUsages(provider.id, provider.recorded ?? [], this.ctx, (source) => this.recordOf(source, now)))) {
+    for (const record of providers.flatMap((provider) => recordedUsages(provider.id, provider.recorded ?? [], this.ctx, (source) => this.recordOf(source, now)))) {
       const own = byKey.get(record.key);
       if (!own) byKey.set(record.key, record);
       else if (!ownStands(own, record, now)) byKey.set(record.key, standingIn(own, record));
