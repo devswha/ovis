@@ -329,12 +329,12 @@ export class RelayService {
 
   /**
    * The account a signed-in owner listed this PC under: a relay pass is asked for under it while the PC has no members.
-   * `provider`: how that owner signed in; a naming that does not say keeps the one said for the same account before.
+   * `provider`: how that owner signed in; an omitted method keeps the one for the same account. A move resets it.
    */
-  setRelayAccount(account: string, provider?: SignInMethod): boolean {
+  setRelayAccount(account: string, provider?: SignInMethod | null): boolean {
     if (!ACCOUNT_ID.test(account)) return false;
     const before = this.passAccount(), saved = this.savedRelayNaming(), named = saved?.account ?? null;
-    const method = provider ?? (named === account ? saved!.provider : null);
+    const method = provider === undefined ? (named === account ? saved?.provider ?? null : null) : provider;
     writePrivateState(this.relayAccountPath(), method === null ? { account } : { account, provider: method });
     // a device that waits under the relay tab's QR code is taken only into the account named when that code was made,
     // and only while that account is the one named (records.ts look); naming another in place of the one read here also
@@ -344,6 +344,9 @@ export class RelayService {
     if (before !== this.passAccount() || unlisted) void this.passKeeper?.refresh();
     return true;
   }
+
+  /** The binding changed, so the next pass must name its account even if the last pass still works. */
+  accountChanged(): void { void this.passKeeper?.refresh(); }
 
   /**
    * Forgets the account named for this PC, as before any was (`ovis join` that ended unbound puts back what it found).

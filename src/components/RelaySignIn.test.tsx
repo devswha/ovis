@@ -3,7 +3,9 @@ import { act } from "react";
 import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import { FakeAccountService, WEB_REDIRECT } from "../../shared/account-service-fake.ts";
-import type { RelayStatus } from "../../shared/protocol.ts";
+import type { AccountMoveRequest, RelayStatus } from "../../shared/protocol.ts";
+import { exportPublicKey, generateKeyPair } from "../../shared/relay-e2ee.ts";
+import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { indexedAccountStore, memoryAccountStore } from "../lib/account/store.ts";
 import { beginSignIn, finishOwnSignIn } from "../lib/account/signin.ts";
 import { useLinkPageSignIn } from "../lib/account/useLinkPageSignIn.ts";
@@ -441,9 +443,13 @@ describe("the relay tab's Sign in in the desktop app", () => {
   let answer: ReturnType<typeof Promise.withResolvers<string>>;
   /** the account this PC says it is in (/api/account/status) */
   let pcAccountId: string | null;
+  let moveRequest: (body: AccountMoveRequest) => Response | Promise<Response>;
+  let refuseAdmit: boolean;
 
   beforeEach(() => {
     pcAccountId = null;
+    refuseAdmit = false;
+    moveRequest = () => Response.json({}, { status: 404 });
     fake = new FakeAccountService();
     fake.offerLinkPage(["google"]);
     opened = Promise.withResolvers<string>();
@@ -458,6 +464,9 @@ describe("the relay tab's Sign in in the desktop app", () => {
     const fetch = async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input instanceof Request ? input.url : input), "http://127.0.0.1:7317");
       if (url.pathname === "/api/account/status") return Response.json({ account: pcAccountId, unlinked: [] });
+      if (url.pathname === "/api/account/move") return typeof init?.body === "string" ? moveRequest(JSON.parse(init.body)) : Response.json({ into: null });
+      if (url.pathname === "/api/account/pc-proof") return Response.json({});
+      if (refuseAdmit && url.pathname.endsWith("/admit")) return Response.json({ error: { code: "pc_add_cap", message: "Add limit reached" } }, { status: 429 });
       if (url.origin !== SERVICE) return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
       return fake.fetch(input, init);
     };
@@ -542,13 +551,35 @@ describe("the relay tab's Sign in in the desktop app", () => {
     expect(await home.promise).toBe(true);
   });
 
-  // owner #25: a sign-in that lands in another account (an identity the PC's account does not have makes a new one)
-  // stays on the tab with the sign-in buttons alone, so the right one can be picked
-  it("a sign-in through the app's loopback that lands in another account stays, with the sign-in buttons alone", async () => {
+  it.each([false, true])("offers an explicit move when the PC is in a different account (refused admit: %s)", async (refused) => {
     pcAccountId = "acct_mine";
+    refuseAdmit = refused;
     fake.signInAs("google", "acct_new");
+    fake.opensAll = true;
+    const settled = Promise.withResolvers<void>();
+    const { publicKey } = generateKeyPair();
+    const serverId = deriveServerId(publicKey);
+    moveRequest = (body) => {
+      expect(body.into).toBe("acct_new");
+      switch (body.stage) {
+        case "prepare":
+          expect(fake.pcs("acct_new")).toHaveLength(0);
+          return Response.json({ state: "prepare", pc: { server_id: serverId, public_key: exportPublicKey(publicKey), relay: "wss://relay.test" } });
+        case "cancel":
+          expect(refused).toBe(true);
+          expect(fake.pcs("acct_new")).toMatchObject([{ server_id: serverId }]);
+          settled.resolve();
+          return Response.json({ state: "aborted", reason: "cancelled", account: "acct_new" });
+        case undefined:
+          expect(refused).toBe(false);
+          expect(fake.pcs("acct_new")).toMatchObject([{ server_id: serverId, admitted_at: expect.any(String) }]);
+          pcAccountId = "acct_new";
+          settled.resolve();
+          return Response.json({ state: "moved", account: "acct_new" });
+      }
+    };
     const home = Promise.withResolvers<boolean>();
-    const account = { service: SERVICE, onOpen: () => undefined, onSignedIn: (goesHome: boolean) => home.resolve(goesHome) };
+    const account = { service: SERVICE, opensAll: () => true, onOpen: () => undefined, onSignedIn: (goesHome: boolean) => home.resolve(goesHome) };
     const tab = (signedIn: boolean) => <SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={signedIn} accountId={signedIn ? "acct_new" : null} joinBySignIn={false} account={account} phone={false} machines={[{ id: "local", kind: "local", name: "Mac", server_id: "srv_mac" } as never]} pcAddFromAccount onConnectMachine={() => {}} /></SettingsProvider>;
     await page.render(tab(false));
     await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
@@ -557,11 +588,15 @@ describe("the relay tab's Sign in in the desktop app", () => {
     expect(await home.promise).toBe(false);
     await page.render(tab(true));
     await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
-    expect(buttons()).toContain("Continue with Google");
+    expect(buttons()).toContain("Move this PC to this account");
     expect(buttons()).not.toContain("Add from account");
     expect(text(page.container)).not.toContain("Sign in to this PC's account.");
     expect(text(page.container)).not.toContain("If that account is not yours");
     expect(text(page.container)).not.toContain("This PC is in an account.");
+    await press("Move this PC to this account");
+    await act(async () => { await settled.promise; });
+    expect(buttons().includes("Move this PC to this account")).toBe(refused);
+    if (refused) expect(text(page.container)).toContain("remove it there if you don't want it.");
   });
 
   it("keeps no sign-in that comes back after Cancel", async () => {

@@ -568,6 +568,22 @@ after a minute. Only this PC's own window or CLI gets one (403 `owner_only` othe
 `one-press`); 503 `account_unavailable` when the service gave no challenge. The way back into an
 account after `ovis logout` is so a sign-in on the PC itself.
 
+`GET /api/account/move` and `POST /api/account/move`: this PC's own window only, with Step 2 on.
+When the window is signed in to another account, **Move this PC to this account** writes a move
+journal (`{into, stage: "prepare"}`), then lists and admits the PC using that window's own account
+sign-in. `{into}` takes the admission, checks that the destination can issue a relay pass, and
+switches the local binding in one write. The PC keeps its paired devices as local pairings, without
+granting those devices membership in the destination. It confirms the new listing before leaving
+the old account. The move stays pending (HTTP 202) until any outstanding work can be retried.
+
+If the PC stops before it takes the admission, its own window repeats the listing and admission
+when it reopens. After a taken admission the PC can finish without that window. `{into, stage:
+"cancel"}` only cancels before the binding switches. A refusal or cancellation does not remove the
+destination listing; remove it from that account if it is not wanted. `GET` reports the pending
+destination (`into`) or the last aborted move (`aborted`) while the PC remains in the source account.
+Accounts that keep signed lists are not supported by this move. One press still refuses to move a
+PC that is already in an account.
+
 `GET /api/account/list`: how this PC follows
 [its account's signed list](#the-accounts-signed-list-on-a-pc), for this PC's own window and CLI
 alone (403 `owner_only` otherwise); 404 with Step 2 off.
