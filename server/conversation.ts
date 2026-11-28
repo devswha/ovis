@@ -1676,7 +1676,7 @@ function reachesOwnCore(client: number): boolean {
  * Claude below it in the job (a launcher's child), or, in a tab running `hc attach <t>`, the Claude of the
  * terminal it shows (#3009). `viewed`: the terminal such a tab shows, which is followed no further.
  */
-async function claudeProcesses(paneId: string, known?: KnownProcesses, viewed = false): Promise<{ pid: number; name?: string; argv0?: string; argv?: string[] }[]> {
+export async function claudeProcesses(paneId: string, known?: KnownProcesses, viewed = false): Promise<{ pid: number; name?: string; argv0?: string; argv?: string[] }[]> {
   let info: KnownProcesses;
   if (known !== undefined) info = known;
   else {

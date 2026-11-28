@@ -6,7 +6,7 @@ import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, FALLBACK_ENTER_
 import { agentPrompt, HerdrError, paneGet, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo, faultOf, type HerdrFailureView } from "../herdr/client.ts";
 import { mirrorInput } from "../mirror-input.ts";
 import { paneAgentOf, resolveAgent, typingRoots } from "../pane-context.ts";
-import { paneProcessRoots } from "../conversation.ts";
+import { claudeProcesses, paneProcessRoots } from "../conversation.ts";
 import { claudeRestoredPaste } from "../claude-store.ts";
 import type { CommandSend } from "../outcome.ts";
 import { commandDataRoute, sendCodexTextAsData, sendCommandAsData } from "../command-data-send.ts";
@@ -355,11 +355,20 @@ export async function claudeBoxReads(paneId: string): Promise<[string, string | 
 
 /**
  * Refuses a send to a screen that shows no Claude input box while Claude's PID record says it waits on a dialog. A
- * lookup that fails says nothing: the send goes on as it did without this check, and no write was tried.
+ * lookup that fails says nothing: the send goes on as it did without this check, and no write was tried. herdr's
+ * detection read of a short pane reaches up into the history above the live screen (herdr 0.9.5): a box drawn there,
+ * not within the viewport's rows from the bottom, is an older one, and the record is read.
  */
 async function refuseClaudeDialog(paneId: string, screen: string): Promise<void> {
-  if (claudeInputBoxContent(screen) !== null) return;
-  const waiting = await paneProcessInfo(paneId).then((info) => claudeForegroundWaiting(info?.foreground_processes ?? []), () => null);
+  if (claudeInputBoxContent(screen) !== null) {
+    const rows = (await paneScrollInfo(paneId).catch(() => null))?.viewport_rows;
+    // claudeBoxRows counts to the last row with text: the blank rows under it are on the live screen too
+    const lines = stripVTControlCharacters(screen).split(/\r?\n/);
+    let blank = 0;
+    while (blank < lines.length && lines[lines.length - 1 - blank]!.trim() === "") blank++;
+    if (rows === undefined || (claudeBoxRows(screen) ?? 0) + blank <= rows) return;
+  }
+  const waiting = await claudeProcesses(paneId).then((processes) => claudeForegroundWaiting(processes), () => null);
   if (waiting !== null) throw new HerdrError("agent_blocked", `Claude Code is waiting in the terminal (${waiting}); answer or close it there, then send`);
 }
 
