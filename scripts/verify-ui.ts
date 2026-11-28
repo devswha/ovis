@@ -265,7 +265,7 @@ async function probeCells(
           const doc = document.documentElement;
           return {
             resolvedTheme: doc.dataset["theme"] ?? null,
-            crashed: root?.querySelector(".app-crash") !== null,
+            crashed: root !== null && root.querySelector(".app-crash") !== null,
             mountedShell: root !== null && root.childElementCount > 0 && root.querySelector(":scope > .boot") === null && root.querySelector(".app-crash") === null,
             horizontalOverflowPx: Math.max(0, Math.round(doc.scrollWidth - window.innerWidth)),
           };
