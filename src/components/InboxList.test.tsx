@@ -302,6 +302,9 @@ describe("InboxList", () => {
       expect(said("w1F:p1", "inbox-topic")).toEqual([]);
       // and a row with no title of its own keeps the name it has without one
       expect(said("w1F:p1", "inbox-name")).toEqual(["jimmy@herdr: ~/projects/docs-site"]);
+      // a search finds a row by the title it draws, a learned one included
+      await redraw({ query: "backup failure" });
+      expect(byClass(root, "inbox-item").map((row) => row.dataset["pane"])).toEqual(["w1E:p1"]);
     } finally {
       forgetTabLabelsForTests();
     }

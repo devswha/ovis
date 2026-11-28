@@ -38,7 +38,8 @@ function threadFacts({ machines, activity, machineId, pane, connection, watching
   const said = connection !== null ? connectionWord(connection, t)
     : [watching ? t("View only") : null, severalPcs && machine ? machine.name : null, state].filter((part) => part !== null).join(" · ");
   return {
-    name: row ? inboxRowTopic(row, autoLabels) ?? agentRowTitle(row, false).title : displayPaneTitle(pane),
+    // a name the user gave the pane stays its name; the tab's title stands in only for one herdr made up
+    name: row ? (row.entry.pane.label?.trim() ? null : inboxRowTopic(row, autoLabels)) ?? agentRowTitle(row, false).title : displayPaneTitle(pane),
     kind: row?.entry.canonicalAgent ?? null,
     mark: row ? paneMark(row.entry) ?? "" : null,
     said,

@@ -108,7 +108,9 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
       question: questions.get(key) ?? null, plan: online ? row.entry.pane.plan : undefined, last: lastWords(summaries.get(key), t),
     });
   };
-  const found = inboxSearched(inboxFiltered(all, filter, activity), query, machines, t, wordsOf);
+  // the tab title a row draws is found too, a learned one included (no snapshot label holds it)
+  const searchedWords = (row: AgentRow): string | null => [inboxRowTopic(row, autoLabels), wordsOf(row)].filter((part) => part !== null).join("\n") || null;
+  const found = inboxSearched(inboxFiltered(all, filter, activity), query, machines, t, searchedWords);
 
   // a state change never moves a row under a finger or the keyboard's focus (AgentSidebar.tsx): while either is in
   // the list, rows keep the order last drawn; the reader's own doing (a filter, a query) draws them as they are at
