@@ -255,11 +255,6 @@ export interface AccountMailboxOptions {
    * that is slow to read holds no pull back. Without it nothing is asked.
    */
   readonly list?: { heard(account: string, named: NamedList | null, asked?: string | null): void; scopeToken?(): string | null };
-  /**
-   * Whether a move of this PC out of its account is under way (server/account/account-move.ts): the move carries the PC
-   * on, so the source no longer listing it (an account deleted, or folded into another) is no reason to leave it here.
-   */
-  readonly movingOut?: () => boolean;
 }
 
 export class AccountMailbox {
@@ -654,7 +649,7 @@ export class AccountMailbox {
 
   /** `answer`: what this read's own mailbox call named as the PC's listing (a pull's drain, or askListingNamed). */
   /** `whole`: the account's rows were read whole, or there were none to read, or the service reads none (step2_off): what unreadKey may rest on. */
-  /** `switching`: the read right before a move's switch, where a source that lists this PC no more has nothing left to apply. */
+  /** `switching`: the read right before a move's switch, where a source that no longer exists has nothing left to apply. */
   private async readSnapshotNow(readmission?: Readmission, answer?: NamedListing, switching = false): Promise<{ outcome: ReadOutcome | null; adds: number; whole: boolean }> {
     const empty = { outcome: null, adds: 0, whole: true };
     if (this.options.devices.accountRowsMoving()) return { ...empty, whole: false };
@@ -726,15 +721,13 @@ export class AccountMailbox {
       const devices = this.options.devices;
       // A PC stands in its account on the account's listing of it: once the account stops listing it, it leaves. One a
       // device's link just bound is listed by that device after its link: until then, for a bounded time, it is not yet listed
-      // A PC moving out stays until its switch: the move, not the source, decides where it goes
-      const moving = this.options.movingOut?.() === true;
       // An account that no longer exists removed nobody: the PC stays bound to it, rows and all, until its own window,
       // signed in to an account, moves it there (src/lib/useOwnWindowPrompts.ts); only a removal makes it leave
       if (gone) this.goneAccount = account;
       else if (outcome.committed) this.goneAccount = null;
-      if (unlisted && !moving && !gone && ((binding !== null && devices.serviceBinding() === binding) || (linked !== null && devices.linkBinding() === linked && !devices.awaitsFirstListing()))) devices.clearAccountBinding("unlisted", "account");
+      if (unlisted && !gone && ((binding !== null && devices.serviceBinding() === binding) || (linked !== null && devices.linkBinding() === linked && !devices.awaitsFirstListing()))) devices.clearAccountBinding("unlisted", "account");
       else if (outcome.committed && linked !== null && devices.linkBinding() === linked && typeof named === "string") devices.pinServiceListing(linked, named);
-      return { outcome, adds, whole: outcome.committed || step2Off || (switching && moving && unlisted) };
+      return { outcome, adds, whole: outcome.committed || step2Off || (switching && gone) };
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
       return empty;

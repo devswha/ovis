@@ -130,6 +130,15 @@ test("a move out of an account that no longer exists finishes into the destinati
   expect(f.journal()).toBe(false);
 });
 
+test("a removal by the living source during a move still makes the PC leave it, and gives the move up", async () => {
+  const f = await fixture();
+  await f.ready();
+  expect((await f.send(f.path, "DELETE", undefined, f.pc.account.issueToken(FROM, { twoStep: true }))).status).toBe(204);
+  expect(await f.move()).toMatchObject({ status: 200, body: { state: "aborted", account: INTO, reason: "binding_changed" } });
+  expect(f.pc.devices.account()).toBeNull();
+  expect(f.journal()).toBe(false);
+});
+
 test("a PC whose account no longer exists stays in it, rows and all, and says so until a read of it commits", async () => {
   const f = await fixture();
   const mailbox = f.pc.app.context.services.accountMailbox;

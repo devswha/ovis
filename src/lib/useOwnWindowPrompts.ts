@@ -44,12 +44,17 @@ export function useOwnWindowPrompts(relayPairings: readonly RelayPairingRequest[
     });
     // a PC whose account no longer exists goes into the account this window is signed in to, with no question
     let moving = false;
+    let again = false;
     const fromGone = (): void => {
-      if (moving) return;
+      // a sign-in while one look is out is looked at right after it, not a minute later
+      if (moving) { again = true; return; }
       moving = true;
       void moveFromGoneAccount(resume.signal).catch((error: unknown) => {
         if (!resume.signal.aborted) console.warn("Ovis: this PC could not leave the account that no longer exists", error instanceof Error ? error.name : error);
-      }).finally(() => { moving = false; });
+      }).finally(() => {
+        moving = false;
+        if (again && !resume.signal.aborted) { again = false; fromGone(); }
+      });
     };
     fromGone();
     // a sign-in made here moves it at once; the PC itself learns its account is gone on its own reads, so it is asked again
