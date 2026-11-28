@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HARNESS_CONTRACT, isRecord } from "../../shared/harness-tool.ts";
@@ -61,7 +61,7 @@ describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $f
     writeFileSync(program, `#!/bin/sh
 if [ "$1" = shutdown ]; then
   echo "$* $PRIME_AGENT_DAEMON_SOCKET $PRIME_AGENT_CODING_AGENT_DIR" >> "${join(dir, "shutdown.log")}"
-  exit 0
+  [ ! -f "${join(dir, "shutdown-fails")}" ]; exit
 fi
 if [ "$1" = --version ]; then
   if [ -f "${join(dir, "require-version-context")}" ]; then
@@ -87,18 +87,17 @@ exec "${process.execPath}" "${REPLAY}" "${FIXTURE}" "${join(dir, "replay.jsonl")
       if (method === "terminal.run" && "env" in params) paneEnv = { ...coreEnv, ...params.env };
       return connection.call(method, params);
     } };
-    acp = new AcpChildren(join(dir, "acp"), { hc, keeperBin: () => KEEPER_BUILD, sessionMs: 5000 });
+    const resolveHere = (kind: string) => {
+      if (kind !== harness) return null;
+      const path = process.env.PATH;
+      process.env.PATH = dir;
+      try { return resolveHarness(kind); } finally { if (path === undefined) delete process.env.PATH; else process.env.PATH = path; }
+    };
+    acp = new AcpChildren(join(dir, "acp"), { hc, keeperBin: () => KEEPER_BUILD, sessionMs: 5000, ownDaemon: kind => resolveHere(kind)?.ownDaemon ?? null });
     hub = new AgentToolHub({ dir: join(dir, "tools"), acp, setting: () => ({ level: "start", depth: 1, harnesses: [harness] }),
       resolve: kind => {
-        if (kind !== harness) return null;
-        const path = process.env.PATH;
-        process.env.PATH = dir;
-        try {
-          const command = resolveHarness(kind);
-          return command && { ...command, env: { ...command.env, VERSION_CONTEXT: "child" } };
-        } finally {
-          if (path === undefined) delete process.env.PATH; else process.env.PATH = path;
-        }
+        const command = resolveHere(kind);
+        return command && { ...command, env: { ...command.env, VERSION_CONTEXT: "child" } };
       } });
     hub.listen();
     const parent = hub.runs.reserve();
@@ -217,6 +216,19 @@ exec "${process.execPath}" "${REPLAY}" "${FIXTURE}" "${join(dir, "replay.jsonl")
       expect(await call("wait", { session: started.session.address, timeout_s: 5 })).toMatchObject({ state: { state: "done" } });
       expect(await call("stop", { session: started.session.address })).toMatchObject({ stopped: true });
       expect(readFileSync(join(dir, "shutdown.log"), "utf8")).toBe(`shutdown --force ${join(child.root, "pa.sock")} ${child.root}\n`);
+    });
+
+    it("keeps the child's folder while its daemon is not proven stopped, and stops it again on the next restore", async () => {
+      const started = await call("start", { harness, cwd: dir });
+      if (!isRecord(started.session) || typeof started.session.address !== "string") throw new Error(JSON.stringify(started));
+      const { root } = acp.forPane(started.session.address)!;
+      writeFileSync(join(dir, "shutdown-fails"), "");
+      expect(await call("stop", { session: started.session.address })).toMatchObject({ stopped: true });
+      expect(existsSync(root)).toBe(true);
+      rmSync(join(dir, "shutdown-fails"));
+      await acp.restore();
+      expect(existsSync(root)).toBe(false);
+      expect(readFileSync(join(dir, "shutdown.log"), "utf8").trim().split("\n")).toHaveLength(2);
     });
   }
 

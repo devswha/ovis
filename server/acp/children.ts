@@ -17,7 +17,7 @@ import { KeeperClient } from "./client.ts";
 import { hasQuestionForms } from "./question-form.ts";
 import { keeperRunning } from "./keeper-process.ts";
 import { acpKeeperBin } from "./keeper-bin.ts";
-import type { OwnDaemon } from "../agent-tools/harnesses.ts";
+import { resolveHarness, type OwnDaemon } from "../agent-tools/harnesses.ts";
 
 type AcpHcMethod = "terminal.run" | "terminal.kill" | "terminal.list" | "terminal.label" | "machine.exec";
 /** The hc calls the registry makes (HcConnection, or a test's stand-in). */
@@ -80,6 +80,8 @@ export interface AcpChildrenOptions {
   socketMs?: number;
   /** how long a start waits for the agent's session (its answers to `initialize` and `session/new`) */
   sessionMs?: number;
+  /** the daemon of its own a harness's child gets (default from resolveHarness): its stop is never read back from ROOT */
+  ownDaemon?: (harness: string) => OwnDaemon | null;
 }
 
 const LABEL = "ovis.acp";
@@ -159,21 +161,6 @@ function childInfo(root: string): { harness: string; questionHarness?: string } 
   }
 }
 
-function daemonStop(root: string): { argv: string[]; env: Record<string, string> } | null {
-  try {
-    if (!owned(join(root, CHILD_FILE), "file")) return null;
-    const info: unknown = JSON.parse(readFileSync(join(root, CHILD_FILE), "utf8"));
-    const stop = info && typeof info === "object" && "daemonStop" in info ? info.daemonStop : null;
-    if (!stop || typeof stop !== "object" || !("argv" in stop) || !("env" in stop)) return null;
-    const { argv, env } = stop;
-    if (!Array.isArray(argv) || argv.length === 0 || !argv.every(arg => typeof arg === "string") || !env || typeof env !== "object"
-      || !Object.values(env).every(value => typeof value === "string")) return null;
-    return { argv, env: env as Record<string, string> };
-  } catch {
-    return null;
-  }
-}
-
 export class AcpChildren {
   private readonly listeners = new Set<(child: AcpChild) => void>();
 
@@ -216,8 +203,7 @@ export class AcpChildren {
     chmodSync(root, 0o700);
     const questionForms = !!start.runId && hasQuestionForms(start.harness);
     const daemon = start.ownDaemon && join(root, DAEMON_SOCKET);
-    const daemonStop = start.ownDaemon && daemon ? { argv: start.ownDaemon.stop, env: { [start.ownDaemon.socketEnv]: daemon, [start.ownDaemon.folderEnv]: root } } : undefined;
-    writeFileSync(join(root, CHILD_FILE), JSON.stringify({ harness: start.harness, ...(questionForms ? { questionForms } : {}), ...(daemonStop ? { daemonStop } : {}) }), { mode: 0o600 });
+    writeFileSync(join(root, CHILD_FILE), JSON.stringify({ harness: start.harness, ...(questionForms ? { questionForms } : {}) }), { mode: 0o600 });
     const argv = [
       bin, root, "--cwd", start.cwd, "--name", start.name ?? start.harness,
       ...(start.sessionMeta === undefined ? [] : ["--session-meta", JSON.stringify(start.sessionMeta)]),
@@ -358,7 +344,11 @@ export class AcpChildren {
   private async end(terminal: string, root: string): Promise<void> {
     await this.hc().call("terminal.kill", { terminal });
     if (await keeperEnds(root, KEEPER_END_MS)) await this.removeRoot(root);
-    else console.warn(`acp: keeping ${root}: its keeper is still running after its terminal was killed`);
+    else {
+      console.warn(`acp: keeping ${root}: its keeper is still running after its terminal was killed`);
+      // the child's own daemon answers to nothing of the keeper's: it need not run on until restore() removes ROOT
+      await this.stopOwnDaemon(root);
+    }
   }
 
   /**
@@ -366,13 +356,19 @@ export class AcpChildren {
    * left the keeper's process group and, without the keeper's systemd scope (macOS), outlives it.
    */
   private async removeRoot(root: string): Promise<void> {
-    const stop = daemonStop(root);
-    if (stop !== null) {
-      const ran = await this.hc().call("machine.exec", { argv: [...stop.argv], cwd: root, env: stop.env, timeout: 15 })
-        .then(result => result.code === 0 ? null : `exit ${result.code}`, (error: unknown) => error instanceof Error ? error.message : String(error));
-      if (ran !== null) console.warn(`acp: the daemon of ${root} may still run: ${ran}`);
-    }
+    // a daemon not proven stopped keeps its ROOT, the only record of it, for restore() to try again
+    if (!(await this.stopOwnDaemon(root))) return console.warn(`acp: keeping ${root}: its daemon may still run`);
     rmSync(root, { recursive: true, force: true });
+  }
+
+  /** Stops the daemon of its own the child in ROOT has, if its harness gives one; false when that was not confirmed. */
+  private async stopOwnDaemon(root: string): Promise<boolean> {
+    const harness = childInfo(root)?.harness;
+    const own = harness === undefined ? null : (this.options.ownDaemon ?? (kind => resolveHarness(kind)?.ownDaemon ?? null))(harness);
+    if (own === null) return true;
+    // Prime Agent 0.10's forced shutdown waits up to about 16 s for a daemon that does not stop by itself
+    return this.hc().call("machine.exec", { argv: [...own.stop], cwd: root, env: { [own.socketEnv]: join(root, DAEMON_SOCKET), [own.folderEnv]: root }, timeout: 20 })
+      .then(result => result.code === 0 && !result.timed_out, () => false);
   }
 
   private async endFailedStart(terminal: string, root: string): Promise<void> {

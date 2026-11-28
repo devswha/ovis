@@ -29,7 +29,7 @@ export function delegatedMode(harness: string, client: KeeperClient): string | n
   // a harness without modes reports none, at the start and since; the keeper checks the same at every prompt
   const unmoded = UNASKED_HARNESSES.includes(harness) && opened?.mode === null && client.sessionMode === null;
   const initial = unmoded ? { ...opened, mode: NO_MODES } : opened;
-  if (!initial?.mode || !allowsDelegatedMode(harness, initial.mode) || (unmoded ? client.sessionMode !== null : client.sessionMode !== initial.mode)
+  if (!initial?.mode || !allowsDelegatedMode(harness, initial.mode) || (!unmoded && client.sessionMode !== initial.mode)
     || initial.allowAll === true || client.allowAll === true
     || (harness === "copilot" && client.allowAll !== false)) return null;
   return initial.mode;
