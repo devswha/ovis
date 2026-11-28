@@ -1,10 +1,11 @@
-import { createContext, useContext, useMemo } from "react";
+import { createContext, useContext, useMemo, type RefObject } from "react";
 import * as api from "./api.ts";
-import type { HerdrIdentity } from "../../shared/machines.ts";
+import type { HerdrIdentity, Machine } from "../../shared/machines.ts";
 import type { CreateWorktreeRequest, OpenWorktreeRequest, PaneDirection, PluginActionRequest, RemoveWorktreeRequest, SessionHistoryAgent, SessionResumeRequest, SplitPaneDirection } from "../../shared/protocol.ts";
 import type { ZoomMode } from "./layoutMap.ts";
 import { ReorderCoordinator } from "./workspaceOrder.ts";
 export const MachineContext = createContext("local");
+export const MachineRosterContext = createContext<RefObject<readonly Machine[]> | null>(null);
 export const useMachineId = () => useContext(MachineContext);
 /**
  * Which layout calls a PC's herdr answers, so the components offer only those, as VS Code's `when`

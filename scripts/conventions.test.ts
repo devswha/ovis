@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix, sep } from "node:path";
+import { browserScriptFiles, demoLaunchCounts, demoLaunches, directContextCounts, directContexts } from "./direct-contexts.ts";
 import { fixedSleepCounts, fixedSleeps, markedWaitCounts, markedWaits, sleepFiles, turnWaitCounts, turnWaitFiles, turnWaits } from "./fixed-sleeps.ts";
 import { fail, files, lineOf, read, repo, stripComments } from "./source-scan.ts";
 
@@ -352,6 +353,60 @@ describe("turn waits", () => {
   });
 });
 
+describe("browser contexts", () => {
+  countRatchet({
+    json: "scripts/direct-contexts.json", what: "direct context", counts: directContextCounts, list: directContexts, print: "bun scripts/direct-contexts.ts", covered: browserScriptFiles,
+    instead: "Open a context through the shared factory, not with Playwright's own call: `newContext(overrides)` of withDemoBrowser's session (scripts/demo-browser.ts), taken from the session by name, or `appContext(browser, overrides)` from scripts/app-context.ts, and a page with that context's newPage(), not the browser's. Both start from the same context (no service worker, English); what a script needs different goes in `overrides`.",
+  });
+  const found = (text: string) => directContexts("scripts/x-regression.ts", text).length;
+
+  it("counts a call however it is written, and neither the session's helper nor a mention", () => {
+    expect(found("const context = await browser.newContext({ locale: \"en-US\" });\nconst second = await browser!\n  .newContext();")).toBe(2);
+    expect(found("const a = await browser?.newContext?.();\nconst b = await browser[\"newContext\"]();\nconst c = await (browser.newContext)();")).toBe(3);
+    expect(found("const context = await chromium.launchPersistentContext(profile, { headless: true });")).toBe(1);
+    expect(found("const context = await newContext({ viewport });\nconst other = await appContext(browser, { viewport });")).toBe(0);
+    expect(found("// was browser.newContext()\nconsole.log(\"browser.newContext() is counted\");\nconst named = /browser.newContext()/.test(text);")).toBe(0);
+  });
+
+  it("counts a page made on a browser, which is a context of Playwright's own, and not a context's page", () => {
+    expect(found("const page = await browser.newPage();\nconst other = await (await chromium.launch()).newPage();\nconst third = await this.browser!.newPage();")).toBe(3);
+    expect(found("const page = await context.newPage();\nconst other = await browserContext.newPage();\nconst third = await (await newContext()).newPage();")).toBe(0);
+  });
+
+  it("finds a call after a regular expression or a nested template that holds a backtick", () => {
+    // a scan of the text takes such a backtick for a template's start and reads the code up to the next one as its words
+    expect(found("const fence = /`{3}/;\nconst context = await browser.newContext();\nconst label = `done`;")).toBe(1);
+    expect(found("const note = `${rows.map((row) => `${row}'s`).join(\", \")}'`;\nconst context = await browser.newContext();\nconst label = `done`;")).toBe(1);
+  });
+});
+
+describe("demo launches", () => {
+  countRatchet({
+    json: "scripts/demo-launches.json", what: "demo launch", counts: demoLaunchCounts, list: demoLaunches, print: "bun scripts/direct-contexts.ts --launches", covered: browserScriptFiles,
+    instead: "Run a script that checks the demo inside withDemoBrowser (scripts/demo-browser.ts), which builds the demo app, serves it and launches Chromium the same way for every script, in place of buildDemoApp and chromium.launch of its own. A snippet for the page goes in `beforeTransport` or `afterTransport`.",
+  });
+  const found = (text: string) => demoLaunches("scripts/x-demo-regression.ts", text).length;
+
+  it("counts a launch in a script that imports the demo's build, whatever it calls it", () => {
+    expect(found("import { buildDemoApp } from \"./demo-build.ts\";\nawait buildDemoApp(app);\nconst browser = await chromium.launch({ headless: true });")).toBe(1);
+    expect(found("import { buildDemoApp as build } from \"./demo-build.ts\";\nawait build(app);\nconst browser = await chromium\n  .launch();")).toBe(1);
+    expect(found("import * as demo from \"./demo-build.ts\";\nconst browser = await chromium[\"launch\"]?.();\nconst kept = await chromium.launchPersistentContext(profile);")).toBe(2);
+    expect(found("const { buildDevelopmentDemoApp } = await import(\"./demo-build.ts\");\nconst browser = await chromium.launch();")).toBe(1);
+  });
+
+  it("counts a second browser a script launches beside withDemoBrowser's, but not one in a unit test", () => {
+    const second = "import { withDemoBrowser } from \"./demo-browser.ts\";\nawait withDemoBrowser({ tempPrefix: \"x-\" }, async () => { const other = await chromium.launch({ args: [\"--force-device-scale-factor=2\"] }); });";
+    expect(found(second)).toBe(1);
+    expect(demoLaunches("scripts/x.test.ts", second)).toEqual([]);
+  });
+
+  it("counts none in a script that builds no demo, or leaves the launch to the harness", () => {
+    expect(found("const server = await createServer();\nconst browser = await chromium.launch({ headless: true });")).toBe(0);
+    expect(found("import { withDemoBrowser } from \"./demo-browser.ts\";\nawait withDemoBrowser({ tempPrefix: \"x-\" }, async ({ newContext }) => { await newContext(); });")).toBe(0);
+    expect(found("import { buildDemoApp } from \"./demo-build.ts\";\nconsole.log(\"chromium.launch()\", /chromium.launch()/);")).toBe(0);
+  });
+});
+
 describe("the tools typecheck", () => {
   const ROOTS = ["scripts", "integrations", "site", "app/scripts"];
   /** The tracked .ts/.tsx files under the roots of the checkout at `cwd` that are hidden or in a hidden folder; `-z`, since git quotes a name with non-ASCII bytes. */
@@ -456,7 +511,6 @@ describe("the demo app's file server", () => {
     "scripts/prompt-card-timing-demo-regression.ts": "also serves paths outside /app/",
     "scripts/repo-diff-browser-qa.ts": "serves /icons/ beside the app",
     "scripts/settings-pages-demo-regression.ts": "serves two builds side by side",
-    "scripts/settings-palette-search-demo-regression.ts": "serves two builds side by side",
     "scripts/settings-rows-demo-regression.ts": "serves two builds side by side",
     "scripts/setup-dialog-demo-regression.ts": "serves /icons/ beside the app",
     "scripts/setup-row-demo-regression.ts": "serves /icons/ beside the app",
@@ -538,6 +592,7 @@ describe("demo transport", () => {
     "/api/account/relay-account": "relay pass: named by a signed-in owner's account screen, which the demo never reaches (no sign-in there)",
     "/api/account/ssh-add": "adding another PC to the account over SSH: this PC's own window, signed in, after a setup job reached that PC's own Ovis; the demo has no sign-in and no SSH",
     "/api/account/one-press": "one-press PC add: only with the release flag on and after the account service admitted the PC, which the demo never reaches (no sign-in there)",
+    "/api/account/move": "moving a PC requires its own window and an account sign-in, neither of which the demo offers",
     "/api/devices/pair/cancel": "called by the plugin's terminal `link --code` only (scripts/plugin-link.ts); no screen of the app asks for it",
     "/api/auth": "the demo is never locked (/api/health says authenticated), so neither the token form nor sign-out runs",
     "/api/bridge": "a remote PC's bridge endpoint, asked by another server, never by the browser",

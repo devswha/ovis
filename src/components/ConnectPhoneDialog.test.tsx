@@ -1325,6 +1325,8 @@ describe("the relay tab's QR code behind a press", () => {
   let listing: "ok" | "refused" | "silent";
   /** the signed list of its account this PC follows (`list` of GET /api/account/status); null: none */
   let pcList: string | null;
+  /** how the owner who named this PC's account signed in to it (`account_provider` of GET /api/account/status); null: not said */
+  let pcProvider: string | null;
 
   const device = (extra: Partial<PairedDevice>): PairedDevice => ({ id: "a", label: "Laptop · Chrome", role: "drive", created_at: "2026-10-01T00:00:00Z", last_seen_at: null, current: false, ...extra });
   const phoneDevice = (extra: Partial<PairedDevice> = {}) => device({ id: "b", label: "iPhone · Safari", created_at: "2026-11-10T00:00:00Z", via_relay: true, ...extra });
@@ -1348,6 +1350,7 @@ describe("the relay tab's QR code behind a press", () => {
     offerMarks = [];
     offerAnswer = null;
     pcList = null;
+    pcProvider = null;
     offerAccount = undefined;
     listing = "ok";
     for (const key of ["indexedDB", "HTMLElement", "Event", "CustomEvent"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -1368,7 +1371,7 @@ describe("the relay tab's QR code behind a press", () => {
       if (init?.keepalive === true) keptAlive.push(path);
       const expires_at = new Date(Date.now() + 600_000).toISOString();
       if (path === "/api/account/status") await statusGate;
-      if (path === "/api/account/status") return Response.json({ account: pcAccount, unlinked: [], removals: [], adds: [], blocked: [], ...(pcList === null ? {} : { list: { pinned_list: pcList, standing: "in", reason: null } }) });
+      if (path === "/api/account/status") return Response.json({ account: pcAccount, ...(pcProvider === null ? {} : { account_provider: pcProvider }), unlinked: [], removals: [], adds: [], blocked: [], ...(pcList === null ? {} : { list: { pinned_list: pcList, standing: "in", reason: null } }) });
       if (path === "/api/relay") return Response.json(ONLINE);
       if (path === "/api/devices") return Response.json({ devices });
       if (path.startsWith("/api/devices/") && init?.method === "DELETE") {
@@ -1431,7 +1434,8 @@ describe("the relay tab's QR code behind a press", () => {
   const update = async (options?: TabOptions) => { await page.render(tab(options)); await flush(); };
   const advance = async (ms: number) => { await act(async () => { jest.advanceTimersByTime(ms); }); await flush(); };
   const section = () => one('[data-testid="connect-account-qr"]');
-  const buttons = () => all<HTMLButtonElement>("button", section()).map((node) => text(node).trim());
+  // the section's actions: the copy button on this PC's address line is none
+  const buttons = () => all<HTMLButtonElement>("button", section()).filter((node) => node.closest('[data-testid="connect-pc-address"]') === null).map((node) => text(node).trim());
   const press = async (label: string) => {
     const found = all<HTMLButtonElement>("button", section()).filter((node) => text(node).trim() === label);
     expect(found.map(text)).toEqual([label]);
@@ -1469,21 +1473,63 @@ describe("the relay tab's QR code behind a press", () => {
     expect(text(document.body)).not.toContain("Your account's PCs");
     expect(text(section())).toContain("This PC is in your account.");
     expect(qrCodes()).toHaveLength(1);
+    expect(all('[data-testid="connect-other-account"]')).toHaveLength(0);
     expect(text(document.body)).not.toContain("This PC is in an account. Add PCs from your account.");
     expect(all<HTMLButtonElement>("button").filter((node) => text(node) === "Add from account")).toHaveLength(0);
   });
 
+  // the address the QR code opens, without a sign-in in it, to paste in any browser: copying it asks nothing of the PC
+  it("signed in to a bound PC's own account, shows this PC's address in one line and copies it without a code", async () => {
+    const copied: string[] = [];
+    Object.defineProperty(page.window.navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { copied.push(value); } } });
+    const url = signInLink(ONLINE.app, SERVER_ID, null);
+    pcAccount = ACCOUNT_ID;
+    // the second is the tab that also pairs from here (beside its six digits), the third the QR code alone
+    for (const options of [{ pcAdd: true, joinBySignIn: true, provider: "github" }, { pcAdd: true, joinBySignIn: true, provider: "github", addsOverSsh: true }, { signedIn: true, joinBySignIn: true }] as const) {
+      copied.length = 0;
+      await mount(options);
+      const line = all('[data-testid="connect-pc-address"]', section());
+      expect(line.map((node) => text(node))).toEqual([`This PC's address${url}`]);
+      const copy = all<HTMLButtonElement>("button", line[0]);
+      expect(copy.map((node) => node.getAttribute("aria-label"))).toEqual(["Copy address"]);
+      await act(async () => { copy[0]!.click(); });
+      await flush();
+      expect(copied).toEqual([url]);
+      expect(minted()).toEqual([]);
+      await page.render(null);
+    }
+    // signed out, or signed in to another account: the QR code alone, no address
+    for (const options of [{ signedIn: false }, { pcAdd: true, accountId: "acct_mine_0000000000000" }] as const) {
+      await mount(options);
+      expect(all('[data-testid="connect-pc-address"]')).toHaveLength(0);
+      await page.render(null);
+    }
+  });
+
   // owner #25: a sign-in that ended in another account than the PC's is no sign-in to this PC: the tab is its sign-in
-  // buttons and the phone's QR code, with no prompt, no line about the account and no paragraph to act on
-  it("signed in to another account, a bound PC shows the sign-in buttons alone and the phone's QR code", async () => {
+  // buttons and the phone's QR code, with no prompt and no paragraph to act on; one line above the buttons says why, and
+  // which way leads to the PC's account when the PC knows it
+  it("signed in to another account, a bound PC shows the sign-in buttons, one line saying why, and the phone's QR code", async () => {
     pcAccount = ACCOUNT_ID;
     await mount({ pcAdd: true, accountId: "acct_mine_0000000000000" });
+    expect(all('[data-testid="connect-other-account"]').map((node) => text(node))).toEqual(["This PC is in another account. Sign in the way you used when you first added this PC."]);
     expect(text(document.body)).not.toContain("This PC is in an account. Add PCs from your account.");
     expect(all<HTMLButtonElement>("button").filter((node) => text(node) === "Add from account")).toHaveLength(0);
     expect(text(document.body)).not.toContain("Sign in to this PC's account.");
     expect(text(document.body)).not.toContain("If that account is not yours");
     expect(all('[data-testid="connect-signin"]')).toHaveLength(1);
     expect(qrCodes().map(drawnModules)).toEqual([qrModules(signInLink(ONLINE.app, SERVER_ID, null))]);
+  });
+  it("signed in to another account, names the way the PC's owner signed in to its account when the PC says it", async () => {
+    pcAccount = ACCOUNT_ID;
+    pcProvider = "github";
+    await mount({ pcAdd: true, accountId: "acct_mine_0000000000000" });
+    expect(all('[data-testid="connect-other-account"]').map((node) => text(node))).toEqual(["This PC is in another account. Sign in with GitHub."]);
+    await page.render(null);
+    // a value no Ovis sends is no word on it
+    pcProvider = "myspace";
+    await mount({ pcAdd: true, accountId: "acct_mine_0000000000000" });
+    expect(all('[data-testid="connect-other-account"]').map((node) => text(node))).toEqual(["This PC is in another account. Sign in the way you used when you first added this PC."]);
   });
   const minted = () => requests.filter((path) => path === "/api/relay/code" || path === "/api/relay/offer" || path === "/api/devices/pair/start");
   it("for a PC in this page's account, shows the QR code that opens this PC in the Ovis app with this page's sign-in, and asks the PC for no code", async () => {

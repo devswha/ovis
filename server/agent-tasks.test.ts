@@ -16,7 +16,7 @@ const agy = {
   checked: (task: number, minute: number, status: string) => ({ step_index: 800 + task, source: "MODEL", type: "GENERIC", status: "DONE", created_at: iso(minute), content: `Created At: x\nTask: ${SID}/task-${task}\nStatus: ${status}\nLog: file:///x` }),
 };
 const grok = {
-  prompt: (minute: number, text = "deploy it") => ({ timestamp: (T0 + minute * 60_000) / 1000, method: "_x.ai/session/update", params: { update: { sessionUpdate: "user_message_chunk", content: { type: "text", text } } } }),
+  prompt: (minute: number, text = "deploy it", promptIndex?: number) => ({ timestamp: (T0 + minute * 60_000) / 1000, method: "_x.ai/session/update", params: { update: { sessionUpdate: "user_message_chunk", content: { type: "text", text }, _meta: { promptIndex } } } }),
   tasks: (minute: number, tasks: [string, string, number][]) => ({ timestamp: (T0 + minute * 60_000) / 1000, method: "_x.ai/session/update", params: { update: { sessionUpdate: "background_tasks", tasks: tasks.map(([task_id, status, started]) => ({ task_id, status, kind: "monitor", started_at: new Date(T0 + started * 60_000).toISOString() })) } } }),
 };
 
@@ -53,6 +53,26 @@ describe("grok background tasks", () => {
     expect(taskCount(state, null, T0 + 4 * 60_000)).toEqual(count(2, 1, T0 + 2 * 60_000));
     for (const entry of [grok.prompt(5, '<system-reminder> Monitor "watch" ended'), grok.tasks(5, [["old", "running", 1], ["watch", "completed", 3]])]) readTaskLine("grok", state, JSON.stringify(entry));
     expect(taskCount(state, null, T0 + 6 * 60_000)).toEqual(count(1, 0, T0 + 2 * 60_000));
+    readTaskLine("grok", state, JSON.stringify(grok.prompt(7, "show the results")));
+    expect(state.promptAt).toBe(T0 + 7 * 60_000);
+  });
+
+  it("keeps the previous user input time when an unindexed reminder is split", () => {
+    const state = read("grok", [
+      grok.prompt(0), grok.prompt(2, "<system-"), grok.prompt(3, "reminder>"),
+      grok.prompt(4, "Watch finished</system-"), grok.prompt(5, "reminder>"),
+    ]);
+    expect(state.promptAt).toBe(T0);
+    readTaskLine("grok", state, JSON.stringify(grok.prompt(6, "show the results")));
+    expect(state.promptAt).toBe(T0 + 6 * 60_000);
+  });
+
+  it("counts a literal partial opening tag once Grok starts answering it", () => {
+    const state = read("grok", [
+      grok.prompt(0, "watch CI", 0), grok.prompt(3, "<system-reminder", 1),
+      { params: { update: { sessionUpdate: "agent_message_chunk" } } },
+    ]);
+    expect(state.promptAt).toBe(T0 + 3 * 60_000);
   });
 });
 
@@ -66,6 +86,25 @@ describe("AgentTaskStatus", () => {
     status.track = (...args: Parameters<AgentTaskStatus["track"]>) => { const done = track(...args); begun.push(done); return done; };
     return async () => { await Promise.all(begun.splice(0)); };
   }
+
+  it("holds the turn across polls that read a split Grok reminder, until a real prompt", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const path = join(root, "grok.jsonl");
+    const lines = (...entries: unknown[]) => entries.map((entry) => `${JSON.stringify(entry)}\n`).join("");
+    writeFileSync(path, lines(grok.prompt(0, "watch CI", 0), grok.tasks(1, [["watch", "running", 1]])));
+    const told: TaskCount[] = [];
+    const status = new AgentTaskStatus({ resolve: async () => ({ path, started: null, owner: null }), onChange: (_, c) => told.push(c), onReset: () => undefined, now: () => T0 + 8 * 60_000 });
+    await status.track(pane("grok"));
+    for (const entry of [grok.prompt(2, " \t", 1), grok.prompt(3, "<system-", 1), grok.prompt(4, "reminder>", 1), grok.prompt(5, "Watch finished</system-reminder>", 1)]) {
+      appendFileSync(path, lines(entry));
+      status.poll();
+    }
+    expect(told).toEqual([count(1, 1, T0)]);
+    appendFileSync(path, lines(grok.prompt(6, "show the results", 2)));
+    status.poll();
+    expect(told.at(-1)).toEqual(count(1, 0, T0 + 6 * 60_000));
+  });
 
   it("reads a session's file on from where it stopped, starts again on another session, and lets a pane go", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));

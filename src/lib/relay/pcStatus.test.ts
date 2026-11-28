@@ -47,13 +47,13 @@ describe("checking a saved PC", () => {
   });
 
   it("calls the PC offline when the relay has nobody for it, and the relay unreachable when none answers", async () => {
-    expect(await checkPc(device(), { relay: socket }, probes({ "wss://relay-ap.ovis.sh": { kind: "silent" }, "wss://relay.ovis.sh": { kind: "silent" } }).probe)).toEqual({ kind: "offline", reason: "pc" });
-    expect(await checkPc(device({ relay: "wss://relay.example" }), { relay: socket }, probes({}).probe)).toEqual({ kind: "offline", reason: "relay" });
-    expect(await checkPc(device(), { relay: socket }, probes({ "wss://relay-ap.ovis.sh": { kind: "silent" } }).probe)).toEqual({ kind: "offline", reason: "relay" });
+    expect(await checkPc(device(), { relay: socket }, probes({ "wss://relay-ap.ovis.sh": { kind: "silent" }, "wss://relay.ovis.sh": { kind: "silent" } }).probe)).toEqual({ kind: "offline", reason: "pc", at: expect.any(Number) });
+    expect(await checkPc(device({ relay: "wss://relay.example" }), { relay: socket }, probes({}).probe)).toEqual({ kind: "offline", reason: "relay", at: expect.any(Number) });
+    expect(await checkPc(device(), { relay: socket }, probes({ "wss://relay-ap.ovis.sh": { kind: "silent" } }).probe)).toEqual({ kind: "offline", reason: "relay", at: expect.any(Number) });
   });
 
   it("passes a relay's refusal on as a refusal, not as a relay this device could not reach", async () => {
-    expect(await checkPc(device({ relay: "wss://relay.example" }), { relay: socket }, probes({ "wss://relay.example": { kind: "refused" } }).probe)).toEqual({ kind: "offline", reason: "refused" });
+    expect(await checkPc(device({ relay: "wss://relay.example" }), { relay: socket }, probes({ "wss://relay.example": { kind: "refused" } }).probe)).toEqual({ kind: "offline", reason: "refused", at: expect.any(Number) });
   });
 });
 

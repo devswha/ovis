@@ -268,7 +268,7 @@ The chat view reads the agent's own session files wherever it knows where they a
 | **omo** | Native session file, found through the pane's process tree | ✓ the `/model` list (picked for the session); other menus — use Terminal |
 | **gjc** | Native session file reported by the web UI's GJC extension, verified against the pane's process | — use Terminal |
 | **pi** | Native session file, resolved through herdr; after `/tree`, the branch in play | ✓ its dialogs: a question, a confirmation, an answer typed in |
-| **Command Code** (`cmd`) | Native session file under `~/.commandcode/projects/`, named by the session herdr reports for the pane (see below); after `/tree`, the branch in play | ✓ its permission prompts: Yes / Yes, don't ask again / No |
+| **Command Code** (`cmd`) | Native session under `~/.commandcode/projects/`, identified by the pane's process (see below). Start it from **New workspace**, **New tab with agent…** or **New worktree** on Linux and macOS | ✓ allow once, deny, or answer a question in Chat; hand it back to Terminal |
 | **OpenCode** | Native session in OpenCode 2's own database, resolved through herdr: `~/.local/share/opencode/opencode.db` (`%USERPROFILE%\.local\share\opencode\opencode.db` on Windows), or where the server's `XDG_DATA_HOME` or `OPENCODE_DB` puts it | ✓ its questions on OpenCode 2.0 or later, answered through its background service (`~/.local/state/opencode/service.json`, or under the server's `XDG_STATE_HOME`) one question at a time, with Back to change an earlier one; its permission requests on OpenCode 2 (a shell command, a file edit with its patch, a web fetch, an MCP tool with its input), answered Allow once, Always allow or Deny through the same service, the card closing when the terminal answers first; other prompts, and OpenCode 1 — use Terminal |
 | **Devin CLI** | Native SQLite session, showing the active branch when herdr or the live process explicitly identifies the session; otherwise terminal text | — use Terminal |
 | **Grok** | Native update log on Linux and macOS. Any Grok executable named `grok` or `grok-…` that holds the `events.jsonl` for the session Herdr reported in exactly one directory, with a newer write time than every other held session. Linux reads `/proc`; macOS reads that process's held files through `lsof` and its environment through `sysctl KERN_PROCARGS2`, not the bridge's home. It verifies the kernel's microsecond process start time through `sysctl kern.proc.pid` around those reads and a fresh pane foreground lookup. Older open files do not hide it; ambiguous IDs, tied times, and a held file that may be a renamed events file use Terminal. After a `/resume` Herdr does not hear about, Chat can keep showing the previous conversation until the resumed session writes; it then uses Terminal until Herdr names that session. Windows uses Terminal. See [Grok setup and limits](grok-chat.md). | — use Terminal |
@@ -355,13 +355,25 @@ then restart gentle-shell. Without it a gentle-shell pane uses Terminal. This wo
 Ovis cannot read a running pi's environment, so it looks for the extension in its own pi home only,
 and a gentle-shell pane there uses Terminal too.
 
-Command Code chat needs the session herdr reports for the pane. Command Code sends that report
-and herdr keeps only the sessions of the agents it knows natively, so no released herdr accepts
-it yet: the pane's status, title and model arrive, its conversation does not. Without it the
-bridge cannot tell which file under `~/.commandcode/projects/` a pane is showing, and two `cmd`
-panes in one folder are indistinguishable, so Command Code opens in Terminal. Its permission
-prompt cards are read off the screen, not from the session file, so they answer from the chat
-either way.
+When Ovis starts Command Code 1.93.4 or later in the 1.x series on local herdr-core, it passes
+a session-only `--mod` if the pane's PATH selects the executable whose version Ovis checked.
+If the workspace selects another `cmd`, or the runtime cannot verify the command (including
+herdr's manifest-based launcher), it starts normally without the mod. The mod identifies the
+session and reports turn ends. It changes no Command Code settings.
+A connected device can answer a permission request or `ask_user_question` in Chat. Command Code
+waits for the mod before drawing its own prompt: choose **Answer in terminal**, or wait five
+minutes, to return it there. Leaving Chat on the last device that can answer also releases the
+request. With no connected device viewing the pane's Chat, an unreachable bridge,
+a safety-forced prompt, or an option preview the card cannot show, the native prompt takes over.
+The mod offers only one-time decisions. After a handoff, the existing screen-based cards reflect
+Command Code's own terminal choices. The per-process session file keeps Chat bound to the same
+session if Ovis restarts while Command Code is running.
+
+Starting `cmd` yourself, `--safe-mode`, and older or unrecognized versions keep the existing
+terminal behavior and screen-based permission cards. For self-started sessions only, you can
+optionally copy `integrations/cmd-session.ts` to `~/.commandcode/mods/ovis-session.ts` and restart
+Command Code. This identifies the session in `~/.commandcode/ovis/<pid>.json` for Chat and adds
+`command-code --session <id>` to herdr's resume report; it does not enable Chat-first prompts.
 
 Devin sessions are never selected by directory or recency alone. A plain `devin` shows the
 terminal text, since herdr does not report its session without its Devin integration; a session
@@ -493,21 +505,24 @@ The strip beside the **Settings** gear shows the plan limits of the AI tools sig
 | Grok | Every account in `~/.grok/auth.json` |
 | Antigravity | The macOS keychain item Antigravity signs in with (Gemini and other-model quota) |
 | OpenCode | OpenCode Go: the `opencode-go` key, else the `opencode` key, and the active console sign-in (`opencode auth login`'s device or browser flow), from `opencode.db` (`~/.local/share/opencode/opencode.db`, or where `XDG_DATA_HOME` and `OPENCODE_DB` put it). An active key takes precedence over the console sign-in; an imported key does not hide it. With no OpenCode 2 store, keys come from `~/.local/share/opencode/auth.json` (`opencode/auth.json` under `XDG_DATA_HOME` when set). If there is no stored key or usable console sign-in, `OPENCODE_API_KEY` can supply the rolling, weekly and monthly limits. A key without Go is left out; a console sign-in without Go is listed without limits |
+| Kimi | Kimi Code: `credentials/kimi-code.json` in `~/.kimi-code` (or the directory `KIMI_CODE_HOME` names), or the global region's `kimi-code-env-*.json` beside it. A sign-in the CLI scoped to another API base (`KIMI_CODE_BASE_URL`) is not read. The nickname or email from the account's profile |
 
 Only providers with a sign-in, or with another tool's record of one (below), are shown; a GitHub account without Copilot is left out. One PC signed in to two accounts of a provider shows both, each named by its email (a login for Copilot) and told apart by its account id, so the same account found in two places counts once. A credential file, a command's output or a provider's answer over 1 MiB is treated as unreadable. Where each sign-in lives and which endpoint states its limits follows [OpenUsage](https://github.com/robinebers/openusage).
 
 - **Read only.** The server never refreshes a token: Claude, Codex, Cursor and Grok rotate refresh tokens, and a refresh the tool did not make would sign it out. An expired or refused sign-in says so; using the tool once may renew it, and otherwise sign in again. An expired Claude or Codex account (not a hub's) also has **Sign in again**, in Settings and in the usage popover: it opens the official sign-in in a terminal tab for that same account, replacing its expired sign-in instead of adding a new account.
 - **Accounts used through another tool.** A subscription you use only through another coding agent has no sign-in here that Ovis reads, and Ovis never reads another tool's sign-in or asks a provider in its name. Where that tool keeps its own record of the limits, Ovis shows the record instead. Today that is **Oh My Pi** and **Gajae Code**, for Claude: the five-hour session, the week and each model's week. Oh My Pi's come from the latest report in `usage_history` of its `agent.db` (in `PI_CODING_AGENT_DIR`, else `$XDG_DATA_HOME/omp` once that folder exists, else `~/.omp/agent`, or the folder `PI_CONFIG_DIR` names in place of `.omp`). Gajae Code keeps no such history, only the last report of each sign-in, for a day, in the `cache` table of its `agent.db` (in `GJC_CODING_AGENT_DIR` or its older name `PI_CODING_AGENT_DIR`, else `$XDG_DATA_HOME/gjc` once that folder exists, else `~/.gjc/agent`, or the folder `GJC_CONFIG_DIR` or its older name `PI_CONFIG_DIR` names in place of `.gjc`); that report is what Ovis shows, and an account both tools recorded is shown from whichever read it last. These variables are read as the Ovis server has them: one set only in your shell does not reach a server started as a service or an app. Both tools read the two `PI_` names, so where one of those points at Oh My Pi's folder, what an older Oh My Pi kept in its own `cache` table is read as Gajae Code's. The account says **Recorded by Oh My Pi** or **Recorded by Gajae Code** and how long ago, in the popover, in the strip's tooltip and in Settings, and its bar in the strip is dotted. Either tool reads about every five minutes while it runs: after 15 minutes without a new record the account is dimmed and says it may have changed since, and a limit whose window has reset is left out, the account with its last one. An account also signed in with Claude Code is listed once: with Claude Code's own reading while that is current, otherwise with whichever was read later. Where the record stands in, only the numbers are the recording tool's: the account keeps its plan, and a Claude Code sign-in that expired still says so and offers **Sign in again**. An account known from the record alone is not a Claude Code sign-in, so Claude Code's row and the setup guide still offer **Sign in**. The store is only read and left as it was; one that is missing, busy or not the shape Ovis knows lists no account. A tool that keeps no record of its limits cannot be shown.
-- **Asked only while someone looks.** Nothing runs in the background. The server asks a provider at most every five minutes, a refresh from the popover at most every 30 seconds, and a provider that answered 429 not before it said to.
+- **Asked only while someone looks.** Nothing runs in the background. The server asks a provider at most every five minutes, a refresh from the popover at most every 30 seconds, and a provider that answered 429 not before it said to. A read that fails says what it ran into, where the server can tell: the provider is busy or down (a 5xx, Claude's 529), it answered too slowly, it sent something that is not its usage (an HTML page), this PC could not connect to it, or the hub could not read that account (the hub set it aside, or its own request failed).
 - **Yours to arrange.** **Settings → Agents** lists each coding agent on the PC as one row: its version, whether it is signed in (as far as these accounts show; an agent whose sign-in Ovis cannot read says only that it is installed), and, opened, its accounts with their limit and herdr's session resume for it. **New agents** below sets how New workspace starts Claude Code and Codex. Accounts no agent on the PC signs in to (Cursor, or an agent not installed there) are under **Other accounts**, with the hub; a remote PC shown there keeps every account under Other accounts, since they are read on the server's PC. Within each provider you order the accounts and hide any (from the strip and its popover alike); **Plan limits** at the bottom picks the limit the strip shows (**Weekly** or **Session**) and switches the meters between what is used and what is left. Each account shows whether it comes from **This PC** or **Hub**.
-- **Add an account.** **Other accounts → Add account** lists Claude, Codex, Cursor, GitHub Copilot, Grok, Antigravity and OpenCode, then Hub. Installed CLIs sign in in a new terminal tab; missing ones show an installation hint. Claude Code and Codex are followed in the browser: a dialog shows the sign-in page to open (only on the provider's own address), Codex's one-time code to enter there, and a box for the code Claude's page shows, which Ovis types into the login and keeps nowhere; it then says whether a new account signed in. **Open terminal** in the dialog shows the login's tab instead. **Sign in** on an agent's row with no account, and **Sign in to …** in the setup guide, sign in to the agent's own home (`~/.claude`, `~/.codex`), the one its plain command uses; Add account makes a separate home. Only Claude and Codex offer hub sign-in and a separate `~/.claude-<name>` or `~/.codex-<name>` credential home. Other providers keep their existing home and require **Continue** before replacing a discovered sign-in. Account names use lowercase letters, numbers and hyphens. Codex and Grok use a device code only if their installed help lists it; Cursor prints its URL without opening a server browser. Claude may need a localhost callback. Antigravity gives interactive sign-in guidance rather than guessing a login command. OpenCode plan limits require OpenCode Go/Zen, not an arbitrary provider selected in its CLI. Hub sign-in provides a waiting state and a redirect-paste field. An agent's own **Add account**, or **Sign in** on an agent row with no account, starts at its provider's choices.
+- **Add an account.** **Other accounts → Add account** lists Claude, Codex, Cursor, GitHub Copilot, Grok, Antigravity, OpenCode and Kimi, then Hub. Installed CLIs sign in in a new terminal tab; missing ones show an installation hint. Claude Code and Codex are followed in the browser: a dialog shows the sign-in page to open (only on the provider's own address), Codex's one-time code to enter there, and a box for the code Claude's page shows, which Ovis types into the login and keeps nowhere; it then says whether a new account signed in. **Open terminal** in the dialog shows the login's tab instead. **Sign in** on an agent's row with no account, and **Sign in to …** in the setup guide, sign in to the agent's own home (`~/.claude`, `~/.codex`), the one its plain command uses; Add account makes a separate home. Only Claude and Codex offer hub sign-in and a separate `~/.claude-<name>` or `~/.codex-<name>` credential home. Other providers keep their existing home and require **Continue** before replacing a discovered sign-in. Account names use lowercase letters, numbers and hyphens. Codex and Grok use a device code only if their installed help lists it; Cursor prints its URL without opening a server browser. Claude may need a localhost callback. Antigravity gives interactive sign-in guidance rather than guessing a login command. OpenCode plan limits require OpenCode Go/Zen, not an arbitrary provider selected in its CLI. Hub sign-in provides a waiting state and a redirect-paste field. An agent's own **Add account**, or **Sign in** on an agent row with no account, starts at its provider's choices.
 - **Connect a hub.** Choose **Hub** (**Import accounts from CLIProxyAPI**) in the same picker to enter its URL and server-saved management key. The connected hub appears as one compact row under Other accounts, with **Edit** and **Remove**. Account rows show their source, plan and sign-in status inline.
 - **The server's PC only.** Remote PCs are not included.
 - **Claude's limits from its own status line.** Where Anthropic's usage endpoint is refused (it
   answers 403 from some networks, which shows as a sign-in that expired when it has not), Claude Code's
   status line is still handed the five-hour and weekly limits. Turn on **Read Claude's limits from its
   status line** in Settings → Agents → Plan limits, or **Read from Claude's status line instead** under
-  such a refused Claude account in the usage popover; nothing turns it on for you. The server's PC then
+  a Claude account on this PC whose endpoint refused, limited or failed, in the usage popover; nothing
+  turns it on for you. A Claude that Ovis starts keeps its limits the same way without the switch (where
+  it draws a status line: only where you set one). The server's PC then
   adds only `herdr-statusline/` in Claude's config directory (`CLAUDE_CONFIG_DIR`, else `~/.claude`)
   and points `statusLine` in that directory's `settings.json` at a wrapper there (creating the file
   when Claude has none yet). The wrapper runs your status line command unchanged (none where none was
@@ -525,8 +540,9 @@ Only providers with a sign-in, or with another tool's record of one (below), are
   concurrent process running as your uid from replacing a parent directory between operations.
   A concurrent same-user process replacing the quarantine name or directory itself during the few microseconds of an operation is also outside what pathname APIs can exclude.
   The wrapper keeps only the two windows and the account in `~/.herdr/statusline-last.json`, readable only
-  by you. A reading counts only for the account that drew it and only until its window resets, and an
-  answer from the endpoint newer than it wins. Turning it off puts `settings.json` back as it was and
+  by you. A reading counts only for the account that drew it and for at most six hours. While every window
+  it named still stands it is shown without asking the endpoint; once one has reset the endpoint is asked,
+  and the reading stands in only if the endpoint fails and no newer answer from it is known. Turning it off puts `settings.json` back as it was and
   deletes its marked files; context removal checks the profile too and removes the context directory
   only when empty. Unmarked files are left alone under normal, nonconcurrent use. If you have
   since changed the status line yourself and it still runs the wrapper, turning it off changes nothing
@@ -640,11 +656,13 @@ Signing in links your devices once instead of pairing each phone with each PC. I
 
 **Approving a device.** The approval card on your other devices says what is asking: the system it runs and roughly where its request came from (country and city, as Cloudflare saw it, never the address), or **Location unknown**. Approve only if you started it yourself just now; if you didn't, deny it.
 
-**Ways to sign in.** **Settings → Devices and PCs → Manage account** lists your account's sign-in methods, the plan, its devices and PCs, and **Delete account** last. In the desktop app, **Add Google** (or **Add GitHub**) adds one on purpose, and **Remove** takes one away, except the one this device signed in with. An account is never joined to another because their email addresses match.
+**Ways to sign in.** **Settings → Devices and PCs → Manage account** lists your account's sign-in methods with their latest changes (when, what, and the number of the device that made it), the plan, its devices and PCs, and **Delete account** last. In the desktop app, the phone apps and at `app.ovis.sh`, **Add Google** (or **Add GitHub**, **Add Apple**) adds one on purpose, and **Remove** takes one away, except the one this device signed in with.
+
+**One email, one account.** Where the account service has this turned on, when you first sign in with a new method whose verified email already belongs to your Ovis account, Ovis adds the method to that account instead of making a second one. It doesn't for an account that keeps a signed list or already has that kind of method: that sign-in makes a separate account. Every device of the account is told. The device that signed in says **Signed in to the account made with GitHub** (with the masked email), and **Not my account** takes the method out again and signs that device out. Other devices show the new method in **Manage account** with **Not me** for 24 hours. A method added this way can't change the account's sign-in methods, remove a PC, sign every device out or delete the account until those 24 hours are over: Ovis says from when. A method you remove, or reject with **Not me**, is never added by email again. If Ovis says it could not check your email, sign in again.
 
 **The account's other PCs.** On a PC's own page, **Settings → Devices and PCs** lists the account's PCs that this app has not added, with no link or button of their own. **Manage account** lists every device and PC of the account. **Disconnect** on a device (a lost phone or browser) disconnects it from every PC of the account. A PC the account has not heard from for 15 minutes (reinstalled, given away, turned off) has **Remove**. That only takes it off the account's list on every device: it revokes nothing, and a PC that is used again is listed again when a device of your account opens it. A PC in use has no Remove, since it would be listed again at once, except in an account that keeps a signed list: there a PC the list holds has **Remove** on or off, and comes back to the account only as a new PC, added again on it. On a PC that is in the account, with the relay on, **Add a connection → Ovis relay** is the signed-in line and the phone's QR code only: the account's PCs are in the sidebar ([Adding a PC of your account](account.md#adding-a-pc-of-your-account)). Signing in on a PC that is already in the account goes straight to the main screen. To put another PC in the account, sign in on it with the same account.
 
-Who gets into a PC is still decided by that PC alone, in **Settings → Devices and PCs**, where **Revoke** always works. The account service at `account.ovis.sh` lists your PCs and carries signed messages between your devices; it can't read your sessions or add a device by itself ([how it works](account.md)). It keeps no email, name or username. [The privacy policy](https://ovis.sh/privacy/) says what it stores and for how long.
+Who gets into a PC is still decided by that PC alone, in **Settings → Devices and PCs**, where **Revoke** always works. The account service at `account.ovis.sh` lists your PCs and carries signed messages between your devices; it can't read your sessions or add a device by itself ([how it works](account.md)). It keeps no email address, name or username: for a GitHub or Google sign-in only a keyed fingerprint of the verified address, so it can add a new sign-in method to the account that already has that email (above). [The privacy policy](https://ovis.sh/privacy/) says what it stores and for how long.
 
 #### A sign-in method that belongs to another account
 
@@ -652,7 +670,7 @@ Who gets into a PC is still decided by that PC alone, in **Settings → Devices 
 
 1. Sign out, then sign in with that Google to open the other account and see what is in it.
 2. If that account has another way to sign in, sign out and sign in to it that way, then remove Google under **Settings → Devices and PCs → Manage account → Ways to sign in** (the method a device signed in with can't be removed from that device).
-3. If Google is that account's only way to sign in, it can't be removed yet. To keep that account, first give it another way in: in the desktop app, signed in to it with Google, add a sign-in no account uses yet (another GitHub or Apple), then sign in with that and remove Google as in step 2. If nothing in that account is needed, you can delete it instead (**Delete account**, same place); its PCs keep the devices it added until you revoke them on each PC.
+3. If Google is that account's only way to sign in, it can't be removed yet. To keep that account, first give it another way in: in the desktop app, a phone app or at `app.ovis.sh`, signed in to it with Google, add a sign-in no account uses yet (another GitHub or Apple), then sign in with that and remove Google as in step 2. If nothing in that account is needed, you can delete it instead (**Delete account**, same place); its PCs keep the devices it added until you revoke them on each PC.
 4. Sign in to this account again and choose **Add Google**.
 
 Don't delete this account instead: the other account may already have a sign-in of the same kind (each account has one per provider), and then it still couldn't take this one.
@@ -680,9 +698,9 @@ Only devices in your tailnet can open that address. Your own devices get in with
 To check alerts later, choose **Settings → Alerts → Send test**. The result tells you
 whether the test was sent or failed; a missing subscription offers **Turn alerts on again**.
 
-While the app is in front on any device, its window visible and focused, no alert goes to any
-device: you are already looking at the change. Alerts resume once no window of the app is in use.
-The test push is always sent.
+A visible, focused Ovis window on any device holds back alerts. If a question is still unanswered
+or a finish still has no follow-up five minutes after the change, its alert goes out even if a
+window is still focused. The test push is always sent.
 
 Each pane keeps one alert: a new one replaces its last. iOS lets an alert be removed only
 30 seconds after it arrived, so a quicker repeat stays until the pane's next alert.
@@ -1167,9 +1185,13 @@ macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
   installed on it, and it is added, renamed or removed with `hc machine` or in the Herdr app.
   Ovis starts one more server of its own for each (on loopback, with an empty home folder of its
   own), so its agents' chat history is not read here: their transcripts are on that machine.
-  Its files are not reachable from Ovis yet: file previews, the Files view, diffs, pasted images
-  and the folder picker are refused for it. A folder typed for a new workspace there is passed to
-  that machine as written (empty: its home). Pins and "seen" are not shared with the Herdr app
+  Its files are read there through the core (`machine.exec` with that machine's `/bin/sh`, as
+  its user): the Files view's browser, the folder picker and file previews, up to 8 MB a file
+  (a larger one is described but not opened; an HTML page shows as text). A pasted or attached
+  image is put beside the terminal on that machine (`terminal.put`, 8 MB at most) and its path
+  there is inserted. Diffs, git, Markdown lists, file search, editing and New folder are refused
+  for it, and so is all of it on a machine without `/bin/sh` (Windows). A folder typed for a new
+  workspace there is passed to that machine as written (empty: its home). Pins and "seen" are not shared with the Herdr app
   there. Temporary machines (`hc machine add --temp`) are not shown, and
   PCs added over SSH or through the relay keep working beside them.
 
@@ -1240,7 +1262,8 @@ next check, within 5 minutes, offers the newest beta, and it installs like a rel
 remove the file or write `stable`: nothing is downgraded, and the PC waits for the next release.
 
 The desktop app reads the same setting from its own state dir (`server/update-channel` in the app's
-data folder) when it starts, and then updates from the beta builds of the app.
+data folder) when it starts, and then updates from the beta builds of the app, or from a release that
+is newer than the last beta (a release day, before the next beta is made).
 
 ### Updating herdr
 

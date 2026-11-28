@@ -6,7 +6,7 @@ import type { SeenFinish } from "./seen.ts";
 
 export const LOCAL_MACHINE = "local";
 export const BRIDGE_PROTOCOL = 1;
-export const REMOTE_BUNDLE_VERSION = "55";
+export const REMOTE_BUNDLE_VERSION = "56";
 export interface PaneTarget { machine_id: string; pane_id: string }
 export type MachineState = "connecting" | "connected" | "reconnecting" | "disconnected" | "error";
 export interface SshTarget {
@@ -231,6 +231,21 @@ export function pcAlertKey(machine: Pick<Machine, "name" | "relay" | "server_id"
 
 /** GET /api/machines: with ?verify_source_boot=<id>, also that PC's freshly proved boot id */
 export interface MachineRoster { machines: Machine[]; verified_source_boot?: { machine_id: string; boot_id: string } }
+
+/** POST /api/machines/:machine_id/forward: one TCP port on the SSH PC's localhost. */
+export interface MachineForwardRequest { readonly port: number; readonly bind?: string }
+/** The listener on the requested local loopback address (default 127.0.0.1), not a public URL. */
+export interface MachineForwardResponse { readonly url: string }
+
+/** An explicit local listener address, never a name to resolve or a wildcard. */
+export function isForwardBind(host: string): boolean {
+  return host === "[::1]" || /^127(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(host);
+}
+
+/** A hostname a browser uses for loopback. `localhost` names use the default listener. */
+export function isForwardLoopbackHost(host: string): boolean {
+  return isForwardBind(host) || /^(?:[a-z0-9-]+\.)*localhost$/i.test(host);
+}
 /**
  * The herdr behind a PC, as its bridge can serve it. terminal_attach is false on a Windows
  * host: herdr has no `terminal attach` there yet (herdrdev/herdr#4821), and it is false on
@@ -311,7 +326,11 @@ export interface HerdrCoreFacts {
   bundled_unused?: true;
 }
 export interface FoundHerdrSession { socket_path: string; session?: string; label: string }
-export interface FoundOvis { socket_path: string; runtime: "herdr-core" }
+/**
+ * `port`: the loopback port it answers on, to tell two on one PC apart (absent from a record saved before it was sent).
+ * `newer_than_app`: it runs a newer release than this app, which must be updated before it can connect.
+ */
+export interface FoundOvis { socket_path: string; runtime: "herdr-core"; port?: number; newer_than_app?: true }
 /** `install_ovis`: an account add over SSH found no Ovis of that PC's own there; installing Ovis there (PcInstallJob) is the way on */
 export type MachineAction = "connect" | "update_bridge" | "setup" | "bridge_conflict" | "windows_login" | "windows_start_failed" | "choose_herdr" | "install_ovis";
 /** `ovis`: the PC's own Ovis updates itself (Machine.remote_ovis); absent for a bridge this app installs */

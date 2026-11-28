@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { appFaces } from "./app-faces.ts";
+import { appContext } from "./app-context.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { SECOND_TAP_MS } from "../src/lib/useSidebarLayout.ts";
@@ -421,7 +422,7 @@ async function shot(page: Page, name: string): Promise<void> {
 }
 
 async function withPage(browser: Browser, base: string, settings: Settings, path: string, what: string, run: (page: Page) => Promise<void>, viewport: { width: number; height: number } = PHONE, touch: boolean = viewport.width < 769, locale = "en-US"): Promise<void> {
-  const context = await browser.newContext({ viewport, isMobile: touch, hasTouch: touch, locale });
+  const context = await appContext(browser, { viewport, isMobile: touch, hasTouch: touch, locale });
   try {
     await context.addInitScript((seed) => {
       // the blank page the tab began on, which Back out of the app returns to, has no storage to seed
@@ -754,6 +755,18 @@ try {
 
         await withPage(browser, base, off, "/", block("Inbox at the drawer's foot, and no drawer in the mode"), async (page) => {
           await page.locator(".pane-slot").first().waitFor();
+          await page.evaluate(() => {
+            const trace: string[] = [];
+            Object.assign(window, { inboxSwipeTrace: trace });
+            for (const name of ["back", "forward", "go", "pushState", "replaceState"] as const) {
+              const original = history[name].bind(history) as (...args: unknown[]) => unknown;
+              Object.defineProperty(history, name, { configurable: true, value: (...args: unknown[]) => {
+                trace.push(`${name} ${JSON.stringify(args)} ${location.href}`);
+                return original(...args);
+              } });
+            }
+            window.addEventListener("popstate", () => trace.push(`popstate ${location.href}`));
+          });
           await openDrawerForMark(page);
           assert.equal(await page.locator(".app-header #drawer-toggle.is-mark").getAttribute("aria-label"), "Close workspace list", "the Ovis mark at the drawer's head closes it: it is no way into the inbox");
           const entry = page.locator(FOOT_INBOX);
@@ -769,7 +782,15 @@ try {
           for (let x = 24; x <= 304; x += 40) await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: 422 }] });
           await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
           await frames(page);
-          assert.equal(await page.locator("#workspace-drawer, .scrim.is-open").count(), 0, "a swipe from the edge opens no drawer in the mode");
+          const afterSwipe = await page.evaluate(() => ({
+            url: location.href,
+            trace: (window as unknown as { inboxSwipeTrace: string[] }).inboxSwipeTrace,
+            inbox: document.querySelector(".mode-inbox") !== null,
+            matches: [...document.querySelectorAll("#workspace-drawer, .scrim.is-open")].map((node) => ({
+              id: node.id, className: node.className, modal: node.getAttribute("aria-modal"),
+            })),
+          }));
+          assert.equal(afterSwipe.matches.length, 0, `a swipe from the edge opens no drawer in the mode: ${JSON.stringify(afterSwipe)}`);
           await page.locator(".mode-inbox").waitFor();
           pass(13, "the open drawer's head is the Ovis mark, which closes it, and Inbox beside the gear at its foot opens the list; in the mode a swipe from the left edge opens no drawer");
         });
@@ -976,7 +997,7 @@ try {
             assert.equal(await historyLength(page), entries + 1, "entering is one entry");
             assert.equal(await page.locator(".inbox-unchosen").textContent(), "Choose one from the list to open its chat here.");
             assert.equal(await page.locator('.mode-inbox .inbox-row[aria-current="true"]').count(), 0, "no row is open while no agent is chosen");
-            for (const selector of [".tab-strip", ".view-switch", ".status-bar", "#drawer-toggle", "#workspace-drawer", ".sidebar-toggle", ".header-files-button", ".pane-split.is-split", ".mode-inbox time.inbox-time"]) {
+            for (const selector of [".tab-strip", ".view-switch", ".status-bar", "#drawer-toggle", "#workspace-drawer", ".sidebar-toggle", ".header-files-button", ".pane-split.is-split"]) {
               assert.equal(await page.locator(selector).count(), 0, `the wide mode draws no ${selector}`);
             }
             assert.equal(await page.locator(".header-more-dot").count(), await page.locator(".inbox-rail .header-more-dot").count(), "the wide mode draws no .header-more-dot but the rail's");
@@ -1002,7 +1023,9 @@ try {
             const wideRows = await page.locator(".mode-inbox .inbox-item").evaluateAll((items) => items.map((item) => {
               const r = item.querySelector(".inbox-row")!.getBoundingClientRect();
               const a = item.querySelector(".inbox-avatar")!.getBoundingClientRect();
-              return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, radius: getComputedStyle(item.querySelector(".inbox-row")!).borderRadius, avatar: [a.width, a.height, a.left - r.left], nameSize: getComputedStyle(item.querySelector(".inbox-name")!).fontSize, wordsSize: getComputedStyle(item.querySelector(".inbox-words")!).fontSize };
+              const time = item.querySelector(".inbox-line > time.inbox-time")?.getBoundingClientRect();
+              const state = item.querySelector(".inbox-state")?.getBoundingClientRect();
+              return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, radius: getComputedStyle(item.querySelector(".inbox-row")!).borderRadius, avatar: [a.width, a.height, a.left - r.left], nameSize: getComputedStyle(item.querySelector(".inbox-name")!).fontSize, wordsSize: getComputedStyle(item.querySelector(".inbox-words")!).fontSize, time: time && time.width > 0 ? { right: time.right, bottom: time.bottom } : null, stateLeft: state && state.width > 0 ? state.left : null };
             }));
             near(wideRows[0]!.top - add.bottom, 16, 2, "the first row under the top controls");
             wideRows.forEach((item, index) => {
@@ -1011,6 +1034,8 @@ try {
               assert.equal(item.radius, "12px");
               assert.deepEqual(item.avatar, [32, 32, 8], "the mark is 32px, 8px inside the row");
               assert.deepEqual([item.nameSize, item.wordsSize], ["14px", "13px"]);
+              assert.ok(item.time !== null, `wide row ${index} draws its time at the end of the name's line`);
+              if (item.stateLeft !== null) assert.ok(item.time.right <= item.stateLeft, `wide row ${index}'s time ends before its state's mark: ${item.time.right} > ${item.stateLeft}`);
               if (index > 0) near(item.top - wideRows[index - 1]!.bottom, 4, 1, "between two rows");
             });
 

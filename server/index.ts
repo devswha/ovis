@@ -20,7 +20,7 @@ import { dirname, join } from "node:path";
 import type { PendingMessage, SessionSnapshot } from "../shared/protocol.ts";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { isLoopbackBind, lanExposed } from "./access.ts";
-import { DeviceStore, folderTombstones, mergeAccountTombstones, readDeviceRegistry, type StoredDevice } from "./devices.ts";
+import { DeviceStore, folderTombstones, markBeforeMove, mergeAccountTombstones, readDeviceRegistry, type StoredDevice } from "./devices.ts";
 import { syncDirectory } from "./private-state.ts";
 import { PreferenceStore } from "./preferences.ts";
 import { readOmpHeldFilesSetting } from "./omp.ts";
@@ -30,12 +30,8 @@ import { AgentToolHub } from "./agent-tools/hub.ts";
 import { useAgentToolHub } from "./agent-tools/launch.ts";
 import { harnessToolSetting } from "../shared/harness-tool.ts";
 
-import { claudeApprovals } from "./approvals/claude.ts";
-import { copilotApprovals } from "./approvals/copilot.ts";
+import { APPROVAL_ADAPTERS } from "./approvals/adapters.ts";
 import { CodexServers } from "./approvals/codex.ts";
-import { omoApprovals } from "./approvals/omo.ts";
-import { ompApprovals } from "./approvals/omp.ts";
-import { piApprovals } from "./approvals/pi.ts";
 import { SeenStore } from "./seen.ts";
 import type { SeenFinish } from "../shared/seen.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
@@ -88,6 +84,7 @@ import { AccountCatchUp } from "./account/account-catch-up.ts";
 import { RemovalEvidence } from "./account/removal-evidence.ts";
 import { DeviceJournal } from "./account/device-journal.ts";
 import { mergeAccountState } from "./account/account-merge.ts";
+import { AccountMove } from "./account/account-move.ts";
 import { AccountHolds } from "./account/holds.ts";
 import { AccountIntroductions } from "./account/introductions.ts";
 import { RecoveryReleases } from "./account/recovery.ts";
@@ -118,6 +115,7 @@ import { closeCodexDaemonSources } from "./codex-daemon.ts";
 import { holdOpenCodeNative } from "./opencode-native.ts";
 import { holdCommandHistory } from "./claude-command-history.ts";
 import { holdFilePool } from "./file-pool.ts";
+import type { MachineHc } from "./herdr-core/machine-files.ts";
 import { handleRequest, type RequestServices, type ServerContext } from "./dispatch.ts";
 import { lanHttpsCertificate, lanHttpsConfig, privateLanAddresses, privateLanPeer, type LanHttpsConfig } from "./lan-https.ts";
 
@@ -249,6 +247,8 @@ export function createServer(
     bridgeOnly?: boolean;
     /** false: the panes' files are on another machine (server/herdr-core/machine-entry.ts), so no route reads or makes files on this disk for them */
     localFiles?: boolean;
+    /** with `localFiles: false`, the core that reads that machine's files there (herdr-core/machine-files.ts); without it they are all refused */
+    machineFiles?: () => MachineHc;
     herdrProfiles?: () => Promise<HerdrMachineProfile[]>;
     herdrConfigPath?: string;
     registerBridge?: boolean;
@@ -382,7 +382,11 @@ export function createServer(
   // Before the first migration, the legacy rows themselves establish the PC's account. A recorded clear is never fresh.
   const bindingRule = pcAccount && pcAccount.strict === null && (!pcAccount.migrating || pcAccount.clears().length > 0)
     ? { boundAccount: pcAccount.account() } : {};
-  const merge = sibling && !untouched ? mergeSiblingState(stateDir, sibling, undefined, opensAll ? { ...bindingRule, holdImports: closure, dropConflictingKeys: true, sharedLegacyIdentity, onDropped: (device) => conflicts.push(device) } : {}) : null;
+  const moved = (pcAccount?.clears() ?? []).flatMap(({ moved }) =>
+    moved && moved.from !== bindingRule.boundAccount ? [{ account: moved.from, at: moved.at }] : []);
+  const merge = sibling && !untouched ? mergeSiblingState(stateDir, sibling, undefined, opensAll ? { ...bindingRule, holdImports: closure,
+    dropConflictingKeys: true, sharedLegacyIdentity, onDropped: (device) => conflicts.push(device),
+    ...(moved.length ? { moved: (row: StoredDevice) => moved.reduce(markBeforeMove, row) } : {}) } : {}) : null;
   // With no merge this start (a sibling now of another identity, or none given), only credentials an earlier merge
   // witnessed stay Step 1 credentials; a merge that ran decides alone, so its deletions still veto.
   const siblingLegacyCredential = merge ? merge.legacyCredential : opensAll && !untouched ? recordedLegacyCredential(stateDir) : undefined;
@@ -523,6 +527,8 @@ export function createServer(
     devices, identity: () => ovisRelay.currentIdentity(), ...(accountList ? { list: accountList } : {}),
     service: (() => { try { return accountServiceUrl(options.accountService?.url); } catch (error) { return error instanceof Error ? error : new Error(String(error)); } })(), ...(options.accountService?.fetch ? { fetch: options.accountService.fetch } : {}),
   });
+  const accountMove = pcAccount === null ? null : AccountMove.open({ stateDir, sibling: sibling ?? null, devices, relay: ovisRelay,
+    mailbox: accountMailbox, holds: accountHolds, safety: safetyLog });
   // a row dropped because its copies held different keys is gone from both folders; the journal says so (T27, T48)
   if (merge?.devicesBlocked === null) for (const device of conflicts) devices.journalEvent({ kind: "drop", how: "merge_conflict", key: device.relay_public_key ?? null, no: null, row: device.id, label: device.label, by: null, account: device.account ?? null });
   // Device migration creates the journal's companions. Recover interrupted notices before their whole records fold.
@@ -538,7 +544,8 @@ export function createServer(
   readBrowserToolSetting(() => preferences.get().settings.agentBrowserTools, join(stateDir, "browser tools"));
   // a turn a hook tells of goes to the status of its pane, and a command it ran to the chat's send of it: no hook runs
   // before the core below starts an agent
-  const approvals = new ApprovalHub(join(stateDir, "approval hooks"), [claudeApprovals, piApprovals, omoApprovals, ompApprovals, copilotApprovals], {
+  const approvals = new ApprovalHub(join(stateDir, "approval hooks"), APPROVAL_ADAPTERS, {
+    chatConnected: (paneId): boolean => core.chatConnected(paneId),
     onTurn: (paneId, kind, turn) => core.hookTurn(paneId, kind, turn),
     onCommand: (paneId, kind, command) => noteHookCommand(paneId, kind, command),
     onContext: (paneId, context) => core.hookContextChanged(paneId, context),
@@ -620,10 +627,12 @@ export function createServer(
   // the agent's version as the catalog reads it (its version flag, kept per executable): none read is none supported
   readHeldApprovals(approvals);
   readToldModes((paneId) => approvals.toldMode(paneId));
-  readToldSessions((paneId) => approvals.toldSession(paneId));
+  readToldSessions((paneId, kind) => approvals.toldSession(paneId, kind));
   useApprovalHub(approvals, async (kind) => {
     const entry = AGENT_CATALOG.find((candidate) => candidate.id === kind);
-    return entry === undefined ? null : (await agentDetector.state(entry, catalogPlatformHere)).version;
+    if (!entry) return null;
+    const { state, executable } = await agentDetector.probe(entry, catalogPlatformHere);
+    return { version: state.version, executable };
   }, codexServers);
   const installFolder = (binary: string): { path: string; mark: string } | null => {
     const entry = AGENT_CATALOG.find((candidate) => candidate.detect.binaries.includes(binary));
@@ -632,13 +641,13 @@ export function createServer(
     if (path === null) return null;
     try { return { path, mark: String(statSync(path).mtimeMs) }; } catch { return null; }
   };
-  const herdrKinds = new InstalledLookup({ onPath: (binary) => agentDetector.onPath(binary), inInstallFolder: installFolder, refresh: (interactive) => agentDetector.refreshPath(interactive) });
-  const shellKinds = new InstalledLookup({ onPath: (kind) => shellAgents.executable(kind), inInstallFolder: installFolder, refresh: (interactive) => shellAgents.refresh(interactive) });
-  const agentOffered = async (kind: string): Promise<boolean> => {
+  const herdrKinds = new InstalledLookup({ onPath: (binary, checkProfile) => agentDetector.onPath(binary, checkProfile), inInstallFolder: installFolder, refresh: (interactive) => agentDetector.refreshPath(interactive) });
+  const shellKinds = new InstalledLookup({ onPath: (kind, checkProfile) => shellAgents.executable(kind, checkProfile), inInstallFolder: installFolder, refresh: (interactive) => shellAgents.refresh(interactive) });
+  const agentOffered = async (kind: string, checkProfile = true): Promise<boolean> => {
     const entry = AGENT_CATALOG.find((candidate) => candidate.id === kind);
-    for (const needed of entry?.detect.needs ?? []) if (!(await herdrKinds.has(needed))) return false;
-    if (kind in SHELL_AGENTS) return shellKinds.has(kind);
-    return herdrKinds.has(entry?.detect.binaries[0] ?? kind);
+    for (const needed of entry?.detect.needs ?? []) if (!(await herdrKinds.has(needed, checkProfile))) return false;
+    if (kind in SHELL_AGENTS) return shellKinds.has(kind, checkProfile);
+    return herdrKinds.has(entry?.detect.binaries[0] ?? kind, checkProfile);
   };
   const agentInstaller = new AgentInstaller(agentDetector);
   const openCodeState = new OpenCodePromptState();
@@ -652,6 +661,7 @@ export function createServer(
   let agentTools: AgentToolHub | null = null;
   const core = createCore({ options: { ...options, acp, codexServers, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => { void seen.moved(LOCAL_MACHINE, from, to, renumber).catch((error) => console.warn("seen: could not carry local reads:", error)); },
     hookContextOf: (paneId, kind) => approvals.contextOf(paneId, kind),
+    chatLeft: () => approvals.releaseUnwatched(),
     observeHookAgent: (paneId, kind) => approvals.observeContextAgent(paneId, kind),
     paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); agentTools?.runs.forgetTerminal(paneId); },
   }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
@@ -822,6 +832,7 @@ export function createServer(
     for (const entry of pendingRedemptions?.list() ?? []) pendingRedemptions?.decline(entry.id);
     syncConfirmListener();
   });
+  const stopRelayAccountWatch = pcAccount?.onBindingChange(() => ovisRelay.accountChanged());
   // `ovis recover` (server/account/recovery.ts): this PC's user, at its terminal or over SSH, on a socket no route reaches.
   // Each release and undo is journalled per row before it takes effect; whether the log can be read is asked live
   const recoveryReleases = opensAll && journal ? new RecoveryReleases({
@@ -892,6 +903,7 @@ export function createServer(
       ...(options.herdrCoreInstaller ? { installer: options.herdrCoreInstaller } : {}),
     }) : null,
     options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, joins, accountMailbox, accountList, accountWitness, pinWatch, listAdd, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, tailnetNodes, whoisNode: (address: string) => tailnet.node(address), portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, approvals, acp, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, memory, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, recoveryReleases, lockSignal,
+    accountMove,
     get localConfirms() { return devices.screenApprovalActive() ? localConfirms : undefined; },
     get pendingRedemptions() { return devices.screenApprovalActive() ? pendingRedemptions : undefined; },
     get keyProofPairings() { return devices.screenApprovalActive() ? keyProofPairings : undefined; },
@@ -909,6 +921,7 @@ export function createServer(
     accountList?.start();
     accountWitness?.start();
   }
+  accountMove?.resume();
   accountMailbox.start();
 
   // one listener per address on one port, all or none: a half-bound set would answer where nobody asked it to
@@ -1002,6 +1015,7 @@ export function createServer(
     },
     stop() {
       services.runtimeMove?.stop();
+      accountMove?.stop();
       accountMailbox.stop();
       accountList?.stop();
       listAdd?.stop();
@@ -1034,6 +1048,7 @@ export function createServer(
       ipv6?.stop(true);
       ownerListener?.stop(true);
       stopBindingWatch?.();
+      stopRelayAccountWatch?.();
       stopPinWatch?.();
       if (pinTimer !== null) clearInterval(pinTimer);
       confirmListener?.stop();

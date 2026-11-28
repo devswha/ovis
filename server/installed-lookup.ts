@@ -1,5 +1,5 @@
 export interface PathLookup {
-  onPath(binary: string): Promise<string | null>;
+  onPath(binary: string, checkProfile?: boolean): Promise<string | null>;
   inInstallFolder(binary: string): { path: string; mark: string } | null;
   refresh(interactive: boolean): Promise<void>;
 }
@@ -16,7 +16,8 @@ export class InstalledLookup {
     this.#now = now;
   }
 
-  async has(binary: string): Promise<boolean> {
+  async has(binary: string, checkProfile = true): Promise<boolean> {
+    if (!checkProfile) return (await this.#lookup.onPath(binary, false)) !== null;
     const folder = this.#lookup.inInstallFolder(binary);
     const install = folder === null ? null : `${binary}\0${folder.path}\0${folder.mark}`;
     const running = install === null ? null : this.#refreshes.get(install)?.running ?? null;

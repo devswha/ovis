@@ -24,11 +24,12 @@ import { parseFoundHerdrSessions, throwawayPath, validHerdrSocket } from "./herd
 import { isCoreAdapterSocket } from "./herdr-core/pipe.ts";
 import { writePrivateState } from "./private-state.ts";
 import { holdsDocument, readStateDocument, setAsideDamaged } from "./state-document.ts";
+import { AgentChanges } from "./agent-changes.ts";
 import { detectHost, HERDR_INSTALL_CMD, installLockOwner, type RemoteHost } from "./remote-host.ts";
 import type { FoundHerdrSession, FoundOvis } from "../shared/machines.ts";
 import { DESKTOP_APP_UPDATES, REVISION, type UpdateStatus } from "../shared/update.ts";
 import { discard, readCappedJson, REMOTE_LIMITS } from "./remote-json.ts";
-import { SshConnection, sshClient } from "./ssh.ts";
+import { SshConnection, sshClient, type SshForward } from "./ssh.ts";
 import { WAITING_FOR_WINDOWS_LOGIN } from "./windows-herdr-start.ts";
 import { decodeOffer, SERVER_ID_PATTERN, isWssOrigin, type RelayOffer } from "../shared/relay-offer.ts";
 import { offerFromCode, TypedCodeError } from "../shared/relay-code-offer.ts";
@@ -54,6 +55,22 @@ import { addressBootId, addressOrigin, AddressPcError, AddressPcRefused, checkAd
 const RELAY_FOUND_MS = 10 * 60_000;
 /** the account service keeps an admission for 10 minutes: a key made for another PC of the account waits no longer */
 const ACCOUNT_PC_MS = 10 * 60_000;
+const WEB_FORWARDS_PER_MACHINE = 8;
+
+export class MachineForwardError extends Error {
+  constructor(readonly code: "machine_not_found" | "forward_not_ssh" | "machine_offline" | "forward_busy" | "forward_cancelled" | "forward_failed", message: string) {
+    super(message);
+  }
+}
+
+interface WebForward { port: number; ssh: SshForward; retiring?: true }
+/** One opening shared by every request for the same bind and port: cancelled only once all of them left. */
+interface PendingWebForward { opening: Promise<number>; waiters: number; abort: AbortController }
+interface WebForwards {
+  open: Map<string, WebForward>;
+  pending: Map<string, PendingWebForward>;
+  tail: Promise<unknown>;
+}
 
 export type AccountPcFailure = "invalid" | "added" | "self" | "outdated" | "offline" | "gone" | "busy" | "refused" | "declined" | "unanswered" | "cancelled";
 
@@ -71,6 +88,7 @@ type StoredMachine = { id: string; name: string; enabled: boolean; snapshot?: Se
 interface Runtime {
   machine: Machine;
   ssh?: SshConnection;
+  webForwards?: WebForwards;
   tunnel?: RelayPcTunnel;
   forward?: AddressPcForward;
   routeProbes?: RouteProbes;
@@ -296,9 +314,9 @@ function bridgeUnreachable(descriptor: BridgeDescriptor, error: unknown): string
   return `This PC's Ovis does not answer at ${at} through SSH. If it runs with HOST set to another address, update it or set HOST=127.0.0.1 there, restart it, then add the PC again.`;
 }
 
-async function freePort(): Promise<number> {
+async function freePort(host = "127.0.0.1"): Promise<number> {
   const server = tcpServer();
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, host, resolve); });
   const port = (server.address() as { port: number }).port;
   await new Promise<void>((resolve) => server.close(() => resolve()));
   return port;
@@ -308,6 +326,12 @@ async function freePort(): Promise<number> {
 function newerBundle(version: unknown): boolean {
   return typeof version === "string" && /^\d+$/.test(version) && Number(version) > Number(REMOTE_BUNDLE_VERSION);
 }
+/** A PC's own Ovis offered as a choice: its loopback port and whether it is newer than this app tell apart two on one PC. */
+const foundOvis = (descriptor: BridgeDescriptor, bundleVersion: unknown): FoundOvis => ({
+  socket_path: descriptor.socket_path, runtime: "herdr-core",
+  ...(Number.isInteger(descriptor.port) && descriptor.port >= 1 && descriptor.port <= 65535 ? { port: descriptor.port } : {}),
+  ...(newerBundle(bundleVersion) ? { newer_than_app: true as const } : {}),
+});
 /**
  * ssh's refusals: the PC answered, and only a password or a new host key gets past them. The
  * remote denial reads "user@host: Permission denied (publickey,…)."; a local key file ssh cannot
@@ -394,6 +418,7 @@ export class MachineManager {
   private localTimer: ReturnType<typeof setInterval>;
   private saveTimer?: ReturnType<typeof setTimeout>;
   private profileState: HerdrProfileState;
+  private readonly agentChanges: AgentChanges;
   private statePath: string;
   private written: string | undefined;
   private relayStatePath: string;
@@ -469,6 +494,7 @@ export class MachineManager {
     this.now = options.now ?? (() => performance.now());
     if (this.bootId) this.local.source_boot_id = this.bootId;
     this.profileState = new HerdrProfileState(stateDir);
+    this.agentChanges = new AgentChanges(stateDir);
     this.statePath = join(stateDir, "machines.json");
     this.relayStatePath = join(stateDir, "relay-pcs.json");
     this.addressStatePath = join(stateDir, "address-pcs.json");
@@ -566,7 +592,7 @@ export class MachineManager {
             runtime.machine.enabled = false; this.disconnect(runtime);
             for (const [jobId, job] of this.jobs) if (job.public.machine_id === id) this.cancelJob(jobId);
             this.dropUpdate(runtime);
-            this.machines.delete(id);
+            this.machines.delete(id); this.agentChanges.forget(id);
             this.emit();
           }
           this.removeKey(id);
@@ -606,7 +632,7 @@ export class MachineManager {
       runtime.machine.enabled = false; this.disconnect(runtime);
       for (const [jobId, job] of this.jobs) if (job.public.machine_id === id) this.cancelJob(jobId);
       this.dropUpdate(runtime);
-      this.machines.delete(id);
+      this.machines.delete(id); this.agentChanges.forget(id);
       changed = true;
     }
     if (changed) this.emit();
@@ -664,7 +690,7 @@ export class MachineManager {
     for (const [id, runtime] of this.machines) {
       if (runtime.machine.kind !== "hc" || wanted.has(id)) continue;
       runtime.machine.enabled = false; this.disconnect(runtime);
-      this.machines.delete(id);
+      this.machines.delete(id); this.agentChanges.forget(id);
       changed = true;
     }
     if (changed) this.emit();
@@ -692,7 +718,14 @@ export class MachineManager {
       runtime.machine.runtime = runtime.machine.state === "connected" && runtime.machine.herdr ? runtime.machine.herdr.runtime ?? "herdr" : undefined;
       if (runtime.machine.kind !== "hc") runtime.machine.ovis_update = this.updateOffer(runtime);
     }
-    return [own ? { ...this.local, server_id: own } : this.local, ...[...this.machines.values()].map((r) => r.machine)];
+    const machines = [own ? { ...this.local, server_id: own } : this.local, ...[...this.machines.values()].map((r) => r.machine)];
+    // Serving a roster never observes changes: it can be a cached snapshot or a read between a
+    // status frame and its counter. Only accepted live snapshots and status frames date changes.
+    return machines.map((machine) => {
+      if (!machine.snapshot) return machine;
+      const snapshot = this.agentChanges.snapshot(machine.id, machine.snapshot, false);
+      return snapshot === machine.snapshot ? machine : { ...machine, snapshot };
+    });
   }
   private updateOffer(runtime: Runtime): PcUpdateOffer | null {
     const machine = runtime.machine;
@@ -774,6 +807,12 @@ export class MachineManager {
   }
   private emit(event?: MachineEvent): void {
     if (this.stopped) return;
+    if (event?.type === "machine-message" && event.message.type === "pane-status") {
+      const changedAt = this.agentChanges.status(event.machine_id, event.message.pane_id, event.message.agent_status);
+      // a remote PC's own Ovis may name a time of its clock: only this server's is told
+      const { changed_at: _theirs, ...message } = event.message;
+      if (changedAt !== undefined || _theirs !== undefined) event = { ...event, message: changedAt === undefined ? message : { ...message, changed_at: changedAt } };
+    }
     for (const listener of this.listeners.keys()) listener(event ?? { type: "machines", machines: this.list() });
   }
   localMessage(message: ServerMessage): void {
@@ -782,12 +821,12 @@ export class MachineManager {
       this.localRevision++;
       if (this.localBusy) this.localRefreshQueued = true;
     }
-    this.emit({ type: "machine-message", machine_id: LOCAL_MACHINE, message });
     if (message.type === "pane-exited") this.heardAgents.forget(message.pane_id);
     if (message.type === "pane-status" && this.local.snapshot) {
       this.local.snapshot = snapshotAfterStatus(this.local.snapshot, message);
       this.localFinishes.hold(message.finish_epoch, this.bootId);
     }
+    this.emit({ type: "machine-message", machine_id: LOCAL_MACHINE, message });
     if (message.type === "session-changed" || message.type === "pane-exited") void this.refreshLocal();
   }
   /**
@@ -816,7 +855,7 @@ export class MachineManager {
           if (revision !== this.localRevision) { this.localRefreshQueued = true; continue; }
           this.localDiagnostics.recovered(LOCAL_MACHINE, { operation: "snapshot", elapsed_ms: performance.now() - started });
           if (!olderOrderRead(this.local.snapshot, snapshot) && !this.localFinishes.stale(snapshot.finish_epoch)) {
-            this.local.snapshot = snapshot;
+            this.local.snapshot = this.agentChanges.snapshot(LOCAL_MACHINE, snapshot, true);
             this.localFinishes.settle(snapshot);
           }
           this.local.state = "connected"; this.local.error = null;
@@ -1564,7 +1603,7 @@ export class MachineManager {
           const proved = await this.verify(ssh, candidate, candidate.socket_path, true, true);
           if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
           if (proved.identity.pid !== candidate.pid || proved.identity.managed_remote !== false || proved.identity.herdr.runtime !== "herdr-core") continue;
-          found.push({ socket_path: candidate.socket_path, runtime: "herdr-core" });
+          found.push(foundOvis(candidate, proved.identity.bundle_version));
           answered = true;
           const listed = proved.identity.found_herdr_sessions;
           if (listed === undefined) unlisted = true;
@@ -1576,7 +1615,7 @@ export class MachineManager {
           // is neither dropped nor replaced by a new herdr. Only one proven not owned or not live is dropped (above).
           // Unasked, its runtime is told by its socket: a TUI herdr's ends in /herdr.sock, the core adapter's never does.
           // Only the core adapter's own name (isCoreAdapterSocket) is one: any other could never be connected to
-          if (owned && !validHerdrSocket(candidate.socket_path) && isCoreAdapterSocket(candidate.socket_path)) { found.push({ socket_path: candidate.socket_path, runtime: "herdr-core" }); unlisted = true; }
+          if (owned && !validHerdrSocket(candidate.socket_path) && isCoreAdapterSocket(candidate.socket_path)) { found.push(foundOvis(candidate, candidate.bundle_version)); unlisted = true; }
         }
       }
       if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
@@ -1919,6 +1958,94 @@ export class MachineManager {
     await ssh.forward(port, descriptor.port);
     return { url: `http://127.0.0.1:${port}`, token: descriptor.token };
   }
+  /** A browser's local TCP forward is separate from the bridge and belongs to this SSH connection. */
+  async forwardWebPort(id: string, remotePort: number, bind: string, ovisPort: number, signal: AbortSignal): Promise<number> {
+    const cancelled = () => new MachineForwardError("forward_cancelled", "Opening this SSH port forward was cancelled");
+    if (signal.aborted) throw cancelled();
+    const runtime = this.machines.get(id);
+    if (id === LOCAL_MACHINE || (runtime && runtime.machine.kind !== "ssh")) throw new MachineForwardError("forward_not_ssh", "This PC is not connected over SSH");
+    if (!runtime) throw new MachineForwardError("machine_not_found", "PC not found");
+    const ssh = runtime.ssh;
+    const offline = () => new MachineForwardError("machine_offline", "Connect this PC over SSH first");
+    if (!ssh?.connected() || runtime.machine.state !== "connected") throw offline();
+    const forwards: WebForwards = runtime.webForwards ??= { open: new Map(), pending: new Map(), tail: Promise.resolve() };
+    const key = `${bind}:${remotePort}`;
+    // Each request waits on its own signal; an aborted one alone is told so.
+    const wait = async (entry: PendingWebForward): Promise<number> => {
+      entry.waiters++;
+      const left = Promise.withResolvers<never>();
+      left.promise.catch(() => undefined);
+      const leave = () => {
+        if (--entry.waiters === 0) entry.abort.abort();
+        left.reject(cancelled());
+      };
+      signal.addEventListener("abort", leave, { once: true });
+      try { return await Promise.race([entry.opening, left.promise]); }
+      finally { signal.removeEventListener("abort", leave); }
+    };
+    const pending = forwards.pending.get(key);
+    if (pending) return wait(pending);
+    const reuse = () => {
+      const existing = forwards.open.get(key);
+      if (existing?.retiring) return undefined;
+      if (existing?.ssh.listening()) return existing.port;
+      forwards.open.delete(key);
+    };
+    const existing = reuse();
+    if (existing !== undefined) return existing;
+    if (forwards.pending.size >= WEB_FORWARDS_PER_MACHINE) throw new MachineForwardError("forward_busy", "Too many ports are being opened for this PC");
+
+    const current = () => runtime.ssh === ssh && runtime.webForwards === forwards && runtime.machine.state === "connected" && ssh.connected();
+    const shared = new AbortController();
+    const check = () => {
+      if (shared.signal.aborted) throw cancelled();
+      if (!current()) throw offline();
+    };
+    const retire = async (key: string, forward: WebForward) => {
+      // A failed cancellation may already have closed the listener. Keep counting it
+      // against the cap, but do not return it as a working forward.
+      forward.retiring = true;
+      await forward.ssh.close();
+      forwards.open.delete(key);
+    };
+    const opening = forwards.tail.then(async () => {
+      try {
+        check();
+        const cached = reuse();
+        if (cached !== undefined) return cached;
+        const port = await freePort(bind === "[::1]" ? "::1" : bind);
+        // If Ovis listens only on another interface, freePort may still pick its port number.
+        if (port === ovisPort) throw new Error("That port is in use by Ovis");
+        check();
+        const same = forwards.open.get(key);
+        if (same?.retiring) await retire(key, same);
+        else if (forwards.open.size >= WEB_FORWARDS_PER_MACHINE) {
+          const oldest = forwards.open.entries().next().value;
+          if (oldest) await retire(...oldest);
+        }
+        check();
+        const tunnel = await ssh.forward(port, remotePort, true, bind);
+        if (!current() || !tunnel.listening()) {
+          await tunnel.close();
+          throw new Error("The port forward is no longer listening");
+        }
+        const opened = { port, ssh: tunnel };
+        forwards.open.set(key, opened);
+        if (shared.signal.aborted) {
+          await retire(key, opened);
+          throw cancelled();
+        }
+        return port;
+      } catch {
+        check();
+        throw new MachineForwardError("forward_failed", "Ovis could not open this SSH port forward");
+      }
+    }).finally(() => forwards.pending.delete(key));
+    const entry: PendingWebForward = { opening, waiters: 0, abort: shared };
+    forwards.pending.set(key, entry);
+    forwards.tail = opening.catch(() => undefined);
+    return wait(entry);
+  }
   private pause(signal?: AbortSignal): Promise<void> {
     return new Promise((resolve) => {
       const done = () => { clearTimeout(timer); signal?.removeEventListener("abort", done); resolve(); };
@@ -2205,7 +2332,17 @@ export class MachineManager {
       try { message = JSON.parse(String(event.data)); } catch { return; }
       if (message.type === "pane-status" && runtime.finishes.stale(message.finish_epoch)) return;
       if (["snapshot", "pane-status", "pane-exited"].includes(message.type)) runtime.snapshotRevision++;
-      if (message.type === "snapshot" && this.admitRemote(runtime, message.snapshot)) { runtime.machine.snapshot = message.snapshot; runtime.finishes.hold(message.snapshot.finish_epoch, message.snapshot.order_epoch); this.push.seed(forAlerts(message.snapshot.panes), runtime.machine.id, runtime.machine.name, pcServerId(runtime.machine)); this.emit(); }
+      if (message.type === "snapshot") {
+        const snapshot = message.snapshot;
+        const admitted = this.admitRemote(runtime, snapshot);
+        message = { ...message, snapshot: this.agentChanges.snapshot(runtime.machine.id, snapshot, admitted) };
+        if (admitted) {
+          runtime.machine.snapshot = snapshot;
+          runtime.finishes.hold(snapshot.finish_epoch, snapshot.order_epoch);
+          this.push.seed(forAlerts(snapshot.panes), runtime.machine.id, runtime.machine.name, pcServerId(runtime.machine));
+          this.emit();
+        }
+      }
       if (message.type === "pane-status") {
         if (runtime.machine.snapshot) { runtime.machine.snapshot = snapshotAfterStatus(runtime.machine.snapshot, message); runtime.finishes.hold(message.finish_epoch, runtime.acceptedEpoch); }
         if (runtime.candidate) runtime.candidate = snapshotAfterStatus(runtime.candidate, message);
@@ -2352,6 +2489,7 @@ export class MachineManager {
     return tracked;
   }
   private disconnect(runtime: Runtime): void {
+    if (!this.stopped && runtime.observer) this.agentChanges.disconnected(runtime.machine.id);
     runtime.generation++;
     runtime.refreshQueued = false;
     clearTimeout(runtime.retry); runtime.retry = undefined; clearInterval(runtime.poll);
@@ -2360,6 +2498,12 @@ export class MachineManager {
     runtime.observer?.close(); runtime.observer = undefined;
     for (const close of runtime.terminals) close(); runtime.terminals.clear();
     runtime.ssh?.close(); runtime.ssh = undefined; runtime.endpoint = undefined;
+    const webForwards = runtime.webForwards;
+    runtime.webForwards = undefined;
+    if (webForwards) {
+      for (const { ssh } of webForwards.open.values()) void ssh.close().catch(() => {});
+      webForwards.open.clear();
+    }
     runtime.tunnel?.close(); runtime.tunnel = undefined; delete runtime.machine.route;
     runtime.forward?.close(); runtime.forward = undefined;
     if (runtime.hc?.bridge) {
@@ -2414,10 +2558,12 @@ export class MachineManager {
   }
   private publish(runtime: Runtime, snapshot: SessionSnapshot, settled = false, server?: string): void {
     if (runtime.move) { runtime.move.snapshot = snapshot; runtime.move.snapshotServer = settled ? snapshot.order_epoch : server; return; }
+    this.agentChanges.snapshot(runtime.machine.id, snapshot, true);
     runtime.machine.snapshot = snapshot;
     if (settled) runtime.finishes.settle(snapshot); else runtime.finishes.hold(snapshot.finish_epoch, server);
     this.saveSoon();
-    this.push.seed(forAlerts(snapshot.panes), runtime.machine.id, runtime.machine.name, pcServerId(runtime.machine));
+    // A refresh that did not race the observer can recover status changes it missed while disconnected.
+    this.push.seed(forAlerts(snapshot.panes), runtime.machine.id, runtime.machine.name, pcServerId(runtime.machine), { reconcileDeferrals: settled });
   }
   private proved(runtime: Runtime, boot: string): void {
     runtime.machine.source_boot_id = boot;
@@ -2490,7 +2636,7 @@ export class MachineManager {
     // the key goes first: a registration saved without the PC must not leave its credential behind
     if (runtime.machine.kind === "relay") removeRelayPcKey(this.relayKeyPath(id));
     if (runtime.machine.kind === "address") removeAddressPcToken(this.addressTokenPath(id));
-    this.machines.delete(id); this.persist();
+    this.machines.delete(id); this.agentChanges.forget(id); this.persist();
     for (const suffix of ["", ".pub"]) try { unlinkSync(join(this.sshDir, id + suffix)); } catch {}
     this.emit();
   }
@@ -2758,7 +2904,7 @@ export class MachineManager {
     return runtime.machine;
   }
   async stop(): Promise<void> {
-    this.stopped = true; clearTimeout(this.discoveryTimer); clearTimeout(this.hcTimer); clearInterval(this.localTimer); clearTimeout(this.saveTimer);
+    this.stopped = true; this.agentChanges.flush(); clearTimeout(this.discoveryTimer); clearTimeout(this.hcTimer); clearInterval(this.localTimer); clearTimeout(this.saveTimer);
     for (const id of this.jobs.keys()) this.cancelJob(id);
     this.installer.stop();
     for (const runtime of this.machines.values()) { runtime.ownJob?.abort.abort(); this.disconnect(runtime); }

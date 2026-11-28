@@ -1,6 +1,6 @@
 /**
  * Simplified Chinese for the keys only the settings files use:
- * components/SettingsDialog.tsx (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx,
+ * components/SettingsDialog.tsx and its Settings*Page.tsx pages (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx,
  * components/SettingsControls.tsx, components/TelemetryControls.tsx, components/LinkBrowserRow.tsx, components/TerminalCommandRow.tsx, lib/paletteSettings.ts.
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
@@ -17,6 +17,8 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Direct typing": "直接输入",
   "Microphone permission was denied": "麦克风权限已被拒绝",
   "Terminal input mode": "终端输入模式",
+  "Password field": "密码输入框",
+  "When a terminal asks for a password, type it in a masked field instead of the terminal, so a phone keyboard does not learn it. On by default on a touch screen; Input line always uses it.": "终端询问密码时，在单独的隐藏输入框里输入，而不是直接输入终端，避免手机键盘记住密码。触摸屏上默认开启；输入框模式始终使用。",
   "Reset shortcuts": "重置快捷键",
   "Your browser or operating system may intercept {keys}.": "浏览器或操作系统可能会拦截 {keys}。",
   "Reserved": "系统保留",
@@ -282,6 +284,8 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Saved": "已保存",
   "Saved on this PC. Leave the field empty to keep it.": "已保存在这台电脑上。留空则保持不变。",
   "Messages have no link a phone can open yet. Save once from this PC's network address, not localhost or the relay.": "消息中还没有手机能打开的链接。请通过这台电脑的网络地址（不是 localhost 或中继）保存一次。",
+  "Link to the pane": "窗格链接",
+  "Adds a link that opens the pane to each message. Off sends only the text.": "在每条消息中附上打开窗格的链接。关闭后只发送文字。",
   "Send a test": "发送测试",
   "Test sent. Check the destination.": "已发送测试，请查看发送目标。",
   "Sends alerts to another app too, with the PC and pane names and a link to open the pane.": "提醒也会发送到其他应用，包含 PC、窗格名称和打开链接。",

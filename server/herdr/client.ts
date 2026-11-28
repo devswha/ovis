@@ -560,8 +560,8 @@ export async function tabClose(tabId: string, socketPath?: string): Promise<void
 }
 
 /**
- * `program`: what the pane's shell runs in place of the agent's own command, the herdr-core adapter's only (a launcher
- * Ovis wrote, server/approvals/codex.ts); herdr itself takes none.
+ * `program`: what the pane's shell runs in place of the agent's command name, the herdr-core adapter's only
+ * (the Command Code executable or a Codex launcher Ovis wrote); herdr itself takes none.
  */
 export async function agentStart(
   options: { name: string; kind: string; paneId: string; args?: string[]; timeoutMs?: number; program?: string; toolDoor?: { socket: string; tokenFile: string } },

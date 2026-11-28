@@ -295,6 +295,19 @@ describe("opening outside the app", () => {
   });
 });
 
+describe("the browser's offline flag", () => {
+  // a Galaxy Z Flip6's WebView said navigator.onLine === false on working Wi-Fi (#4810): the flag only starts a real ask
+  const READERS = ["src/lib/useOffline.ts", "src/lib/ws.ts"];
+
+  it("is read only by src/lib/useOffline.ts, which asks the network, and src/lib/ws.ts, whose pong does", () => {
+    const offenders = scan("src/**/*.{ts,tsx}").filter((name) => !READERS.includes(name) && !/\.test\./.test(name)).flatMap((file) => {
+      const code = stripComments(read(file));
+      return [...code.matchAll(/\bnavigator\s*\??\.\s*onLine\b/g)].map((match) => `${file}:${lineOf(code, match.index)}`);
+    });
+    fail(offenders, "Read navigator.onLine through src/lib/useOffline.ts (useOffline, confirmOffline): a WebView can say offline on a working network, and only an answer to a real ask says so.");
+  });
+});
+
 describe("popstate listeners", () => {
   // lib/useAddressBar.ts reads the entry every Back and Forward lands on, and holds the address back
   // until it has. The order of the listeners does not matter to that; a listener that stops the
@@ -305,6 +318,18 @@ describe("popstate listeners", () => {
       return /["'\x60]popstate["'\x60]/.test(source) && source.includes("stopImmediatePropagation");
     });
     fail(offenders, "A file that listens for popstate does not call stopImmediatePropagation: every popstate listener after it, lib/useAddressBar.ts's among them, must hear each Back and Forward. A listener for another event that needs the call goes in a file of its own.");
+  });
+});
+
+describe("polls that pause while the page is hidden", () => {
+  // A poll that skips its reads while the page is hidden shows what it read before it was hidden
+  // until its next turn after the page shows again, which can be after a join or a code timed out.
+  it("read again at once when the page shows", () => {
+    const offenders = scan("src/**/*.{ts,tsx}").filter((name) => !/\.test\./.test(name)).filter((file) => {
+      const code = stripComments(read(file));
+      return /\bsetInterval\(/.test(code) && /\bdocument\.hidden\b|\bvisibilityState\b/.test(code) && !/\baddEventListener\(\s*["'\x60]visibilitychange["'\x60]|\busePageVisible\(/.test(code);
+    });
+    fail(offenders, "A file that polls with setInterval and skips its reads while the page is hidden also reads at once when the page shows again: listen for visibilitychange beside the poll, or depend on usePageVisible() (src/lib/visibility.ts). A read from this PC also listens to its local socket's onBeforeReplay, as useOwnJoins does.");
   });
 });
 

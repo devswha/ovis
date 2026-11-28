@@ -20,7 +20,9 @@ import type { HerdrPane } from "../shared/protocol.ts";
  *   person's prompt.
  *
  * What the turn started is what started since the prompt. A task started before the pane's process
- * is a gone process's (START_SLACK_MS as in claude-subagents.ts). A timer due within TIMER_LIMIT_MS
+ * is a gone process's (START_SLACK_MS as in claude-subagents.ts). A Grok restarted on the same
+ * session appends to the same file, so its start is looked up again with the session and is a bound
+ * from below with no slack: a task its old process began seconds before the restart is not its own. A timer due within TIMER_LIMIT_MS
  * is held until it is due, past the hold's limit: it surely resumes the turn, and a command may be a
  * server. Only its process fires it, so while one is held its pane is looked up again each RESOLVE_MS,
  * and a pane whose session can no longer be looked up holds nothing: not on one lookup that failed,
@@ -42,7 +44,10 @@ export type TaskAgent = "agy" | "grok";
 export const isTaskAgent = (agent: string | null | undefined): agent is TaskAgent => agent === "agy" || agent === "grok";
 
 interface Task { at: number; due: number | null }
-export interface SessionTasks { tasks: Map<string, Task>; promptAt: number | null }
+type GrokReminder =
+  | { kind: "prefix"; index: number | null; prefix: string; at: number }
+  | { kind: "notice"; index: number | null; tail: string };
+export interface SessionTasks { tasks: Map<string, Task>; promptAt: number | null; grokReminder?: GrokReminder }
 export interface TaskCount { running: number; turnRunning: number; promptAt: number | null; capped: boolean }
 
 type Row = Record<string, unknown>;
@@ -64,6 +69,9 @@ const AGY_SENDER = /sender=([\w-]+\/task-\d+)/g;
 const AGY_STATUS = /Task: ([\w-]+\/task-\d+)\s+Status: (\w+)/g;
 const AGY_TIMER = /Task Description: Timer: ((?:\d+[hms]\s?)+)/;
 const UNIT_MS: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1000 };
+const GROK_REMINDER = "<system-reminder>";
+const GROK_REMINDER_END = "</system-reminder>";
+const GROK_ANSWER = new Set<unknown>(["agent_message_chunk", "agent_thought_chunk", "tool_call", "turn_completed"]);
 
 function timerDue(content: string, at: number): number | null {
   const timer = content.match(AGY_TIMER)?.[1];
@@ -72,8 +80,21 @@ function timerDue(content: string, at: number): number | null {
   return Number.isFinite(due) && due - at <= TIMER_LIMIT_MS ? due : null;
 }
 
+function grokNoticeChunk(state: SessionTasks, index: number | null, text: string, tail = ""): void {
+  // Indexed chunks stay in the same prompt; older logs need the closing tag as their boundary.
+  if (index !== null) {
+    state.grokReminder = { kind: "notice", index, tail: "" };
+    return;
+  }
+  const keep = GROK_REMINDER_END.length - 1;
+  if (text.includes(GROK_REMINDER_END) || (tail + text.slice(0, keep)).includes(GROK_REMINDER_END)) delete state.grokReminder;
+  else state.grokReminder = { kind: "notice", index, tail: (tail + text.slice(-keep)).slice(-keep) };
+}
+
 export function readTaskLine(agent: TaskAgent, state: SessionTasks, line: string): void {
-  if (agent === "agy" ? !/USER_INPUT|SYSTEM_MESSAGE|\/task-\d/.test(line) : !line.includes('"background_tasks"') && !line.includes('"user_message_chunk"')) return;
+  if (agent === "agy" ? !/USER_INPUT|SYSTEM_MESSAGE|\/task-\d/.test(line)
+    : !/"(?:background_tasks|user_message_chunk|rewind_marker)"/.test(line)
+      && (!state.grokReminder || !/"(?:agent_message_chunk|agent_thought_chunk|tool_call|turn_completed)"/.test(line))) return;
   let entry: Row | null;
   try { entry = row(JSON.parse(line)); } catch { return; }
   if (entry === null) return;
@@ -97,14 +118,47 @@ export function readTaskLine(agent: TaskAgent, state: SessionTasks, line: string
       const at = Date.parse(String(task?.["started_at"]));
       if (task?.["status"] === "running" && typeof task["task_id"] === "string" && Number.isFinite(at)) state.tasks.set(task["task_id"], { at, due: null });
     }
+  } else if (update?.["sessionUpdate"] === "rewind_marker") {
+    delete state.grokReminder; // The next prompt can reuse the old index.
+  } else if (GROK_ANSWER.has(update?.["sessionUpdate"])) {
+    if (state.grokReminder?.kind === "prefix") state.promptAt = state.grokReminder.at;
+    delete state.grokReminder;
   } else if (update?.["sessionUpdate"] === "user_message_chunk") {
     const text = row(update["content"])?.["text"];
-    if (typeof text === "string" && !text.trimStart().startsWith("<system-reminder>") && typeof entry["timestamp"] === "number") state.promptAt = entry["timestamp"] * 1000;
+    if (typeof text !== "string" || typeof entry["timestamp"] !== "number") return;
+    const rawIndex = row(update["_meta"])?.["promptIndex"];
+    const index = typeof rawIndex === "number" && Number.isSafeInteger(rawIndex) && rawIndex >= 0 ? rawIndex : null;
+    const at = entry["timestamp"] * 1000;
+    const previous = state.grokReminder;
+    if (previous?.kind === "notice" && previous.index === index) {
+      if (index === null) grokNoticeChunk(state, index, text, previous.tail);
+      return;
+    }
+    if (previous?.kind === "prefix" && previous.index !== index) state.promptAt = previous.at;
+    const prefix = previous?.kind === "prefix" && previous.index === index ? previous.prefix : "";
+    const part = prefix === "" ? text.trimStart() : text;
+    const remaining = GROK_REMINDER.length - prefix.length;
+    const head = prefix + part.slice(0, remaining);
+    if (head === GROK_REMINDER) {
+      const body = part.slice(remaining);
+      // A legacy one-record notice can have no closing tag. Only keep following unindexed
+      // records as body when the split opener or the opener on its own shows more is coming.
+      if (index === null && prefix === "" && body !== "") delete state.grokReminder;
+      else grokNoticeChunk(state, index, body);
+      return;
+    }
+    if (GROK_REMINDER.startsWith(head)) {
+      // Keep at most the undecided opening tag, never the notice body.
+      state.grokReminder = { kind: "prefix", index, prefix: head, at };
+      return;
+    }
+    delete state.grokReminder;
+    state.promptAt = at;
   }
 }
 
-export function taskCount(state: SessionTasks, started: number | null, now: number): TaskCount {
-  const live = [...state.tasks.values()].filter((task) => (started === null || task.at >= started - START_SLACK_MS) && (task.due === null || now < task.due + DUE_GRACE_MS));
+export function taskCount(state: SessionTasks, started: number | null, now: number, slack = START_SLACK_MS): TaskCount {
+  const live = [...state.tasks.values()].filter((task) => (started === null || task.at >= started - slack) && (task.due === null || now < task.due + DUE_GRACE_MS));
   const turn = live.filter((task) => state.promptAt === null || task.at >= state.promptAt);
   // a timer surely resumes the turn when it is due, whatever runs beside it; commands alone are held to the limit
   return { running: live.length, turnRunning: turn.length, promptAt: state.promptAt, capped: !turn.some((task) => task.due !== null) };
@@ -122,7 +176,10 @@ function readOn(tracked: Tracked): void {
     const stat = fstatSync(fd);
     if (!stat.isFile()) return;
     const { ino, size } = stat;
-    if (ino !== tracked.ino || size < tracked.offset) Object.assign(tracked, { ino, offset: 0, decoder: new StringDecoder("utf8"), partial: "", promptAt: null, tasks: new Map() });
+    if (ino !== tracked.ino || size < tracked.offset) {
+      delete tracked.grokReminder;
+      Object.assign(tracked, { ino, offset: 0, decoder: new StringDecoder("utf8"), partial: "", promptAt: null, tasks: new Map() });
+    }
     const buffer = Buffer.alloc(Math.min(READ_CHUNK, Math.max(0, size - tracked.offset)));
     while (tracked.offset < size) {
       const read = readSync(fd, buffer, 0, Math.min(buffer.length, size - tracked.offset), tracked.offset);
@@ -244,7 +301,7 @@ export class AgentTaskStatus {
     if (current !== undefined && current.agent === agent && current.path === found.path && current.owner === found.owner) {
       current.resolvedAt = this.now();
       current.pane = { ...pane, agent };
-      current.started ??= found.started;
+      current.started = found.started ?? current.started;
       return;
     }
     if (current !== undefined) this.deps.onReset(pane.pane_id);
@@ -256,7 +313,7 @@ export class AgentTaskStatus {
     for (const [paneId, tracked] of this.panes) {
       if (only !== undefined && paneId !== only) continue;
       readOn(tracked);
-      const count = taskCount(tracked, tracked.started, this.now());
+      const count = taskCount(tracked, tracked.started, this.now(), tracked.agent === "grok" ? 0 : START_SLACK_MS);
       // a timer is held past the hold's limit only while its process lasts: no event tells that of a pane at rest.
       // Nor does any bring the lookup after one that failed, which keeps what the pane holds or lets it go
       // a lookup in flight answers for the pane already, and may be for the agent a newer snapshot names

@@ -12,10 +12,13 @@ import { inviteMakeBytes } from "../../../shared/account-list-invite.ts";
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { GLOBAL_APP } from "../../../shared/relay-regions.ts";
+import { identityAnswer, type AccountIdentityList } from "./identityAnswers.ts";
 import { attemptOf, claimsOf, genesisBody, hintOf, nowOf, pageOf, postsOf, wrapsOf, type ListAttempt, type ListClaim, type ListPost, type PlacedWrap, type ListHint, type ListPage, type ListWrap } from "./listAnswers.ts";
 import type { PcProofFields } from "./pcProof.ts";
-import type { AccountKey, AccountLock, AccountProvider, AccountSession, AccountStore } from "./store.ts";
+import type { AccountKey, AccountLock, AccountProvider, AccountSession, AccountStore, LinkSignIn } from "./store.ts";
 import { ACCOUNT_PROVIDERS, accountLock, indexedAccountStore } from "./store.ts";
+
+export type { AccountIdentity, AccountIdentityChange, AccountIdentityList } from "./identityAnswers.ts";
 
 /**
  * The account service this page signs in with, from `<meta name="ovis-account-service">`: an https
@@ -78,6 +81,8 @@ export interface OfferedProviders {
   readonly listed: AccountProvider[] | null;
   readonly device: DeviceProvider[];
   readonly page: DeviceProvider[];
+  /** the service links a new sign-in that asks it by its verified email: only then does a device or link page start send `link` */
+  readonly emailLink?: true;
 }
 
 export async function offeredProviders(service: string, fallback: readonly AccountProvider[], options: { fetch?: Fetch } = {}): Promise<OfferedProviders> {
@@ -102,13 +107,8 @@ export async function offeredProviders(service: string, fallback: readonly Accou
     listed: providers,
     device: DEVICE_PROVIDERS.filter((provider) => device.has(provider) && named.has(provider)),
     page: DEVICE_PROVIDERS.filter((provider) => page.has(provider) && named.has(provider)),
+    ...(body.email_link === true ? { emailLink: true } : {}),
   };
-}
-
-/** One way the account signs in (`GET /v1/identities`); the service keeps no email or login to name it by. */
-export interface AccountIdentity {
-  readonly provider: AccountProvider;
-  readonly added_at: string;
 }
 
 /** A refresh this long before the access token runs out, so a request never leaves with one about to. */
@@ -133,6 +133,8 @@ export class AccountServiceError extends Error {
   index: number | null = null;
   /** The list a `409 list_exists` names, where it names one: only a hint, which the log alone confirms. */
   list: string | null = null;
+  /** When a `403 method_settling` ends (ISO): the way in this sign-in used was just added, and may then reshape the account. */
+  until: string | null = null;
   constructor(readonly status: number, readonly code: string, message: string, readonly retryAfterMs: number | null = null, readonly reason: string | null = null) {
     super(message);
     this.name = "AccountServiceError";
@@ -188,6 +190,14 @@ export class SignedOutError extends Error {
 }
 
 export const UNNAMED_DEVICE = "Device";
+
+export interface JoinedAccount {
+  readonly how: "email" | "fold";
+  readonly at: string;
+  readonly settlesAt: string;
+  readonly methods: readonly AccountProvider[];
+  readonly emailHint: string | null;
+}
 
 export interface Admission extends AccountAsker { readonly key: string; readonly label: string; readonly server_id: string; readonly at: string }
 
@@ -263,6 +273,7 @@ export async function failure(response: Response): Promise<AccountServiceError> 
   let reason: string | null = null;
   let index: number | null = null;
   let list: string | null = null;
+  let until: string | null = null;
   try {
     const body: unknown = await response.json();
     const error = isRecord(body) && isRecord(body.error) ? body.error : null;
@@ -270,12 +281,14 @@ export async function failure(response: Response): Promise<AccountServiceError> 
     if (typeof error?.reason === "string" && /^[a-z_]{1,40}$/.test(error.reason)) reason = error.reason;
     if (typeof error?.index === "number" && Number.isSafeInteger(error.index) && error.index >= 0) index = error.index;
     if (typeof error?.list === "string" && /^[0-9a-f]{64}$/.test(error.list)) list = error.list;
+    if (typeof error?.until === "string" && isIsoTime(error.until)) until = error.until;
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
   }
   const failed = new AccountServiceError(response.status, code, `The account service answered ${response.status} (${code})`, retryAfterMs(response.headers.get("retry-after")), reason);
   failed.index = index;
   failed.list = list;
+  failed.until = until;
   return failed;
 }
 
@@ -417,12 +430,17 @@ export class AccountService {
     if (await store.get("generation") !== generation) throw new SignedOutError();
   }
 
-  /** Only the generation that started a sign-in may install it, including a held re-authentication session. */
-  static async storeSignIn(store: AccountStore, session: AccountSession, wanted: (current: AccountSession | undefined) => boolean = () => true): Promise<boolean> {
+  /** A Connect also needs the same empty slot, even if the sign-in that took it has since been cleared. */
+  static async storeSignIn(store: AccountStore, session: AccountSession, options: {
+    readonly wanted?: (current: AccountSession | undefined) => boolean;
+    readonly connectEpoch?: string | null;
+  } = {}): Promise<boolean> {
     if (session.sign_in_generation === undefined) return false;
     let kept = false;
-    await store.updateMany(["session", "generation"], (current) => {
-      kept = current.generation === session.sign_in_generation && wanted(current.session);
+    await store.updateMany(["session", "generation", "connect_epoch"], (current) => {
+      kept = current.generation === session.sign_in_generation
+        && (options.connectEpoch === undefined || (current.session === undefined && current.connect_epoch === options.connectEpoch))
+        && (options.wanted?.(current.session) ?? true);
       return kept ? { ...current, session } : current;
     });
     return kept;
@@ -455,7 +473,7 @@ export class AccountService {
     await this.options.store.updateMany(["session", "generation"], (current) => {
       const stored = current.session;
       if (generation !== undefined && current.generation !== generation) return current;
-      if (stored === undefined || (expected !== undefined && !sameSignIn(stored, expected))) return current;
+      if (stored === undefined || (expected !== undefined && (stored.account !== expected.account || !sameSignIn(stored, expected)))) return current;
       const session = stored.sign_in_id === undefined ? { ...stored, sign_in_id: legacySignInId(stored.refresh_token) } : stored;
       seen = { generation: current.generation ?? crypto.randomUUID(), session };
       return seen;
@@ -547,6 +565,23 @@ export class AccountService {
   async ownSignIn(signal?: AbortSignal): Promise<boolean> {
     const body = await this.call("GET", "/v1/session", undefined, signal);
     return isRecord(body) && body.own_sign_in === true;
+  }
+
+  /**
+   * GET /v1/session `joined`, with its `email_hint`: the way in this sign-in used was just added to the account because it
+   * has the account's email (`how`), and settles at `settlesAt`; `methods`, the account's ways in, oldest first. Null for
+   * any other sign-in, and from a service that does not say.
+   */
+  async joined(signal?: AbortSignal): Promise<JoinedAccount | null> {
+    const body = await this.call("GET", "/v1/session", undefined, signal);
+    const joined = isRecord(body) && isRecord(body.joined) ? body.joined : null;
+    if (joined === null || (joined.how !== "email" && joined.how !== "fold") || typeof joined.at !== "string" || !isIsoTime(joined.at)
+      || typeof joined.settles_at !== "string" || !isIsoTime(joined.settles_at) || !Array.isArray(joined.methods)) return null;
+    return {
+      how: joined.how, at: joined.at, settlesAt: joined.settles_at,
+      methods: (joined.methods as unknown[]).flatMap((method) => ACCOUNT_PROVIDERS.find((provider) => provider === method) ?? []),
+      emailHint: isRecord(body) && typeof body.email_hint === "string" && body.email_hint !== "" ? body.email_hint : null,
+    };
   }
 
   /** When this sign-in was made (GET /v1/session `signed_in_at`, kept by every refresh), in ms; null when the service does not say. */
@@ -769,12 +804,8 @@ export class AccountService {
     return parseAccountLimits(body);
   }
 
-  async identities(): Promise<AccountIdentity[]> {
-    const body = await this.call("GET", "/v1/identities");
-    const list = isRecord(body) && Array.isArray(body.identities) ? body.identities : [];
-    return list.filter((entry): entry is AccountIdentity => isRecord(entry) && ACCOUNT_PROVIDERS.includes(entry.provider as AccountProvider)
-      && typeof entry.added_at === "string")
-      .map(({ provider, added_at }) => ({ provider, added_at }));
+  async identities(): Promise<AccountIdentityList> {
+    return identityAnswer(await this.call("GET", "/v1/identities"));
   }
 
   /**
@@ -788,41 +819,59 @@ export class AccountService {
    * asks the person to sign in again, then repeats. The link is redeemed by this same sign-in.
    */
   async addMethod(provider: AccountProvider, signIn: (linkToken: string, bearer: string, generation: string) => Promise<AccountSession>): Promise<AccountSession> {
+    const started = await this.startMethodLink(provider);
+    return this.installMethodLink(started, await signIn(started.linkToken, started.bearer, started.generation));
+  }
+
+  /** Only the sign-in that asked for the token may redeem the provider's answer. */
+  async startMethodLink(provider: AccountProvider): Promise<SignInSnapshot & { readonly linkToken: string; readonly bearer: string; readonly link: LinkSignIn }> {
     const started = await this.snapshot();
     const body = await this.forSnapshot(started).call("POST", "/v1/identities/link", { provider });
     const linkToken = isRecord(body) && typeof body.link_token === "string" && body.link_token !== "" ? body.link_token : null;
     if (linkToken === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent no link");
     const before = await this.current(started);
-    const after = await signIn(linkToken, before.access_token, started.generation);
+    return {
+      generation: started.generation, session: before, linkToken, bearer: before.access_token,
+      link: { account: before.account, sign_in_id: before.sign_in_id ?? legacySignInId(before.refresh_token) },
+    };
+  }
+
+  /** Keeps the redeemed session only in place of the sign-in that asked for the link, even if its tokens rotated. */
+  async installMethodLink(started: SignInSnapshot, after: AccountSession): Promise<AccountSession> {
+    const before = started.session;
     const end = (session: AccountSession) => AccountService.revokeSession(session, { fetch: this.fetch, now: this.now });
     if (after.account !== before.account) {
       await end(after);
       throw new AccountServiceError(502, "invalid_answer", "The account service answered for another account");
     }
     // under the lock sign-out and refresh take: the answer replaces only the sign-in that asked for it
-    const outcome = await this.lock(async () => {
-      let result: "kept" | "moved-on" | "signed-out" = "signed-out";
+    const replaced = await this.lock(async () => {
+      let previous: AccountSession | undefined;
       await this.options.store.updateMany(["session", "generation"], (current) => {
-        if (current.generation !== started.generation || current.session === undefined || !sameSignIn(current.session, before)) return current;
-        if (current.session.refresh_token === before.refresh_token) { result = "kept"; return { ...current, session: after }; }
-        // Refreshed by another tab: the link holds at the service, and that session stays.
-        result = "moved-on";
-        return current;
+        if (current.generation !== started.generation || current.session === undefined || current.session.account !== before.account || current.session.sign_in_id !== before.sign_in_id) return current;
+        previous = current.session;
+        return { ...current, session: after };
       });
-      return result;
+      return previous;
     });
-    if (outcome === "signed-out") {
+    if (replaced === undefined) {
       // signed out (or into another account) meanwhile: the new sign-in must not outlive that
       await end(after);
       throw new SignedOutError();
     }
-    // The link already holds at the service. Cleanup failure does not undo it.
     try {
-      await end(outcome === "moved-on" ? after : before);
+      await end(replaced);
     } catch {
       console.warn("Ovis: the sign-in method was added, but the unused session could not be revoked");
     }
-    return this.current(outcome === "moved-on" ? started : { generation: started.generation, session: after });
+    return this.current({ generation: started.generation, session: after });
+  }
+
+  /** Gets a usable token for a redirect's sign-in without sending a request with that token yet. */
+  async refreshSignIn(expected: SignInSnapshot): Promise<AccountSession> {
+    const started = await this.snapshot(expected.session, expected.generation);
+    await this.fresh(started);
+    return this.current(started);
   }
 
   /**
@@ -831,6 +880,15 @@ export class AccountService {
    */
   async removeIdentity(provider: AccountProvider): Promise<void> {
     await this.call("DELETE", `/v1/identities/${provider}`);
+  }
+
+  /**
+   * Not me: takes back a way in that the service added because it has the account's email, within its 24 hours, from
+   * another settled way in's own sign-in or from that way in's own sessions, which end with it; the provider is never
+   * added to the account by email again. Past the 24 hours the service answers 409 `settled` (removeIdentity then).
+   */
+  async notMe(provider: AccountProvider): Promise<void> {
+    await this.call("POST", `/v1/identities/${provider}/not-me`, undefined, undefined, undefined, 204);
   }
 
   /**

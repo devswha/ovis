@@ -413,7 +413,10 @@ it("PCR-1: a removal that wants a fresh sign-in closes the confirm, and Sign in 
 
   type Leave = (shown?: unknown) => Promise<{ readonly left: boolean; readonly message: string | null }>;
   type Everywhere = (asked?: unknown) => Promise<string | null>;
-  const hosted = (leave: Leave, signOutEverywhere: Everywhere = async () => null) => ({ provider: "github" as const, account: "acct", signOut() {}, leave, deleteAccount: async () => null, signOutEverywhere });
+  const hosted = (leave: Leave, signOutEverywhere: Everywhere = async () => null) => ({
+    provider: "github" as const, account: "acct", signOut() {}, leave, deleteAccount: async () => null, signOutEverywhere,
+    session: { provider: "github" as const, account: "acct", service: "https://account.example", sign_in_id: "s", access_token: "a", refresh_token: "r", expires_at: Date.now() + 3_600_000 },
+  });
   const group = (signIn: ReturnType<typeof hosted> | null) => createElement(SettingsProvider, { children: createElement(HostedAccountGroup, { signIn }) });
   const openSheet = async (signIn: ReturnType<typeof hosted>): Promise<HTMLElement> => {
     await page.render(group(signIn));
@@ -424,6 +427,16 @@ it("PCR-1: a removal that wants a fresh sign-in closes the confirm, and Sign in 
   it("names the account by the start of its ID, as ovis status does, for ovis add --account", async () => {
     const root = await openSheet({ ...hosted(async () => ({ left: true, message: null })), account: "acct_0123456789abcdef" });
     expect(textOf(one(root, 'div[data-account-id="true"]'))).toBe("Account IDacct_0123456");
+  });
+
+  it("offers a sign-in whose own way in still settles no PC Remove, sign-out of every device or account deletion", async () => {
+    const until = new Date(Date.now() + 5 * 3_600_000).toISOString();
+    const root = await openSheet({ ...hosted(async () => ({ left: true, message: null })), offered: async () => [],
+      methods: async () => ({ identities: [{ provider: "google", added_at: ago(60 * 24 * 30) }, { provider: "github", added_at: ago(60), how: "email", deniable_until: until }], history: [] }) } as ReturnType<typeof hosted>);
+    await act(async () => {});
+    expect(rows(root, "account-pcs")).toEqual(["OnlineDesk", "OfflineDead box"]);
+    expect(root.querySelector('button[data-action="sign-out-everywhere"]')).toBeNull();
+    expect(root.querySelector('button[data-action="delete-account"]')).toBeNull();
   });
 
   it("signs every device out from Manage account after one short confirm that says PCs stay", async () => {
@@ -563,5 +576,14 @@ it("PCR-1: a removal that wants a fresh sign-in closes the confirm, and Sign in 
   it("closes the sheet once this device left everywhere", async () => {
     const root = await leaveFromSheet(async () => ({ left: true, message: null }));
     expect(sheets(root)).toHaveLength(0);
+  });
+
+  it("draws the account's ways to sign in first in the hosted sheet, with only its Account ID above them", async () => {
+    const withWays = { ...hosted(async () => ({ left: true, message: null })), methods: async () => ({ identities: [{ provider: "github" as const, added_at: ago(60) }], history: [] }) };
+    const root = await openSheet(withWays);
+    const parts = [...one(root, ".account-manage-body").children];
+    const ways = parts.findIndex((part) => part.classList.contains("account-methods"));
+    expect(parts.slice(0, ways).map((part) => part.hasAttribute("data-account-id"))).toEqual([true]);
+    expect([...parts[ways]?.querySelectorAll("li.account-method") ?? []].map((chip) => chip.getAttribute("data-provider"))).toEqual(["github"]);
   });
 });

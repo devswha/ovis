@@ -1,6 +1,6 @@
 import { apiFetch } from "./api-request-id.ts";
 import { CompactAgentsError, expandMachine, type WireMachine } from "../../shared/compact-agents.ts";
-import type { PreferencesChange, SharedPreferences } from "../../shared/preferences.ts";
+import { parsePreferencesConflict, type PreferencesConflict, type PreferencesPut, type SharedPreferences } from "../../shared/preferences.ts";
 import type { AlertWebhookSave, AlertWebhookView } from "../../shared/alert-webhook.ts";
 import type { SeenFinish, SeenPresentation } from "../../shared/seen.ts";
 import type { MemoryView } from "../../shared/memory.ts";
@@ -115,9 +115,12 @@ import { chatReadDeadlineMs, withChatReadDeadline } from "./chatReadDeadline.ts"
 import { movingHerdrFocus } from "./followFocus.ts";
 import { observeWaitingClock, waitingKey } from "./sentWaiting.ts";
 import type { UsageAccountRemoval, UsageLoginAccounts, UsageLoginCode, UsageLoginFollowed, UsageLoginPrompt, UsageLoginProvider, UsageLoginRequest, UsageLoginStarted } from "../../shared/usage-login.ts";
+import { PROVIDER_NAME } from "./usage-provider-names.ts";
+
+const USAGE_PROVIDERS_QUERY = `providers=${Object.keys(PROVIDER_NAME).join(",")}`;
 
 export function fetchUsageLoginProviders(signal: AbortSignal): Promise<{ providers: readonly UsageLoginProvider[] }> {
-  return getJson("/api/usage/login", { signal });
+  return getJson(`/api/usage/login?${USAGE_PROVIDERS_QUERY}`, { signal });
 }
 
 export function fetchUsageLoginAccounts(provider: string, signal: AbortSignal): Promise<UsageLoginAccounts> {
@@ -132,7 +135,7 @@ export function followUsageLogin(request: Extract<UsageLoginRequest, { provider:
 }
 
 export function fetchUsageLoginPrompt(login: string, signal: AbortSignal): Promise<UsageLoginPrompt> {
-  return getJson(`/api/usage/login/prompt?login=${encodeURIComponent(login)}`, { signal, cache: "no-store" });
+  return getJson(`/api/usage/login/prompt?login=${encodeURIComponent(login)}&${USAGE_PROVIDERS_QUERY}`, { signal, cache: "no-store" });
 }
 
 export async function sendUsageLoginCode(request: UsageLoginCode): Promise<void> {
@@ -173,7 +176,7 @@ export async function openTailscaleApp(): Promise<boolean> {
 }
 
 export function fetchUsage(refresh = false): Promise<UsageReport> {
-  return getJson<UsageReport>(refresh ? "/api/usage?refresh=1" : "/api/usage");
+  return getJson<UsageReport>(`/api/usage?${USAGE_PROVIDERS_QUERY}${refresh ? "&refresh=1" : ""}`);
 }
 
 export async function removeUsageAccount(account: string): Promise<void> {
@@ -476,9 +479,13 @@ export async function fetchPreferences(): Promise<SharedPreferences | null> {
   catch (error) { if (error instanceof ApiError && error.status === 404) return null; throw error; }
 }
 
-export async function savePreferences(body: PreferencesChange, keepalive = false): Promise<SharedPreferences> {
+export async function savePreferences(body: PreferencesPut, keepalive = false): Promise<SharedPreferences> {
   const url = "/api/preferences";
   const response = await apiFetch(url, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body), keepalive });
+  if (response.status === 409) {
+    const conflict = parsePreferencesConflict(await response.clone().json().catch(() => null));
+    if (conflict !== null) throw new PreferencesConflictError(url, conflict);
+  }
   if (!response.ok) throw await errorFrom(url, response);
   return (await response.json()) as SharedPreferences;
 }
@@ -542,6 +549,15 @@ export class ApiError extends Error {
 }
 
 export const routeMissing = (error: unknown): boolean => error instanceof ApiError && error.status === 404 && error.code === "not_found";
+
+export class PreferencesConflictError extends ApiError {
+  readonly current: SharedPreferences;
+
+  constructor(url: string, conflict: PreferencesConflict) {
+    super(url, 409, conflict.error.message, conflict.error.code);
+    this.current = conflict.current;
+  }
+}
 
 const LOCALIZED_ERRORS: Readonly<Record<string, () => string>> = {
   pc_add_source_bound: () => t("This PC is in an account. Add PCs from your account."),
@@ -1202,7 +1218,7 @@ export async function fetchAgentCatalog(machineId = "local", signal?: AbortSigna
   if (signal?.aborted) end();
   else signal?.addEventListener("abort", end, { once: true });
   try {
-    return await getJson<AgentCatalogResponse>(`${machinePath(machineId, "agent-catalog")}${recheck ? "?recheck=1" : ""}`, { signal: bounded.signal, cache: "no-store" });
+    return await getJson<AgentCatalogResponse>(`${machinePath(machineId, "agent-catalog")}?${USAGE_PROVIDERS_QUERY}${recheck ? "&recheck=1" : ""}`, { signal: bounded.signal, cache: "no-store" });
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener("abort", end);
@@ -1212,10 +1228,6 @@ export async function fetchAgentCatalog(machineId = "local", signal?: AbortSigna
 export async function startAgentInstall(agent: string, machineId = "local", alternative?: number): Promise<AgentTabStarted> {
   const response = await sendJson(machinePath(machineId, "agent-catalog/install"), "POST", alternative === undefined ? { agent } : { agent, alternative });
   return (await response.json()) as AgentTabStarted;
-}
-
-export async function startAgentSignIn(agent: string, machineId = "local"): Promise<AgentTabStarted> {
-  return (await (await sendJson(machinePath(machineId, "agent-catalog/sign-in"), "POST", { agent })).json()) as AgentTabStarted;
 }
 
 export async function fetchIntegrations(machineId = "local"): Promise<IntegrationsResponse["integrations"]> {

@@ -529,7 +529,10 @@ and nothing else.
 { "account": "acct_1" , "members": 3, "unlinked": ["6a1f0c9e2b7d4a10"], "own_word": ["0d4c1b7a9e2f3c58"], "removals": [<remove>, …], "adds": [<add>, …], "blocked": ["<key>", …], "enrolling": false, "mailbox": { "last_pull_at": "2026-11-05T01:02:03.000Z", "error": null } }
 ```
 
-`account` is `null` before the first member. `unlinked` lists relay rows that are not members.
+`account` is `null` before the first member. `account_provider` (`github`, `google` or `apple`), when
+present, is how the owner who named that account for this PC (`relay-account`) signed in to it: the
+relay tab of a page signed in to another account says to sign in that way. It is absent when no naming
+said so (an add from an older Ovis, `ovis add`). `unlinked` lists relay rows that are not members.
 `own_word` lists the members that joined on their own word ([How a device joined](#how-a-device-joined)).
 `removals` lists the signed `remove`s behind this PC's tombstones for its account, as received (a
 Revoke on the PC has none). `adds` lists the signed `add`s behind its rows, as received: the one
@@ -564,6 +567,37 @@ answer to an account service challenge (`role` `account`, as for its mailbox), w
 after a minute. Only this PC's own window or CLI gets one (403 `owner_only` otherwise, as
 `one-press`); 503 `account_unavailable` when the service gave no challenge. The way back into an
 account after `ovis logout` is so a sign-in on the PC itself.
+
+`GET /api/account/move` and `POST /api/account/move`: this PC's own window only, with Step 2 on.
+When the window is signed in to another account, **Move this PC to this account** moves the PC there
+with the account service's existing routes, keeping its paired devices as local pairings (without
+making them members of the destination):
+
+- `{ "into", "stage": "prepare", "provider"? }` writes the move journal before anything is asked of
+  the service, and answers `200 { "state": "prepare", "pc": { "server_id", "public_key", "relay",
+  "name"? } }`: what the window lists in the destination (`PUT /v1/pcs/{server_id}`) before it
+  admits it (`POST /v1/pcs/{server_id}/admit`) with its own sign-in. `provider` is how that sign-in
+  was made; the PC names it for its relay pass once it is in the destination.
+- `{ "into" }` takes the destination's admission, asks for a relay pass under it, and switches the
+  binding in one write: `200 { "state": "moved", "account" }`. `200 { "state": "sign_in", "account" }`
+  when no admission waits yet (the window lists and admits the PC first); `202 { "state": "pending" }`
+  while something can be asked again (the service, a file).
+- `{ "into", "stage": "cancel" }` gives the move up only before the PC took the admission:
+  `200 { "state": "aborted", "account", "reason": "cancelled" }`. Once it took it, or switched, the
+  move only goes forward, and the answer is the move's own (`pending` while the mailbox does not
+  answer).
+
+From the journal on, the PC finishes the move by itself, at its start and on its own retries, without
+a window: it takes an admission as soon as one waits, completes the destination's add, then leaves
+the old account (`POST /v1/pcs/{server_id}/leave`) until that answers 204, and only then drops the
+journal. A move given up answers `aborted` with its `reason`: `cancelled`, `relay_limit` (the
+destination has no relay slot for another PC), `list_account` (either account keeps a signed list,
+which this move does not support), `listing_changed` (the destination's listing changed before the
+switch) or `binding_changed` (the PC left its account meanwhile). A move given up never removes the
+destination's listing: the window says the PC is still listed there, to remove there if it is not
+wanted. `GET` answers `{ "into" }`, the destination of a move under way (else `null`), and while the
+PC stays in its account the last move given up as `aborted`. One press still refuses to move a PC
+that is already in an account.
 
 `GET /api/account/list`: how this PC follows
 [its account's signed list](#the-accounts-signed-list-on-a-pc), for this PC's own window and CLI
@@ -704,12 +738,14 @@ refusal's name where the PC joins no list (`list_removed`, `other_account`, `pin
 than what a member wrote into the list, and a PC that is behind does not write itself in); 503
 `not_read` or `unavailable`.
 
-`POST /api/account/relay-account` `{ "account" }` (or `{ "account": null }`, over a direct connection
+`POST /api/account/relay-account` `{ "account", "provider"? }` (or `{ "account": null }`, over a direct connection
 only and only on a PC in no account (409 `in_account` otherwise), which forgets the one named: `ovis
 join` puts back what it found): the account this PC asks its relay pass under while it
 has no members ([relay.md](relay.md#relay-pass)): over a direct connection with drive access (the PC's own
 screen, after it listed the PC), or through the relay only from a drive account member of that same
-account (`account_required` otherwise). Kept in `relay/account.json`; a
+account (`account_required` otherwise). Kept in `relay/account.json`, with `provider` (`github`,
+`google` or `apple`: how the namer signed in; any other value is taken as none, and a naming without
+one keeps the one said before for the same account); a
 name that is not an account id answers 400 `invalid_account`. Answers 204. Naming an account grants
 nothing: the service gives a pass only when that account lists the PC.
 While the PC has no member, it is also the account its first member comes from: a `link` that
@@ -2095,9 +2131,24 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   says so, and that `ovis add` on this PC gives it its keys. A join of a key this PC itself keeps out (a
   block here, which closes the PC to every key newer than its target, whatever the list holds) is
   marked `list_held`, and `ovis approve` says that the device is not let in here until that block is
-  lifted, and where. A PC that follows no list marks a first or members join of such a key
-  `list_held` the same way, and a device approved here anyway hears `list_held_here`, not that
-  nobody approved it. A join into the account on a pinned
+  lifted, and where. A PC that follows no list marks a first or members join of a key it keeps out
+  with `held_why`, which names what an approval here would meet (server/relay/join-verdict.ts):
+  `block`, `freeze` (the account service's freeze that follows a block), `account_hold`,
+  `account_removed`, `untrusted` (an earlier pairing of that key here whose time this PC cannot
+  trust), `closed` (this PC cannot trust its account state) or `locked`; a block or a freeze marks
+  it `list_held` too, as before (a block or a freeze is named first where several reasons stand).
+  The answer to an approval of a join of no list (`POST /api/relay/join`) names `held_why` again as
+  it stands when the approval is taken (`null` when nothing keeps it out), which may differ from
+  what the list said a moment before. `ovis approve`
+  then says that the device was not let in and why, never that it is let in or approved (a reason
+  it does not know: only that this PC keeps it out).
+  A device whose account join the account service admitted is approved anyway hears why in its
+  refusal's `message`, not that nobody approved it (any other pairing names a key it never proves,
+  and hears only `auth_failed`):
+  `list_held_here` for a block or a freeze, else `kept_out_` and the reason (`kept_out_account_hold`,
+  `kept_out_account_removed`, `kept_out_untrusted`, `kept_out_closed`, `kept_out_locked`, and
+  `kept_out_revoked` for one a member approved from afar whose key was revoked here). An app that
+  knows none of them shows its general refusal, as before. A join into the account on a pinned
   PC from an app that knows no join into a list (it did not offer `account-list-allow-1`: an Ovis older
   than 0.5.10) is marked `list_unknown`: nothing lets it in here, so `ovis approve`, and `ovis add`'s
   wait for a first device, ask nothing for it and say to update Ovis on that device and ask again.
@@ -2387,7 +2438,7 @@ that stays with each PC's `devices.json` ([Rules](#rules)).
 
 OAuth's authorization code flow with PKCE, `S256` only:
 
-1. `GET /v1/signin/{github|google|apple}?redirect_uri&state&code_challenge&code_challenge_method=S256[&response_mode][&link_token]`
+1. `GET /v1/signin/{github|google|apple}?redirect_uri&state&code_challenge&code_challenge_method=S256[&response_mode][&link_token][&link=auto]`
    sends the browser to the provider's sign-in, then back to `redirect_uri` with `code` and
    `state`: in the fragment (`#code=…&state=…`) for `https://app.ovis.sh/`, always, so the code never
    reaches that host's request logs; in the query for the loopback redirect, which a local server
@@ -2402,7 +2453,7 @@ OAuth's authorization code flow with PKCE, `S256` only:
    tokens rotate: each is good once, and using one again ends every token of its sign-in (its
    family), as a leaked one would be.
 4. On iOS, Sign in with Apple hands the app an identity token directly:
-   `POST /v1/token` `{ "grant_type": "apple_id_token", "id_token", "nonce" }` answers the same. The
+   `POST /v1/token` `{ "grant_type": "apple_id_token", "id_token", "nonce", "link"? }` answers the same. The
    app makes a fresh random `nonce` of 16-128 characters for each sign-in, gives Apple its SHA-256 in
    lowercase hex, and sends the plain `nonce` here. The service accepts the token only when Apple's
    signature holds (Apple's published keys), `iss` is `https://appleid.apple.com`, `aud` is the
@@ -2448,29 +2499,56 @@ OAuth's authorization code flow with PKCE, `S256` only:
 6. `POST /v1/signout` (Bearer) answers 204 and ends that sign-in's family.
 
 `GET /v1/providers` (no sign-in) answers `{ "providers": ["github", "google"], "device": ["github",
-"google"], "device_page": ["github", "google"] }`: the sign-ins this service is set up for, those of
-them a PC's own page can start at the provider (step 5), and those its Ovis link page offers (an
-empty or missing `device_page`: no link page). A provider that is not listed has no button anywhere; a client that cannot read the answer
+"google"], "device_page": ["github", "google"], "email_link": true }`: the sign-ins this service is set up for, those of
+them a PC's own page can start at the provider (step 5), those its Ovis link page offers (an
+empty or missing `device_page`: no link page), and whether it links a new sign-in by its verified email
+(below; missing from a service from before that, which refuses `link` in a device or link page start). A provider that is not listed has no button anywhere; a client that cannot read the answer
 keeps the sign-ins its build names (GitHub alone by default), so a Google button never leads to a
 service that has no Google client.
 
-Google asks for `openid` and nothing else, and the service keeps none of Google's tokens, and no
-email or name, past the sign-in: it reads the identity token's `sub` (the account's key for that
-Google user), checks `iss`, `aud` and `exp` (and, in the redirect sign-in, the `nonce` it sent; Google's
+GitHub asks for `read:user user:email` and Google for `openid email`. The service keeps none of
+the provider's tokens, and no email address, name or GitHub login, past the sign-in: only a keyed
+fingerprint of the verified address (GitHub's primary verified one, Google's when `email_verified`),
+an HMAC-SHA256 under a key only the service holds, for the hint below. From Google's identity token it reads `sub` (the account's key for that
+Google user) and its email, checks `iss`, `aud` and `exp` (and, in the redirect sign-in, the `nonce` it sent; Google's
 device flow carries none), and drops the rest.
 
 #### Sign-in methods
 
-Each provider is its own sign-in method: an account has at most one identity per provider, and a
-sign-in with an identity no account has makes a new account. The service never joins two accounts
-because their email addresses match (whoever controls an address at one provider would take the
-account). A signed-in person adds another method on purpose, from Settings:
+Each provider is its own sign-in method: an account has at most one identity per provider. A first
+sign-in, on a device signed in to nothing, asks to be linked by its verified email: `link=auto` in
+step 1's query, `"link": "auto"` in the iOS Apple grant (the email is the one Apple signed into the
+token; the app sends none, and asks Apple for the email scope), and in a device or link page start only
+when `GET /v1/providers` says `email_link`. A sign-in again and a sign-in that adds a method send none.
+Where the service has linking on, a sign-in with an identity no account has is then added, `how: "email"`,
+to the account that already holds its verified email, unless that account has that provider, removed it
+before, or keeps a signed list; otherwise it makes a new account. A known identity whose own account is
+empty may be folded the same way into the account of its email (`how: "fold"`). Every device of the
+account is rung. When the service cannot check the email at all it answers `error=email_unavailable`
+(400 `email_unavailable` to the Apple grant and to a device poll): the client says it could not check the
+email and offers the sign-in again, which is no refusal. A service with linking off ignores `link`;
+one started with `create=ask` there comes back with `error=existing_account&existing_provider=<provider>`
+instead of making an account, and one started with `create=never` with `error=no_account` when there's
+no account to sign in to. A signed-in person adds another method on purpose, from Settings:
 
 | request | body | answer |
 |---|---|---|
-| `GET /v1/identities` | | `{ "identities": [{ "provider", "added_at" }] }`: this account's sign-in methods. Nothing names the person behind one: the service keeps no email or GitHub login |
+| `GET /v1/identities` | | `{ "identities": [{ "provider", "added_at", "how"?, "deniable_until"? }], "history": [{ "kind", "provider", "at", "device_no", "how"? }] }`: this account's sign-in methods and their latest changes. `how` is `email` or `fold` on a method the service added by its email, with `deniable_until` while it may still be taken back (24 hours); on a change, `email` on such an add, `not_me` on a Not me, `fold` on a `merge_in`. Nothing names the person behind one: the service keeps no email address or GitHub login, only a keyed fingerprint of the verified address |
 | `POST /v1/identities/link` | `{ "provider" }` | `{ "link_token", "expires_in" }`: good once, for 10 minutes, for this sign-in and that provider. The client starts a redirect sign-in (step 1) carrying it. 409 `identity_exists` when the account already has that provider; 403 `reauth_required` unless this sign-in was made in the last 10 minutes |
-| `DELETE /v1/identities/{provider}` | | `204`: removes that method and ends the sign-ins made with it. 409 `last_identity` when it is the account's only one; 403 `reauth_required` unless this sign-in was made in the last 10 minutes |
+| `DELETE /v1/identities/{provider}` | | `204`: removes that method and ends the sign-ins made with it; the service never adds that provider to the account by email again, unless it is added here on purpose. 409 `last_identity` when it is the account's only one; 403 `reauth_required` unless this sign-in was made in the last 10 minutes |
+| `POST /v1/identities/{provider}/not-me` | | `204`: Not me, which takes back a method added by email within its 24 hours, from an own sign-in of another settled method (no ten-minute limit) or from any sign-in of that method itself, whose sign-ins end; denied as a removal is. 404 `identity_none`; 409 `not_auto` (a method added on purpose), `settled` (past the 24 hours: the client removes it the ordinary way instead), `last_identity`; 403 `web_sign_in_required` (a device code's sign-in, against another method), `method_settling` |
+| `GET /v1/session` | | `{ "account", "own_sign_in", "signed_in_at", "email_hint"?, "joined"? }`: `email_hint`, the account's masked email (`d***@example.com`); `joined` `{ "how", "at", "settles_at", "methods", "pcs" }` while the method this sign-in used is settling after it was added by email. The client then tells this sign-in once which account it is in (the one made with the oldest of `methods`, with `email_hint`), with **Not my account**: Not me on its own method, then a sign-out |
+
+A method added by email settles in 24 hours. Until then its sign-ins are refused what reshapes the
+account (adding, removing or rejecting another method, removing a PC of the account, making the
+account's list, signing every device out, deleting the account, and more) with 403 `method_settling`
+and `error.until`, when it settles: the client says "Changes available from <time>", and Manage account
+offers none of those controls meanwhile (a listing that asks to join may still be removed). Manage
+account shows each method another device's sign-in can still take back on one line, "<provider> was
+added to this account because it has the same email", with **Not me** where this sign-in may press it
+(not a PC's own page in a browser, signed in with a code: there the service answers 403
+`web_sign_in_required`), and reads its methods again when the app comes back to the front, as the
+service's ring brings it.
 
 A refresh keeps a sign-in's time: only signing in again makes it recent. On `reauth_required` the
 client asks the person to sign in again, then repeats what they asked for.

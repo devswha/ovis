@@ -4,6 +4,7 @@ import type { OwnJoinRequest, PendingKey, RelayPairingRequest } from "../../shar
 import { useOwnJoins } from "../components/OwnJoins.tsx";
 import { firstJoinPrompts, listAddPrompts, pendingKeyPrompts, tailnetPrompts, type PromptPairing } from "../components/RelayPairingPrompt.tsx";
 import { listNumberHeld, onListNumbersHeld } from "./account/addThisPc.ts";
+import { resumePcMove } from "./account/movePc.ts";
 import type { MachineSessionRegistry } from "./machineSession.ts";
 import { useListAdd } from "./useListAdd.ts";
 import { useTailnetNodes } from "./useTailnetNodes.ts";
@@ -26,12 +27,22 @@ export function useOwnWindowPrompts(relayPairings: readonly RelayPairingRequest[
   const joins = useOwnJoins(ownWindow && unlocked, reads, machineSessions);
   // a first join's deadline is counted from its own read: an unrelated update rebuilds the list, never that deadline
   const firstJoins = useMemo(() => firstJoinPrompts(joins), [joins]);
-  const tailnet = useTailnetNodes(ownWindow)?.pending ?? null;
+  // a lock closes the local socket: only an unlocked window listens, to the socket opened after it
+  const tailnet = useTailnetNodes(ownWindow, 0, unlocked ? machineSessions : undefined)?.pending ?? null;
   const tailnetAsks = useMemo(() => tailnetPrompts(tailnet), [tailnet?.id, tailnet?.asked_at]); // eslint-disable-line react-hooks/exhaustive-deps
-  const listAdd = useListAdd(ownWindow && unlocked, reads);
+  const listAdd = useListAdd(ownWindow && unlocked, reads, machineSessions);
   // a number a wait shows in the dialog it was pressed in is that wait's to answer: one place alone takes the yes
   const [holds, setHolds] = useState(0);
   useEffect(() => onListNumbersHeld(() => setHolds((count) => count + 1)), []);
+  // a move this PC began finishes from its own window once unlocked (src/lib/account/movePc.ts)
+  useEffect(() => {
+    if (!ownWindow || !unlocked) return;
+    const resume = new AbortController();
+    void resumePcMove(resume.signal).catch((error: unknown) => {
+      if (!resume.signal.aborted) console.warn("Ovis: the pending PC move could not resume", error instanceof Error ? error.name : error);
+    });
+    return () => resume.abort();
+  }, [ownWindow, unlocked]);
   const addAsks = useMemo(() => listAddPrompts(listAdd).filter((ask) => !listNumberHeld(ask.run)), [listAdd?.state, listAdd !== null && listAdd.state === "number" ? `${listAdd.run} ${listAdd.digits} ${listAdd.until}` : null, holds]); // eslint-disable-line react-hooks/exhaustive-deps
   const prompts = useMemo(() => [...relayPairings, ...firstJoins, ...(ownWindow ? [...addAsks, ...pendingKeyPrompts(pendingKeys), ...tailnetAsks] : [])], [relayPairings, firstJoins, ownWindow, addAsks, pendingKeys, tailnetAsks]);
   const reread = useMemo(() => () => setReads((count) => count + 1), []);

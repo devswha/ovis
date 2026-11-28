@@ -2,7 +2,7 @@ import { NO_AGENT_MESSAGE } from "../../shared/submit-outcome.ts";
 import { resolveHerdrKeys } from "../../shared/herdr-keys.ts";
 import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, DevicePairedEvent, DevicePairedSeenEvent, DevicesRevokedAll, HealthAuth, IntegrationsResponse, Machine, MachineEvent, OmoActivity, OmoTask, PairedDevice, PairingCode, PaneBackgroundAgentDetail, PaneDirection, PaneFindMatch, PaneFindRequest, PaneMoved, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, RelayStatus, SecuritySummary, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, TabMovedToWorkspace, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeInventory, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
 import type { PushSubscriptionStatus, RepoBranchComparison, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRefs, RepoDiffRepository, RepoDiffScope, SessionHistoryAgent, SessionHistoryResponse, SessionResumeResponse } from "../../shared/protocol.ts";
-import { nextTabLabels, normalizeThemeChange, sharedPreferencesBody, type SharedPreferences } from "../../shared/preferences.ts";
+import { nextTabLabels, normalizeThemeChange, preferencesConflict, preferencesPutBody, type SharedPreferences } from "../../shared/preferences.ts";
 import type { PullRequestCheckLog, PullRequestView } from "../../shared/pull-request.ts";
 import type { SystemReport } from "../../shared/system.ts";
 import { VOICE_DEFAULTS, type VoiceStatus } from "../../shared/voice.ts";
@@ -326,8 +326,11 @@ function emitSse(event: MachineEvent): void {
 let preferences: SharedPreferences = { revision: 0, settings: {}, muted_panes: [] };
 
 function changePreferences(raw: unknown): Response {
-  const change = sharedPreferencesBody(raw);
-  if (change === null) return error("invalid_body", "Send { settings: object, pins?: string[], muted_panes?: string[], tab_labels?: { [pane|terminal]: string }, tab_labels_removed?: string[] }", 400);
+  const change = preferencesPutBody(raw);
+  if (change === null) return error("invalid_body", "Send { settings: object, pins?: string[], muted_panes?: string[], tab_labels?: { [pane|terminal]: string }, tab_labels_removed?: string[], expected_revision?: non-negative safe integer }", 400);
+  if (change.expected_revision !== undefined && change.expected_revision !== preferences.revision) {
+    return json(preferencesConflict(preferences), 409, { "cache-control": "no-store" });
+  }
   const { settings } = normalizeThemeChange(preferences.settings, change);
   const pins = change.pins ?? preferences.pins;
   const merged = { ...preferences.settings, ...settings };
@@ -2148,7 +2151,7 @@ async function pushRoute(path: string, method: string, init: RequestInit | undef
 }
 
 /** Settings → Alerts → Also send to: kept in this page only, and never posted anywhere. */
-const NO_WEBHOOK: AlertWebhookView = { configured: false, preset: null, target: null, chat_id: null, alerts: DEFAULT_ALERTS, reachable_link: false, last_success_at: null, last_failure_at: null, last_error: null };
+const NO_WEBHOOK: AlertWebhookView = { configured: false, preset: null, target: null, chat_id: null, alerts: DEFAULT_ALERTS, link: true, reachable_link: false, last_success_at: null, last_failure_at: null, last_error: null };
 let demoWebhook: AlertWebhookView = NO_WEBHOOK;
 const demoMask = (preset: string, secret: string): string => { if (preset === "telegram") return "…"; try { return `${new URL(secret).host}/…`; } catch { return "…"; } };
 
@@ -2169,7 +2172,8 @@ function alertWebhookRoute(path: string, method: string, init: RequestInit | und
   const same = demoWebhook.configured && demoWebhook.preset === preset;
   if (!secret && !same) return error("invalid_webhook", preset === "telegram" ? "a bot token is required" : "a URL is required", 400);
   demoWebhook = { ...NO_WEBHOOK, configured: true, preset, target: secret ? demoMask(preset, secret) : demoWebhook.target,
-    chat_id: preset === "telegram" ? body.chat_id ?? null : null, alerts: body.alerts ?? demoWebhook.alerts,
+    chat_id: preset === "telegram" ? body.chat_id ?? (same ? demoWebhook.chat_id : null) : null, alerts: body.alerts ?? demoWebhook.alerts,
+    link: body.link ?? (same ? demoWebhook.link : true),
     reachable_link: demoWebhook.reachable_link || !/^(?:localhost|.+\.localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1?\]|\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\])\.?$/i.test(location.hostname) };
   return json(demoWebhook, 200, { "cache-control": "no-store" });
 }

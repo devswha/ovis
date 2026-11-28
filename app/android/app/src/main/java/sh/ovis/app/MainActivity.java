@@ -189,6 +189,7 @@ public class MainActivity extends BridgeActivity {
     private boolean gaveUp;
 
     private boolean checked;
+    private String checkAfter;
 
     /**
      * Back while the page has an entry behind it goes to that entry in the WebView: a pane before, a sheet closing, or the
@@ -228,6 +229,10 @@ public class MainActivity extends BridgeActivity {
             if (view.copyBackForwardList().getCurrentIndex() > 0 && "add".equals(Uri.parse(String.valueOf(view.getUrl())).getFragment())) {
                 stepped(now);
                 view.evaluateJavascript("history.back()", null);
+                return;
+            }
+            if (screen == Home.Screen.PC && PCStore.stopTrying()) {
+                reopen();
                 return;
             }
             // nothing behind the page: the PC the hosted screen was opened from, or the hosted screen the app's own page
@@ -740,24 +745,40 @@ public class MainActivity extends BridgeActivity {
     private void keepIfOvis(String pc, String url) {
         // the bundled shell is the app's own copy, asked nothing over the network
         if (PCStore.scoped(pc) || shell != null) {
-            PCStore.remember(this, pc);
+            // an address opened on an unclear answer is kept as the current PC too, not only listed
+            if (PCStore.trying(pc)) PCStore.confirm(this, pc);
+            else PCStore.remember(this, pc);
             return;
         }
-        if (checked) return;
+        boolean trying = PCStore.trying(pc);
+        if (checked) {
+            if (trying) checkAfter = url;
+            return;
+        }
         checked = true;
-        String cookies = CookieManager.getInstance().getCookie(url);
+        CookieManager cookies = CookieManager.getInstance();
         android.content.Context app = getApplicationContext();
         long since = PCStore.forgetCount();
         new Thread(() -> {
-            PCStore.Check found = PCStore.check(url, cookies, PCStore.ANSWER_SECONDS * 1000L);
-            if (!found.kind.equals("not-ovis")) {
+            PCStore.Check found = PCStore.check(url, cookies::getCookie, PCStore.ANSWER_SECONDS * 1000L);
+            if (!trying && !found.kind.equals("not-ovis")) {
                 PCStore.rememberUnlessForgotten(app, pc, since);
                 return;
             }
             runOnUiThread(() -> {
-                if (isFinishing() || isDestroyed()) return;
-                PCStore.fail(found.detail == null ? "It answered, but not as Ovis." : "It answered " + found.detail + ", not as Ovis.", "not-ovis");
-                bridge.getWebView().loadUrl(bridge.getErrorUrl());
+                if (leaving || isFinishing() || isDestroyed()) return;
+                if (found.kind.equals("not-ovis")) {
+                    PCStore.fail("It answered " + found.detail + ", not as Ovis.", "not-ovis");
+                    bridge.getWebView().loadUrl(bridge.getErrorUrl());
+                } else if (found.kind.equals("ovis")) {
+                    PCStore.confirm(app, pc);
+                } else if (PCStore.trying(pc)) {
+                    // The proxy may have let the WebView in while the check for its first page was running.
+                    String next = checkAfter;
+                    checkAfter = null;
+                    checked = false;
+                    if (next != null) keepIfOvis(pc, next);
+                }
             });
         }, "ovis-check").start();
     }

@@ -1,6 +1,8 @@
 import { canonicalBase64Url, isListHash } from "../../shared/account-list-entry.ts";
 import type { Sealed } from "../../shared/account-list.ts";
 import type { SignedNaming, SignedVouch } from "../../shared/account-list-migrate.ts";
+import { isAccountId } from "../../shared/account-list-invite.ts";
+import { isSignInMethod } from "../../shared/account-devices-api.ts";
 import { ACCOUNT_ENROLL_MAX, ACCOUNT_RECORDS_MAX, isAccountKeyEncoding } from "../../shared/account-records.ts";
 import type { AccountAddRelay, AccountAddTaken } from "../../shared/machines.ts";
 import { toBase64Url } from "../../shared/relay-pair-sas.ts";
@@ -168,14 +170,23 @@ export async function handleAccountRequest(request: Request, pathname: string, c
   }
   const ownLink = waiting !== null && (pathname === "/api/account/link" || pathname === "/api/account/list/named") && request.method === "POST";
   if (!ownLink && (access.level !== "full" || access.role !== "drive")) return fail("read_only", "this device can only watch", 403);
+  if (pathname === "/api/account/move" && request.method === "GET") {
+    setRequestRoute(pathname);
+    const move = context.services.accountMove;
+    return move === null || !devices.opensAll() ? fail("not_found", "Unknown account action", 404)
+      : reply(move.status());
+  }
   if (pathname === "/api/account/status" && request.method === "GET") {
     setRequestRoute(pathname);
     const mailbox = context.services.accountMailbox;
     // a client about to enroll another PC reads this one's removals after its mailbox, so one waiting there counts too
     const fresh = new URL(request.url).searchParams.get("fresh") === "1" ? await mailbox.freshen() : undefined;
     const blocked = [...new Set([...devices.tombstoneKeys(), ...mailbox.waitingRemoveKeys(), ...context.services.accountHolds.list()])];
+    // how the owner who named this PC's account signed in to it: a page signed in to another account says which way leads here
+    const naming = context.services.relay.savedRelayNaming();
+    const named = devices.account() !== null && devices.account() === naming?.account ? naming.provider : null;
     return reply({
-      account: devices.account(), ...(devices.accountPolicyActive() ? { pc_add_from_account: devices.accountError === null ? true : "unavailable" } : {}),
+      account: devices.account(), ...(named === null ? {} : { account_provider: named }), ...(devices.accountPolicyActive() ? { pc_add_from_account: devices.accountError === null ? true : "unavailable" } : {}),
       // a PC its account stopped listing: a device sends it no link, and an add at the PC brings it back (docs/account.md)
       ...(devices.addAtPcRequired() ? { pc_add_required: true } : {}),
       ...devices.accountRows(), removals: devices.accountRemovals(), adds: devices.accountAdds(), blocked,
@@ -241,7 +252,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       }
       if (typeof account !== "string") return fail("invalid_account", "Name the account", 400);
       if (peer.kind === "relay" && !(devices.isAccountApproverSession(peer.device.id, peer.key) && devices.account() === account)) return fail("account_required", "Name this PC's account from a device linked to it", 403);
-      if (!context.services.relay.setRelayAccount(account)) return fail("invalid_account", "Name the account", 400);
+      // how the namer signed in to it, when it says: anything else is no word on it, as from an Ovis that sends none
+      if (!context.services.relay.setRelayAccount(account, isSignInMethod(body.provider) ? body.provider : undefined)) return fail("invalid_account", "Name the account", 400);
       return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
     }
     case "/api/account/pc-proof": {
@@ -368,6 +380,18 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       }) : null;
       if (typeof entry !== "string" || entry.length > 16_384 || given === null || (Array.isArray(wraps) && given.length !== wraps.length)) return fail("invalid_join", "Send the signed join and its wraps", 400);
       return await ended(await list.joinPlace({ account, list: id, invite, entry, wraps: given }));
+    }
+    case "/api/account/move": {
+      setRequestRoute(pathname);
+      const move = context.services.accountMove;
+      if (move === null || !devices.opensAll()) return fail("not_found", "Unknown account action", 404);
+      if (peer.kind === "relay") return fail("owner_only", "Move this PC from its own window.", 403);
+      const { into, stage, provider } = body;
+      if (typeof into !== "string" || !isAccountId(into) || (stage !== undefined && stage !== "prepare" && stage !== "cancel")
+        || (provider !== undefined && !isSignInMethod(provider))) return fail("invalid_move", "Name the destination account and the move step", 400);
+      const answer = await move.order({ into, ...(stage === undefined ? {} : { stage }), ...(provider === undefined ? {} : { provider }) });
+      if ("error" in answer) return fail(answer.error.code, answer.error.message, answer.status);
+      return reply(answer, answer.state === "pending" ? 202 : 200);
     }
     case "/api/account/one-press": {
       if (!devices.opensAll()) return fail("not_found", "Unknown account action", 404);

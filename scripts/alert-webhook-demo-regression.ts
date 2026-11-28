@@ -1,18 +1,15 @@
 /**
  * Settings → Alerts → Also send to on the unmodified app over the demo's fixture transport: a Discord
- * webhook saved, its URL gone from the field and shown only masked, a test sent, Telegram asking for a
+ * webhook saved, its URL gone from the field and shown only masked, a test sent, its pane link turned off, Telegram asking for a
  * chat id too, and Off removing the destination; at 390 and 1280, light and dark. Nothing is posted
  * anywhere: the demo keeps the destination in the page.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser } from "playwright-core";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import type { Browser } from "playwright-core";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { openSettingsPage } from "./settings-page.ts";
-import { serveDemo } from "./demo-server.ts";
 
 const EVIDENCE = process.env.UI_EVIDENCE_DIR;
 const SECRET = "https://discord.com/api/webhooks/1/demo-secret-abcd";
@@ -20,7 +17,7 @@ const SECRET = "https://discord.com/api/webhooks/1/demo-secret-abcd";
 async function run(browser: Browser, origin: string, width: number, theme: "light" | "dark"): Promise<void> {
   const phone = width === 390;
   const tag = `${width} ${theme}`;
-  const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: "en-US" });
+  const context = await appContext(browser, { viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}) });
   await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ language: "en", theme }));
   const page = await context.newPage();
   const errors: string[] = [];
@@ -57,6 +54,13 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   await group.scrollIntoViewIfNeeded();
   if (EVIDENCE) await group.screenshot({ path: join(EVIDENCE, `alert-webhook-${width}-${theme}.png`) });
 
+  // messages without the pane link have no link to warn about (#3854)
+  const link = group.getByRole("switch", { name: "Link to the pane", exact: true });
+  await link.click();
+  await group.getByRole("status").filter({ hasText: "Saved" }).waitFor();
+  assert.equal(await link.getAttribute("aria-checked"), "false", `${tag}: the link stays off once saved`);
+  assert.equal(await group.getByText("Messages have no link a phone can open yet.", { exact: false }).count(), 0, `${tag}: no warning about a link that is not sent`);
+
   await destination.selectOption("off");
   await group.getByRole("status").filter({ hasText: "Removed" }).waitFor();
   assert.equal(await group.getByLabel("Webhook URL").count(), 0, `${tag}: Off removes it`);
@@ -65,22 +69,6 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   console.log(`PASS alert webhook ${tag}`);
 }
 
-const app = mkdtempSync(join(tmpdir(), "ovis-alert-webhook-demo-"));
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  const html = readFileSync(index, "utf8");
-  assert.match(html, /<script type="module"/);
-  writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-  const server = serveDemo(app);
-  try {
-    if (EVIDENCE) mkdirSync(EVIDENCE, { recursive: true });
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      const origin = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
-      for (const [width, theme] of [[390, "light"], [390, "dark"], [1280, "light"], [1280, "dark"]] as const) await run(browser, origin, width, theme);
-    } finally { await browser.close(); }
-  } finally { server.stop(true); }
-} finally {
-  rmSync(app, { recursive: true, force: true });
-}
+await withDemoBrowser({ tempPrefix: "ovis-alert-webhook-demo-" }, async ({ browser, baseUrl: origin }) => {
+  for (const [width, theme] of [[390, "light"], [390, "dark"], [1280, "light"], [1280, "dark"]] as const) await run(browser, origin, width, theme);
+});

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "../server/index.ts";
 import { herdrRpc } from "../server/herdr/client.ts";
-import type { Machine, SetupJob, SetupRequest } from "../shared/machines.ts";
+import type { Machine, MachineForwardResponse, SetupJob, SetupRequest } from "../shared/machines.ts";
 import type { ServerMessage, SessionSnapshot, WorkspaceCreated } from "../shared/protocol.ts";
 import { shellQuote } from "../server/machine-security.ts";
 
@@ -136,6 +136,18 @@ try {
   assert.ok(remoteFile(join(remoteHome, ".ssh/authorized_keys")).includes(`ovis:${machineId}`));
   assert.ok(!readFileSync(join(state, "machines.json"), "utf8").includes(password), "password is never persisted");
   console.log("PASS first install, fingerprint, secret authentication and dedicated-key registration");
+
+  // The SSH fixture's remote and local hosts share loopback, but only the forward listens on its new port.
+  {
+    using web = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => new Response(new URL(request.url).pathname) });
+    const path = `/api/machines/${machineId}/forward`;
+    const forward = await api<MachineForwardResponse>(path, "POST", { port: web.port });
+    assert.notEqual(Number(new URL(forward.url).port), server.port);
+    assert.notEqual(Number(new URL(forward.url).port), web.port);
+    assert.equal(await (await fetch(`${forward.url}/through-ssh`, { signal: AbortSignal.timeout(5_000) })).text(), "/through-ssh");
+    assert.deepEqual(await api<MachineForwardResponse>(path, "POST", { port: web.port }), forward);
+  }
+  console.log("PASS SSH loopback forwards reach the remote HTTP service and reuse the listener");
   // A second herdr beside the first is asked for: a setup that only names another session is offered the running one
   // (choose_herdr) instead of starting its own.
   const second = await setup({ ...target, identity_file: join(state, "ssh", machineId), session: "ssh-second", name: "QA second PC", start_new_herdr: true });

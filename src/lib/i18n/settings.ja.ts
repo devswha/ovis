@@ -1,6 +1,6 @@
 /**
  * Japanese for the keys only the settings files use:
- * components/SettingsDialog.tsx (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx,
+ * components/SettingsDialog.tsx and its Settings*Page.tsx pages (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx,
  * components/SettingsControls.tsx, components/TelemetryControls.tsx, components/LinkBrowserRow.tsx, components/TerminalCommandRow.tsx, lib/paletteSettings.ts.
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
@@ -17,6 +17,8 @@ export const SETTINGS_JA: Record<string, string> = {
   "Direct typing": "直接入力",
   "Microphone permission was denied": "マイクの使用が許可されませんでした",
   "Terminal input mode": "端末入力モード",
+  "Password field": "パスワード欄",
+  "When a terminal asks for a password, type it in a masked field instead of the terminal, so a phone keyboard does not learn it. On by default on a touch screen; Input line always uses it.": "端末がパスワードを尋ねたとき、端末ではなく伏せ字の欄に入力して、スマートフォンのキーボードに覚えられないようにします。タッチ画面では最初からオンで、入力欄モードでは常に使います。",
   "Reset shortcuts": "ショートカットをリセット",
   "Your browser or operating system may intercept {keys}.": "ブラウザーや OS が {keys} を先に処理する場合があります。",
   "Reserved": "予約済み",
@@ -282,6 +284,8 @@ export const SETTINGS_JA: Record<string, string> = {
   "Saved": "保存しました",
   "Saved on this PC. Leave the field empty to keep it.": "この PC に保存済みです。空欄のままなら変わりません。",
   "Messages have no link a phone can open yet. Save once from this PC's network address, not localhost or the relay.": "メッセージにはまだスマホで開けるリンクがありません。localhost やリレーではなく、この PC のネットワークアドレスから一度保存してください。",
+  "Link to the pane": "ペインへのリンク",
+  "Adds a link that opens the pane to each message. Off sends only the text.": "各メッセージにペインを開くリンクを付けます。オフにすると本文だけを送ります。",
   "Send a test": "テストを送る",
   "Test sent. Check the destination.": "テストを送りました。送り先を確認してください。",
   "Sends alerts to another app too, with the PC and pane names and a link to open the pane.": "通知を別のアプリにも送ります。PC・ペイン名と開くリンクが含まれます。",

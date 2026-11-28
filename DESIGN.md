@@ -894,6 +894,10 @@ floor of `--fs-meta` holds at scale 1 and only grows with it.
   link to the system default; the row follows the system's own default-browser list instead, and
   only for web links (`kind` link): sign-ins, Ovis pages and mailto stay with the system default.
   The row is missing where the browser itself shows the link (a browser tab, the phone apps).
+- Antigravity (Settings → Agents) distinguishes API-key mode from account sign-in, as the
+  [Codex app's profile menu](https://developers.openai.com/codex/auth#check-authentication-or-sign-out)
+  does. Ovis uses the existing agent status line, hides the OAuth controls in that mode, and
+  does not present the API key as a subscription.
 - New agents (Settings → Agents): `claudeLaunchMode` (`--permission-mode`: `acceptEdits`,
   `auto`, `plan`, `dontAsk`, `bypassPermissions`) and `codexLaunchMode` (`readOnly`, `auto`,
   `fullAccess`, each a `--sandbox` and `--ask-for-approval` pair) become the `agent.args` the new
@@ -1189,9 +1193,39 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   dialog, a menu or popover the focus is in or on, or a field in it whose Escape does something (a rename, a filter with
   words), takes it first; hidden with the focus in it, it hands the focus to its toggle; a click on the toggle
   keeps the sidebar open as before. A touch never peeks (lib/sidebarPeek.ts). On touch, a mostly horizontal swipe in
-  from the left `24px` edge opens the drawer and a swipe to the left closes it. While the finger is
+  from the left `24px` edge opens the drawer and a swipe to the left closes it. Away from that
+  edge, opening requires `dx >= 2 * |dy|` so diagonal scrolling stays with the page; strokes
+  starting on a split divider (`role="separator"`) or its children cannot open a closed drawer,
+  but still close an open drawer. Interior strokes remain uncancelled until they reach `56px`
+  horizontally at that angle, letting an initially flat stroke turn into vertical scrolling.
+  [Paseo phone web](https://github.com/getpaseo/paseo/blob/main/packages/app/src/mobile-panels/gesture-intent.ts)
+  keeps opening edge-only to protect interior scrollers. Ovis deliberately allows a flatter interior
+  stroke as agreed in [#2705](https://github.com/devswha/ovis/issues/2705), retaining its existing
+  horizontal-scroll, input, selection and modal exclusions. While the finger is
   down the drawer is under it and the scrim darkens with it; let go, it stays open when more than half
   shows or a flick (`0.35` px/ms, not after a `100ms` rest) went that way, and slides the rest from there.
+  An interior opening released at or beyond `56px` stays open even when less than half shows,
+  so a slow stroke near the right edge works; reversing below that threshold or flicking left
+  can still close it. Edge-started strokes keep their original settling behavior. The opening
+  yields if a scrollable origin or the page has moved, including a compositor scroll delivered
+  while the finger is held, with one final movement check at lift. Once the stroke ends its
+  origin is discarded: a delayed send receipt's smooth follow is no longer touch scrolling and
+  cannot close the settled drawer. Instant automatic chat scrolling announces its actual writes through
+  `layoutScroll` and the LegendList patch, including delayed end follows and row adjustments.
+  Before a write the gesture checks for an unread native scroll; after it the gesture rebases
+  its origin. Nested writes share that interval. Terminal cursor follows and fit corrections use
+  the same layout notifications. A browser clamp to a shorter end also rebases.
+  This keeps opening available while an answer streams, including near-end and two-stage follows,
+  without excusing a reader's scroll. Smooth scrolling and explicit reader navigation still yield.
+  A committed interior opening tells its connected origin to discard pending touch work:
+  terminal remainder pixels and queued wheel reports cannot escape at the lift. If scrolling has
+  not already won, that claim also locks the origin's auto/scroll axes with inline overflow:hidden.
+  A later upward turn keeps the drawer under the finger instead of starting native scrolling.
+  Lift, cancel, a second touch, a wide viewport, backgrounding, exceptions and cleanup restore
+  each original inline value and priority; the original target also hears end/cancel if detached.
+  Settled openings hold neither a lock nor scroll ownership. Programmatic streaming and cursor follows still
+  work while locked. An actual movement despite the lock retains the scroll-yield fallback. Native end/cancel
+  events still reach their consumers to finish pinch, reorder and other gesture cleanup.
 - A phone's open drawer has no X: the drawer toggle's place holds the Ovis mark (`.drawer-toggle.is-mark`, `OvisMark`),
   still the toggle, named **Close workspace list**, as the app's mark at the head of the Codex and Claude apps'
   sidebars. Beside it the header names the PC and the workspace the list is on (`.drawer-head-title`: the PC, then
@@ -1831,9 +1865,22 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   workspace, tab and pane order. **Activity** pins a blocked agent on top and orders the rest by
   their most recent state change (herdr's `state_change_seq`, read from the snapshot's `agents`),
   within each PC, so the agent just worked in stays on top while it runs and after it finishes.
+  With agents on more than one PC, it orders them all together: the blocked agents of every PC
+  first, then by when this server saw each agent's state change (`changed_at`,
+  `server/agent-changes.ts`), kept in `agent-changes.json`, so a reload or a restart keeps the
+  order and every browser shows the same one. A change made while the server was away or the PC
+  unreachable is dated when its raised counter is first seen again; an agent with no time yet keeps
+  its PC's own Activity order after the dated ones. Do not compare two PCs' `state_change_seq`:
+  each herdr counts from an origin of its own. Do not keep this order in the browser: a reload
+  loses it, and two browsers disagree. With one PC, herdr's counters alone order the list.
   It changes only the Agents list; herdr's order and the workspace rows stay as they are.
   A raw counter rollback clears synthetic recency even on older bridges without an epoch.
   This ordering correction never changes finish identities or read records.
+- Screen readers can browse the named status badges and the transcript without their DOM changes
+  speaking. Following T3 Code, separate polite regions announce completed replies in the open chat
+  and transitions to input needed or done in other panes, with the agent and workspace named.
+  Chat reads at most 300 characters of each new final answer. Opening a thread or loading older
+  rows does not announce their contents; the composer's own open-pane status stays in place.
 - Appearance's **Group agents by state** (off by default, kept on this device, as the sidebar
   filter is) moves the Agents list above the workspaces and splits its unpinned rows into
   groups: **Needs you** (blocked), **Working** (BG included), **Done** (a finish not read yet)
@@ -2605,8 +2652,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     rail's end and the column's own edge), with
     `--radius-lg`: the mark at `--avatar-size`, `--space-2-5` before the name (`--fs-md`) over
     the words (`--fs-sm`), the state's mark at the row's end on its middle, `--space-2` inside
-    the row's box. A wide row draws no time; its tooltip says the name and the words whole and
-    the time, with the full local time. The open thread's row has the sidebar's selection
+    the row's box. A wide row draws its time at the end of the name's line, as a narrow row
+    does (the Agents list and the Codex app's sidebar draw each row's age on the row too), so a
+    glance down the list says which agent has waited longest; its tooltip says the name and
+    the words whole and the time, with the full local time. The open thread's row has the
+    sidebar's selection
     (`--side-selected`, the name at `--fw-selected`, `aria-current="true"`), with no border,
     stripe or outline; no row is open while no agent is chosen. A row fills with the sidebar's
     `--side-hover` under a hovering pointer and, under a press, half way from `--side-selected`
@@ -2829,7 +2879,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   as the number is not ours, and the age is in the line, as a phone has no tooltip. No code is borrowed.
 - Under the limits, only when the provider reports them: **Usage credits** (Claude's extra usage,
   spent against its monthly cap in the provider's currency, over a bar counted like the limits) or
-  **Credits** (Codex's balance, in whole credits), then **Limit resets** (Codex's: how many are
+  **Credits** (a balance left to spend: Codex's in whole credits, Devin's extra-usage wallet in its
+  currency, which can go negative), then **Limit resets** (Codex's: how many are
   left, and when the soonest expires). Reference: Claude Code's `/usage` (its "Usage credits" row) and
   Codex's `/status` (its "Credits" row), whose own readings these are; no code is borrowed.
 
@@ -4177,9 +4228,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   pane of about 40) shows the preview in unreadable pieces, so the card shows none. It follows
   Claude Code's terminal, which shows the preview beside the option it belongs to.
 - Height: at most the larger of 60% of the app's height (`--app-height`, so a phone's keyboard
-  counts) and six touch rows (`240px`), at every width. Only the reference text gives way: six
-  lines at rest, two at the least (one for a one-line command), scrolling in itself with a fade
-  on its fold. The header, step chips, question, hint, options, custom answer and confirm row
+  counts) and six touch rows (`240px`). Questions without preceding terminal words use 80%
+  instead, leaving room for their options and up to ten scrollable lines of their own context.
+  The separate terminal words keep the standard limit and give way as described above, following
+  Claude Code's terminal. Reference text gives way too: six lines at rest, two at the least
+  (one for a one-line command), scrolling in itself with a fade on its fold.
+  The header, step chips, question, hint, options, custom answer and confirm row
   never shrink. A card still taller than its limit scrolls as a whole with a fade at its bottom
   edge, and the confirm row of a typed pick stays pinned on that edge. The card's scroll is
   contained (`overscroll-behavior: contain`), so a drag past its top is never the page's
@@ -5159,7 +5213,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   a `.modal` sheet (`ManageAccountSheet` in `components/AccountHead.tsx`, rows from
   `AccountManageLists` in `components/AccountManage.tsx`), as the Claude and Codex apps keep
   account settings to compact rows with each destructive action behind one confirm. In order: the
-  ways to sign in; the plan, when known; **Devices**, a status dot, the name and **Disconnect** on
+  ways to sign in (`AccountMethods` in `components/AccountMethods.tsx`, the same row in the desktop
+  app, on app.ovis.sh and in the phone app): one chip for each with the provider's mark, a remove
+  `X` on all but the only one and the one this device signed in with, and a dashed add chip for each
+  provider the account service offers that the account lacks (none on a PC's own page in a browser,
+  which adds none). Under the row, why a change was refused, with **See how** for a provider account
+  that another Ovis account holds, or the sign-in again it waits for; then **Recent changes**, at
+  most the three latest changes to the ways in as dim one-line entries ("Nov 27 · Google added ·
+  Device 3", the device left out where the service numbers none), drawn only when there are any, as
+  Google Account's Security page keeps recent security activity beside how you sign in. Left out on
+  purpose: a box or a rule around the entries, a full history, and a way to join two accounts. Then
+  the plan, when known; **Devices**, a status dot, the name and **Disconnect** on
   each other device of the account (on the hosted app first **This device**, whose Disconnect leaves
   the account); **PCs**, a dot and the name on each PC in the directory, with **Remove** only on one
   not heard from for 15 minutes; **Delete account** last. Each action asks once in a
@@ -5183,7 +5247,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   listener on this PC, and a person who wants the faster path turns it on; the relay never moves a connection off
   itself unasked. Settings search finds it by Wi-Fi, Tailscale, LAN, same Wi-Fi or home network (`keywords`, in each
   language), whichever line it shows.
-- My devices (`MyPcRows` in SettingsDialog.tsx, then `components/DevicesPanel.tsx`): this PC
+- My devices (`MyPcRows` in SettingsDevicesPage.tsx, then `components/DevicesPanel.tsx`): this PC
   first (its name and a **This PC** pill in the accent; no ID line), then
   the PCs this app shows (a neutral **PC** pill and their state; one that is not connected is
   dimmed, and one this app added over SSH or the relay carries a **Remove PC** trash button that asks
@@ -5196,8 +5260,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Add a connection (`components/ConnectPhoneDialog.tsx`, a `.modal`, a bottom sheet on a phone) follows
   herdr's own **Add a machine** sheet: one tab per way across the top (the `.segmented` primitive,
   as FilesDialog's tabs), and under each the things that way found, each with one action, then a
-  field to type one. **SSH** (only for the PC's owner on its own page) lists the PCs saved in herdr
-  (**Connect**), the server's ssh config hosts and its Tailscale login's PCs, one row each: the name,
+  field to type one. If the PC's own window is signed in to a different account, the relay tab keeps
+  this hierarchy: one line explaining the mismatch, **Move this PC to this account** as the primary
+  action, then a quiet button for the PC's existing sign-in path. **SSH** (only for the PC's owner
+  on its own page) lists the PCs saved in herdr (**Connect**), the server's ssh config hosts and its
+  Tailscale login's PCs, one row each: the name,
   the address dim and ellipsized (under the name on a phone), a neutral pill for where it was found
   (herdr, ssh config, Tailscale), then **Add** or a quiet **Added** in the done green; **Add** and the
   typed address close Settings and open the PC setup dialog with the address filled in. **Tailscale**
@@ -6203,6 +6270,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   code**, a quiet ghost button; and last a `--fs-xs` dim line, "The account only lists your PCs.
   Sessions stay end-to-end encrypted." Continuing without an account opens Add a PC with this device's own
   pairings.
+  If a first GitHub or Google sign-in may match an existing account, the provider buttons give way
+  to one compact choice in the same column (also in the desktop account and connection sheets).
+  Like the existing account actions, it leads with the account decision: a heading names the
+  existing provider, one line explains linking, then **Sign in with {provider} to connect** is
+  primary and **Create a new account** is neutral. A wrong provider account puts the reason beside
+  the choices. If the provider is unavailable here, only account creation is offered. No email
+  address, provider picker or account merge is shown.
 - Add-a-PC sheet and Ready checkpoint (AddPcSheet.tsx, RelayShell.tsx, EnrollmentStatus.tsx,
   lib/relay/shell.tsx): a modal sheet `--relay-sheet-w` (520 px) wide with four
   segmented bars and a step list, in the mode the row picked, named in `data-add-pc-mode` and its
@@ -6550,3 +6624,5 @@ command opens on a typed address; no code is copied.
 ## Touch prompt suggestions
 
 The empty composer follows Claude Code's [prompt suggestion model](https://code.claude.com/docs/en/interactive-mode): accept into an editable draft, then send separately. A phone has no Tab key: Settings → Chat → Composer buttons → Suggestion (off by default) adds a chip above the box that takes it. The grey words themselves never take a tap, with the chip on or off: that tap is how the box is focused to type one's own reply, and a suggestion of normal length covers most of the first line, so taking it there filled the box on most taps meant to start typing (#3807). An explicit action takes the suggestion, as Tab does in Claude Code's own input; focusing the box does not. Tab and the chip share the same acceptance function. A suggestion that exceeds the message limit leaves the draft unchanged and shows the limit in the existing alert. gjc's `promptSuggestions` and omp's `composer.predictions` draw their suggestion the same way, as ghost text in the theme's dim color in their empty box, and the composer offers it as it offers Claude's; one they cut short at the box's edge (ending in `…`) is not offered, since only part of it would go into the draft. Typed text there must never read as a suggestion, so omp's is offered only in the `dim` of one of its built-in themes and in no color any of them types in; the dim `Queueing` header of a queue draft is not offered either. The theme on screen is not known, so a custom omp theme whose text color is exactly one of those dim colors is a known limit: its typed text reads as a suggestion. No code or visual assets are copied.
+
+On a touch screen a swipe forward across the empty box also accepts the suggestion, with no setting: one finger, at least 48px along the line (left to right in a left-to-right box, mirrored in a right-to-left one), from a point at least 24px from either screen edge so Android's back gesture stays the system's. The stroke must be horizontal from its first move (more than 1.5 times as far sideways as up or down once it leaves a 10px rest area) and must leave that area within 400ms. A stroke that starts as a scroll, goes backward or rests first (a long press: the caret loupe, a selection, the paste menu) stays what it began as even when it later drifts sideways. While text anywhere is selected the stroke is the selection's, and a pane that may only be watched takes nothing, by swipe, Tab or chip. It acts through the same acceptance function as Tab, so the message limit and an open IME composition still apply, and it fires as soon as the stroke qualifies. Touch listeners are passive and never prevent the default, so a tap still places the caret, a vertical drag still scrolls a tall box and a long press still selects; once the box has text, or no suggestion is offered, the swipe does nothing. Like the chip, the accepted text focuses the box when its pane is active (raising the keyboard) and leaves the caret at the end. Nothing is added to the box to show the swipe: the composer stays minimal, and the opt-in chip remains the visible action (also for a screen reader). The drawer's swipe (`edgeSwipe.ts`) ignores strokes that start on a text field, so the two never both act. It is Claude Code's Tab (or Right Arrow) acceptance moved to touch, and its gesture follows Gboard's Smart Compose, where a swipe right across the grey inline suggestion accepts it, the touch counterpart of the right-arrow acceptance in Warp's Next Command and fish's autosuggestions. None of the listed coding-agent apps has a touch gesture for this: Paseo and T3 Code show no ghost-text suggestion in their composers, and the Claude and ChatGPT apps offer suggested follow-ups as tap chips, which is what the opt-in suggestion chip already does. No code is copied.

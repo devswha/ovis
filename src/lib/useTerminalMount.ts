@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { useContext, useLayoutEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { HerdrSocket, markTyped } from "./ws.ts";
 import { sendInOrder } from "./sendInOrder.ts";
 import { MachineSession, type MachineSessionRegistry } from "./machineSession.ts";
@@ -22,15 +22,17 @@ import { isAppShortcut, isMacPlatform } from "./shortcuts.ts";
 import { keyboardHoldsGrid, keyboardUp } from "./keyboard.ts";
 import { fileUriPath } from "../../shared/fileUri.ts";
 import { isWebLink, openExternal } from "./externalLink.ts";
+import { MachineRosterContext } from "./machineContext.tsx";
 import { bareNameLinks, hyperlinkFilter, terminalFileLinkProvider, terminalFileLinks } from "./terminalFileLinks.ts";
 import { shouldOpenWebPage } from "./webPanel.ts";
 import { fitLineHeight } from "./terminalLineHeight.ts";
 import { keepDeleteRepeatText, keyboardNeedsText, restoreDeleteRepeatCaret } from "./deleteRepeat.ts";
 import { pinchFontSize } from "./pinchFontSize.ts";
-import { narrowPaneFontSize } from "./narrowPaneFont.ts";
 import { finalStep, HERDR_MOUSE_SCROLL_LINES, wheelSteps } from "./wheelSteps.ts";
 import { createTouchFling, createVelocityTracker } from "./touchFling.ts";
 import { createTouchWheelPacer } from "./touchWheelPacer.ts";
+import { layoutScroll } from "./layoutScroll.ts";
+import { TOUCH_STROKE_CLAIMED } from "./touchClaim.ts";
 import { attachTerminalWheel, canPanTerminalGrid } from "./terminalWheel.ts";
 import { createTerminalFold, dimmedColor, wideGridKey, wideGrids } from "./terminalFold.ts";
 import { screenRows, terminalScreen, viewRows } from "./terminalScreen.ts";
@@ -102,7 +104,6 @@ export interface TerminalMountDeps {
   mirrorWrapRef: RefObject<boolean>;
   modifiersRef: RefObject<StickyModifiers>;
   modifyOtherKeysRef: RefObject<number>;
-  narrowFontRef: RefObject<boolean>;
   noteClipboard: (note: string) => void;
   observeRef: RefObject<boolean>;
   onChatSuggestion: (pane: string, value: string | null) => void;
@@ -183,7 +184,8 @@ export interface TerminalMountDeps {
 }
 
 export function useTerminalMount(deps: TerminalMountDeps): void {
-  const { setTerminalHistory, typeAheadRef, activeRef, agentRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, watchedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, consumeModifiers, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, reuseExternalLinkTabRef, osc52AllowedRef, codexDragRef, outputTargetRef, colors, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setViewHeld, setWatching, sharedGridRef, shortcutSettings, shownRef, coveredRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, updateSettings, uploadFileRef, attachFilesRef, watchingRef, wheelStateRef } = deps;
+  const roster = useContext(MachineRosterContext);
+  const { setTerminalHistory, typeAheadRef, activeRef, agentRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, watchedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, consumeModifiers, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, reuseExternalLinkTabRef, osc52AllowedRef, codexDragRef, outputTargetRef, colors, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setViewHeld, setWatching, sharedGridRef, shortcutSettings, shownRef, coveredRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, updateSettings, uploadFileRef, attachFilesRef, watchingRef, wheelStateRef } = deps;
 
     // Where this terminal is: its pane, and whether it is active, presented, shown and not the chat view.
     // Counted on every commit that changes it: an explicit copy still waiting for herdr's text is
@@ -207,12 +209,17 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const reuseTab = (event: MouseEvent): boolean => reuseExternalLinkTabRef.current && !event.metaKey && !event.ctrlKey && !event.altKey;
       const shouldOpenInPanel = (event: MouseEvent, uri: string): boolean =>
         shouldOpenWebPage(event, uri, (target, shiftKey) => openWebRef.current?.(target, shiftKey) ?? false, machineId);
+      const openLink = (event: MouseEvent, uri: string): void => {
+        if (isWebLink(uri) && !shouldOpenInPanel(event, uri)) {
+          void openExternal(uri, "link", reuseTab(event), roster?.current.find((machine) => machine.id === machineId));
+        }
+      };
       // an OSC 8 hyperlink's target: a file opens in the viewer, an http(s) address as a web link, and nothing else
       const openHyperlink = (event: MouseEvent, uri: string): void => {
         if (!linkPressed(event)) return;
         const path = fileUriPath(uri);
         if (path !== null) openFileRef.current?.(path);
-        else if (isWebLink(uri) && !shouldOpenInPanel(event, uri)) openExternal(uri, "link", reuseTab(event));
+        else openLink(event, uri);
       };
       const termOptions = {
         convertEol: false,
@@ -237,18 +244,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const term = new GhosttyTerminal(termOptions);
       fitLineHeight(term);
       const fit = term.fitter();
-      // Every fit first settles the font: a split pane under 80 columns draws smaller to reach
-      // them (btop refuses a narrower screen), and returns to the user's size once it is wide enough.
       const fitGrid = fit.fit.bind(fit);
       fit.fit = (): void => {
         if (followRef.current) return;
-        const base = baseFontRef.current;
-        const colsAt = (size: number): number | null => {
-          term.options.fontSize = size;
-          const cols = fit.proposeDimensions()?.cols;
-          return cols !== undefined && Number.isFinite(cols) ? cols : null;
-        };
-        term.options.fontSize = narrowFontRef.current && !observeRef.current && !fixedGridRef.current ? narrowPaneFontSize(base, colsAt) : base;
+        term.options.fontSize = baseFontRef.current;
         fitLineHeight(term);
         fitGrid();
       };
@@ -256,7 +255,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // xterm's own provider
       term.registerLinkProvider(hyperlinkProvider(() => viewRows(term), (uri) => isWebLink(uri) || fileUriPath(uri) !== null, openHyperlink));
       // Only HTTP(S) links may open in the browser or the preview panel.
-      const webLinks = term.registerLinkProvider(webLinkProvider(() => viewRows(term), (event, uri) => { if (isWebLink(uri) && !shouldOpenInPanel(event, uri)) openExternal(uri, "link", reuseTab(event)); }));
+      const webLinks = term.registerLinkProvider(webLinkProvider(() => viewRows(term), openLink));
       const bareLinks = bareNameLinks(isMacPlatform());
       const onLinkKey = (event: KeyboardEvent | MouseEvent): void => bareLinks.update(event);
       const offLinkKey = (): void => bareLinks.reset();
@@ -431,7 +430,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // else at the bottom of the view (a cleared shell's prompt on the first row stays in sight).
       const followFold = (): void => {
         const bottom = fold.cursorBottom();
-        if (bottom !== null) host.scrollTop = bottom <= host.clientHeight ? 0 : bottom - host.clientHeight;
+        if (bottom !== null) layoutScroll(host, () => { host.scrollTop = bottom <= host.clientHeight ? 0 : bottom - host.clientHeight; });
       };
       const wideOwner = {};
       const fold = createTerminalFold(term, host, {
@@ -454,7 +453,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           if (!linkPressed(event)) return false;
           if ("url" in target) {
             if (!isWebLink(target.url)) return false;
-            if (!shouldOpenInPanel(event, target.url)) openExternal(target.url, "link", reuseTab(event));
+            openLink(event, target.url);
             return true;
           }
           const buffer = viewRows(term);
@@ -484,7 +483,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const row = screen.offsetHeight / term.rows;
         const cursorBottom = screen.offsetTop + (viewRows(term).cursorY + 1) * row;
         const max = host.scrollHeight - host.clientHeight;
-        host.scrollTop = cursorBottom <= host.clientHeight ? 0 : cursorBottom - row >= max ? max : cursorBottom - host.clientHeight;
+        layoutScroll(host, () => { host.scrollTop = cursorBottom <= host.clientHeight ? 0 : cursorBottom - row >= max ? max : cursorBottom - host.clientHeight; });
       };
       followCursorRef.current = () => { panned = false; fold.sync(); followCursor(); };
       const keyboardHolds = (force: boolean): boolean => {
@@ -507,8 +506,11 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         heldForce = false;
         // xterm's helper textarea can sit at the old grid's cursor row for a while and keep the host
         // scrollable: a view panned under the keyboard would stay panned past the grid's top
-        host.scrollTop = 0;
-        if (!adopted()) host.scrollLeft = 0;
+        layoutScroll(host, () => {
+          host.scrollTop = 0;
+          if (!adopted()) host.scrollLeft = 0;
+        });
+        // the grid is this browser's again: a grid held under the keyboard unfolds
         fold.sync();
         syncInputViewport();
       };
@@ -2144,6 +2146,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (event.type === "touchcancel" || event.touches.length < 2) finishPinch(event.type === "touchend");
         if (event.touches.length === 0) pinchStroke = false;
       };
+      const onTouchClaimed = (): void => cancelTouchRef.current();
+      host.addEventListener(TOUCH_STROKE_CLAIMED, onTouchClaimed, { capture: true, passive: true });
       // Safari zooms inside an overflow region (xterm's viewport) despite touch-action: none
       const onGesture = (event: Event): void => { if (!chatViewRef.current) event.preventDefault(); };
       host.addEventListener("touchstart", onTouchStart, { capture: true, passive: false });
@@ -2554,6 +2558,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         host.removeEventListener("touchmove", onTouchMove, { capture: true });
         host.removeEventListener("touchend", onTouchEnd, { capture: true });
         host.removeEventListener("touchcancel", onTouchEnd, { capture: true });
+        host.removeEventListener(TOUCH_STROKE_CLAIMED, onTouchClaimed, { capture: true });
         touchFling.dispose();
         delete host.dataset.touchFling;
         touchPacer.dispose();

@@ -7,6 +7,7 @@ import { agentPrompt, HerdrError, paneGet, paneProcessInfo, paneRead, paneScroll
 import { mirrorInput } from "../mirror-input.ts";
 import { paneAgentOf, resolveAgent, typingRoots } from "../pane-context.ts";
 import { paneProcessRoots } from "../conversation.ts";
+import { claudeRestoredPaste } from "../claude-store.ts";
 import type { CommandSend } from "../outcome.ts";
 import { commandDataRoute, sendCodexTextAsData, sendCommandAsData } from "../command-data-send.ts";
 import { processStartedAt } from "../process-start.ts";
@@ -377,8 +378,14 @@ export async function freeClaudeBox(paneId: string, working: boolean, authorize:
   const refusal = (error: unknown): never => { throw refused ?? error; };
   const [live, colors] = await claudeBoxReads(paneId);
   if (!claudeInputDraft(live, colors)) return;
-  if (working || automatic || claudeRestoredDraft(live, colors, lastChatSubmitted(paneId)) === null) {
+  const typed = claudeRestoredDraft(live, colors, lastChatSubmitted(paneId)) !== null;
+  if (working || automatic || (!typed && !await restoredPaste(paneId, live))) {
     throw new InputDraftError(claudeClearableDraft(live, colors), undefined, claudeSendAnywayBox(live), claudeRefusalMessage(live));
+  }
+  // Claude's records were read meanwhile: the box they were checked for must still be the one the Esc presses clear
+  if (!typed) {
+    const [now] = await claudeBoxReads(paneId);
+    if (claudeInputBoxContent(now) !== claudeInputBoxContent(live)) throw new InputDraftError(null, undefined, claudeSendAnywayBox(now), claudeRefusalMessage(now));
   }
   if (deadline - Date.now() < RESTORED_CLEAR_RESERVE_MS) throw new HerdrError("submit_timeout", "Too little time was left to clear Claude Code's input box and send; nothing was typed");
   // the read proved the box holds the copy: a lone Esc on an EMPTY box would open Claude's
@@ -392,6 +399,14 @@ export async function freeClaudeBox(paneId: string, working: boolean, authorize:
   // fixed wait: the box redraws after the two Esc presses before it reads empty
   await Bun.sleep(RESTORED_CLEAR_SETTLE_MS);
   if (claudeInputDraft(...await claudeBoxReads(paneId))) throw new HerdrError("input_draft", CLAUDE_INPUT_DRAFT_MESSAGE);
+}
+
+/** The chat's own last message, which Claude put back folded into one paste placeholder, by Claude's own records (#3563). */
+async function restoredPaste(paneId: string, live: string): Promise<boolean> {
+  const sent = lastChatSubmitted(paneId);
+  const box = claudeInputBoxContent(live);
+  if (sent === null || box === null || !foldedPlaceholder(box, true)) return false;
+  return claudeRestoredPaste((await paneProcessRoots(paneId, "claude")).processes?.foreground_processes ?? [], box, sent);
 }
 
 /**
@@ -443,10 +458,11 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
    * `sendAnyway`: the user saw the box a refusal naming no draft showed and chose to send: only into
    * the Claude terminal and session that refusal was for (`confirmation` with no draft), and only while
    * the box still shows what they saw or reads empty. Never typed instead of agent.prompt.
+   * Answers with the end of the turn the message became, where a Codex's own server took it as one (ServedTurn).
    */
   async function submitText(paneId: string, text: string, payload: string, arrivedAt: number, fromTerminal = false, authorize: () => void = () => {},
     clearDraft?: string, confirmation?: { draft: string | null; identity: PendingIdentity; box?: string | null }, sendAnyway = false, agentOnly = false,
-    sendNow = false, afterWriteFailure?: () => void): Promise<void> {
+    sendNow = false, afterWriteFailure?: () => void): Promise<{ readonly over: Promise<boolean> } | void> {
     ({ text, payload } = submitFraming(text, payload, fromTerminal));
     let clearedDraft = false;
     let writeStarted = false;
@@ -745,15 +761,17 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           }
         }
         // a Codex on the server Ovis started for it takes plain text as a turn of its thread, at rest: nothing joins what
-        // is typed in its own box, and none of its own screens takes it
+        // is typed in its own box, and none of its own screens takes it. Into a turn that thread runs, a message sent at
+        // once is typed as before: it is the user's own send
         if (pane && agent === "codex" && !command && clearDraft === undefined && !sendAnyway && codexTakesAsData(text, sent)) {
           const viaData = await sendCodexTextAsData(pane, text, () => {
             try { inTime(); } catch (error) { refused = error; return false; }
             return mayType();
           });
-          if (viaData) {
+          if (viaData?.turn === "started") {
             noteSubmitted(paneId, text, recorded(command), viaData.at);
-            return;
+            // the pane's queue waits for this turn's own end, as it does behind a queued message sent as a turn
+            return { over: viaData.over };
           }
           if (refused !== undefined) throw refused;
           writeStarted = false;

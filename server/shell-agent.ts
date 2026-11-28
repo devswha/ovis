@@ -1,6 +1,6 @@
 /**
  * Agents herdr's agent.start cannot launch (`herdr agent start --kind` lists its
- * kinds; omo, gjc and DeepSeek Harness's dsh-tui are not among them). The pane's shell runs the command
+ * kinds; omo, gjc, DeepSeek Harness's dsh-tui and Command Code are not among them). The pane's shell runs the command
  * instead, and the pane's process tree, not the prompt, says when it is up.
  *
  * A Windows pane differs in three ways, each live-verified on a Windows PC (herdr 0.9.3):
@@ -11,9 +11,11 @@
  */
 import { spawn } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { userInfo } from "node:os";
-import { isAbsolute } from "node:path";
-import { herdrRpc } from "./herdr/client.ts";
+import { basename, isAbsolute, join } from "node:path";
+import { HerdrError, paneProcessInfo, paneSendKeys, paneSendText } from "./herdr/client.ts";
+import { isCmdProcess } from "./agent-identity.ts";
 import { isDshProcess } from "./dsh.ts";
 import { isGjcProcess } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity } from "./omo.ts";
@@ -27,6 +29,8 @@ export const SHELL_AGENTS: Record<string, (argv: readonly string[]) => boolean> 
   gjc: isGjcProcess,
   // dsh-tui's host process (node …/@deepseek-harness-tui/dsh-tui/lib/…/host-entry.js), behind its launcher shims
   "dsh-tui": isDshProcess,
+  // not on Windows (WINDOWS_SHELL_AGENTS), where `cmd` is cmd.exe
+  cmd: isCmdProcess,
 };
 /** The shell-started agents known to start on Windows; the others are not offered there. */
 const WINDOWS_SHELL_AGENTS = new Set(["omo", "gjc"]);
@@ -35,8 +39,12 @@ export function isShellAgentKind(kind: string): boolean { return Object.hasOwn(S
 
 /** Where this server finds `kind` on its own PATH; the pane's shell is herdr's child and may carry another PATH. */
 export function shellAgentExecutable(kind: string, platform: string = process.platform, path: string = process.env["PATH"] ?? ""): string | null {
-  if (platform === "win32" && !WINDOWS_SHELL_AGENTS.has(kind)) return null;
+  if (!shellAgentOnPlatform(kind, platform)) return null;
   return Bun.which(kind, { PATH: path });
+}
+
+function shellAgentOnPlatform(kind: string, platform: string): boolean {
+  return platform !== "win32" || WINDOWS_SHELL_AGENTS.has(kind);
 }
 
 const isExecutableFile = (path: string): boolean => {
@@ -94,7 +102,8 @@ export function parseLoginEnv(output: string): Record<string, string> | null {
 export type LoginPathResult = { path: string } | { path: null; reason: string };
 
 export interface LoginPathProbe {
-  (signal: AbortSignal): Promise<LoginPathResult>;
+  (signal: AbortSignal, profileRevision?: number | null): Promise<LoginPathResult>;
+  profileRevision?: () => Promise<number>;
   reread?: () => void;
   problem?: () => string | null;
 }
@@ -118,25 +127,71 @@ export function loginPathProbe(options: LoginShellOptions): LoginPathProbe {
   };
 }
 
+function shellProfiles(shell: string, env: Record<string, string | undefined>): string[] {
+  const home = userHome(env);
+  const files = (dir: string, names: readonly string[]): string[] => isAbsolute(dir) ? names.map((name) => join(dir, name)) : [];
+  switch (basename(shell)) {
+    case "zsh":
+      return files(env["ZDOTDIR"] || home, [".zshenv", ".zprofile", ".zshrc", ".zlogin"]);
+    case "bash":
+      return files(home, [".bash_profile", ".bash_login", ".profile", ".bashrc"]);
+    case "fish": {
+      const config = env["XDG_CONFIG_HOME"];
+      return files(config && isAbsolute(config) ? config : isAbsolute(home) ? join(home, ".config") : "", [
+        "fish/config.fish", "fish/fish_variables", "fish/conf.d",
+      ]);
+    }
+    default:
+      return files(home, [".profile"]);
+  }
+}
+
 /**
  * The PATH a pane's shell starts an agent from: that of an interactive login shell (`-l -i -c`), which
  * also reads what only an interactive shell reads (zsh's .zshrc, where installers and nvm add their
  * folders), then the plain login shell's folders it does not name.
  */
 export function agentPathProbe(options: LoginShellOptions & { rereadGapMs?: number }): LoginPathProbe & { reread: () => void; problem: () => string | null } {
-  const env = { ...(options.env ?? process.env), [PATH_PROBE_MARKER]: "1" };
+  const env: Record<string, string | undefined> = { ...(options.env ?? process.env), [PATH_PROBE_MARKER]: "1" };
   const interactive = loginPathProbe({ ...options, env, interactive: true });
   const login = loginPathProbe({ ...options, env });
   const gapMs = options.rereadGapMs ?? REREAD_GAP_MS;
+  const profiles = shellProfiles(options.shell, env);
+  const mtimes = new Map<string, number | null>();
+  let revision = 0;
+  let checking: Promise<number> | null = null;
+  const profileRevision = (): Promise<number> => {
+    if (checking !== null) return checking;
+    const { promise, resolve } = Promise.withResolvers<number>();
+    // A slow home mount must not hold up PATH lookup or queue up more stat calls.
+    const timer = setTimeout(() => resolve(revision), 500);
+    checking = promise;
+    void Promise.all(profiles.map(async (file) => {
+      let mtime: number | null;
+      try { mtime = (await stat(file)).mtimeMs; }
+      catch (error) {
+        if ((error instanceof Error && "code" in error) && (error.code === "ENOENT" || error.code === "ENOTDIR")) mtime = null;
+        else return; // an I/O failure is not evidence the file disappeared
+      }
+      const previous = mtimes.get(file);
+      if (previous !== undefined && previous !== mtime) revision++;
+      mtimes.set(file, mtime);
+    })).then(() => {
+      clearTimeout(timer);
+      checking = null;
+      resolve(revision);
+    });
+    return promise;
+  };
   let kept: LoginPathResult | null = null;
   let reading: Promise<LoginPathResult> | null = null;
   let queued: Promise<LoginPathResult> | null = null;
   let stale = false;
   let startedAt = -Infinity;
+  let readRevision = -1;
   let logged: string | null = null;
-  const rc = (signal: AbortSignal): Promise<LoginPathResult> => {
-    if (stale) {
-      stale = false;
+  const rc = (signal: AbortSignal, wanted: number | null, reread: boolean): Promise<LoginPathResult> => {
+    if (reread || (wanted !== null && readRevision !== -1 && wanted > readRevision)) {
       if (queued !== null) return queued;
       const run: Promise<LoginPathResult> = (reading ?? Promise.resolve()).then(async () => {
         const wait = startedAt + gapMs - Date.now();
@@ -151,9 +206,16 @@ export function agentPathProbe(options: LoginShellOptions & { rereadGapMs?: numb
     if (queued !== null) return queued;
     if (reading !== null) return reading;
     if (kept !== null) return Promise.resolve(kept);
+    if (wanted === null) {
+      // Passive lookups may populate a cold cache, but never rerun a profile on an edit.
+      reading = profileRevision().then(() => start(signal));
+      return reading;
+    }
     return start(signal);
   };
   const start = (signal: AbortSignal): Promise<LoginPathResult> => {
+    // Compare with the revision at start, not at finish: the shell may already have read an edited file.
+    readRevision = revision;
     startedAt = Date.now();
     const run = interactive(signal).then((result) => {
       if (signal.aborted) { stale = true; return result; }
@@ -166,14 +228,18 @@ export function agentPathProbe(options: LoginShellOptions & { rereadGapMs?: numb
     reading = run;
     return run;
   };
-  const probe = async (signal: AbortSignal): Promise<LoginPathResult> => {
-    const [shown, plain] = await Promise.all([rc(signal), login(signal)]);
+  const probe = async (signal: AbortSignal, wanted?: number | null): Promise<LoginPathResult> => {
+    const reread = wanted !== null && stale;
+    if (reread) stale = false;
+    const interactivePath = wanted === undefined ? profileRevision().then((value) => rc(signal, value, reread)) : rc(signal, wanted, reread);
+    const [shown, plain] = await Promise.all([interactivePath, login(signal)]);
     if (shown.path === null && plain.path === null) return { path: null, reason: `${plain.reason}; interactive: ${shown.reason}` };
     const named = new Set<string>();
     const path = [shown.path, plain.path].flatMap((part) => part?.split(":") ?? []).filter((dir) => !named.has(dir) && named.add(dir)).join(":");
     return { path };
   };
   return Object.assign(probe, {
+    profileRevision,
     reread: () => { stale = true; },
     problem: () => kept !== null && kept.path === null ? kept.reason : null,
   });
@@ -264,7 +330,10 @@ export class ShellAgentLocator {
   #found = new Map<string, string>();
   #loginPath: string | null = null;
   #checkedAt: number | null = null;
+  #checkedRevision = -1;
+  #lookupId = 0;
   #running: Promise<void> | null = null;
+  #latestLookup: Promise<void> | null = null;
   #queued: Promise<void> | null = null;
   #failure: string | null = null;
   #abort = new AbortController();
@@ -286,20 +355,32 @@ export class ShellAgentLocator {
     this.#now = options.now ?? Date.now;
   }
 
-  #fresh(probe: LoginPathProbe): Promise<void> {
+  async #fresh(probe: LoginPathProbe, checkProfile: boolean): Promise<void> {
+    const wanted = checkProfile && probe.profileRevision !== undefined ? await probe.profileRevision() : null;
     if (this.#stopped) return Promise.resolve();
-    if (this.#running !== null) return this.#running;
-    if (this.#checkedAt !== null && this.#now() - this.#checkedAt < this.#ttlMs) return Promise.resolve();
-    const run: Promise<void> = this.#lookup(probe).finally(() => { if (this.#running === run) this.#running = null; });
+    const changed = wanted !== null && wanted > this.#checkedRevision;
+    if (!changed && this.#running !== null) return this.#running;
+    if (!changed && this.#checkedAt !== null && this.#now() - this.#checkedAt < this.#ttlMs) return;
+    const run: Promise<void> = this.#startLookup(probe, wanted).finally(() => { if (this.#running === run) this.#running = null; });
     this.#running = run;
     return run;
   }
 
-  async #lookup(probe: LoginPathProbe): Promise<void> {
-    const missing = Object.keys(SHELL_AGENTS).filter((kind) => shellAgentExecutable(kind, this.#platform, this.#servicePath()) === null);
+  #startLookup(probe: LoginPathProbe, wanted: number | null): Promise<void> {
+    const lookup = this.#lookup(probe, wanted);
+    this.#latestLookup = lookup;
+    return lookup;
+  }
+
+  async #lookup(probe: LoginPathProbe, wanted: number | null): Promise<void> {
+    const id = ++this.#lookupId;
+    if (wanted !== null) this.#checkedRevision = Math.max(this.#checkedRevision, wanted);
+    const missing = Object.keys(SHELL_AGENTS).filter((kind) => shellAgentOnPlatform(kind, this.#platform) && shellAgentExecutable(kind, this.#platform, this.#servicePath()) === null);
     const found = new Map<string, string>();
-    const result = missing.length === 0 ? null : await probe(this.#abort.signal).catch((error: unknown): LoginPathResult => ({ path: null, reason: `the login shell probe failed: ${error instanceof Error ? error.message : String(error)}` }));
+    const result = missing.length === 0 ? null : await probe(this.#abort.signal, wanted).catch((error: unknown): LoginPathResult => ({ path: null, reason: `the login shell probe failed: ${error instanceof Error ? error.message : String(error)}` }));
     if (this.#stopped) return;
+    // Follow only a newer lookup, not the scheduling promise, which can still wrap this lookup.
+    if (id !== this.#lookupId) return this.#latestLookup ?? undefined;
     // only absolute entries: a relative one (`./node_modules/.bin`, common in .zshrc) would make
     // whatever is in this server's working folder an agent
     const loginPath = result?.path ? result.path.split(":").filter((entry) => isAbsolute(entry)).join(":") || null : null;
@@ -318,11 +399,11 @@ export class ShellAgentLocator {
     this.#failure = failure;
   }
 
-  async executable(kind: string): Promise<string | null> {
-    if (!isShellAgentKind(kind)) return null;
+  async executable(kind: string, checkProfile = true): Promise<string | null> {
+    if (!isShellAgentKind(kind) || !shellAgentOnPlatform(kind, this.#platform)) return null;
     const own = shellAgentExecutable(kind, this.#platform, this.#servicePath());
     if (own !== null || this.#probe === null) return own;
-    await this.#fresh(this.#probe);
+    await this.#fresh(this.#probe, checkProfile);
     const found = this.#found.get(kind);
     if (found !== undefined) return isExecutableFile(found) ? found : null;
     const late = this.#loginPath === null ? null : Bun.which(kind, { PATH: this.#loginPath });
@@ -336,16 +417,20 @@ export class ShellAgentLocator {
     if (interactive) this.#probe.reread?.();
     if (this.#queued !== null) return this.#queued;
     const probe = this.#probe;
-    const run: Promise<void> = (this.#running ?? Promise.resolve()).then(() => { if (this.#queued === run) this.#queued = null; return this.#lookup(probe); }).finally(() => { if (this.#running === run) this.#running = null; });
+    const run: Promise<void> = (this.#running ?? Promise.resolve()).then(async () => {
+      if (this.#queued === run) this.#queued = null;
+      const wanted = probe.profileRevision === undefined ? null : await probe.profileRevision();
+      return this.#startLookup(probe, wanted);
+    }).finally(() => { if (this.#running === run) this.#running = null; });
     this.#queued = run;
     this.#running = run;
     return run;
   }
 
-  stop(): Promise<void> {
+  async stop(): Promise<void> {
     this.#stopped = true;
     this.#abort.abort();
-    return this.#running ?? Promise.resolve();
+    await Promise.all([this.#running, this.#latestLookup]);
   }
 }
 
@@ -360,6 +445,14 @@ export function cmdQuote(word: string): string {
 }
 
 export type PaneShell = "posix" | "powershell" | "cmd";
+const POSIX_SHELL = /(?:^|\/)-?(?:sh|bash|dash|zsh|ksh|mksh|ash|fish)$/u;
+const POSIX_SHELL_FLAGS = new Set(["-l", "--login", "-i", "--noprofile", "--norc"]);
+
+/** A POSIX shell that was not started to run a command or script. */
+export function plainPosixShell(argv: readonly string[]): boolean {
+  return POSIX_SHELL.test(argv[0] ?? "") && argv.slice(1).every((arg) => POSIX_SHELL_FLAGS.has(arg));
+}
+
 export function paneShell(argv0: string): PaneShell {
   const name = argv0.split(/[\\/]/).pop()!.toLowerCase();
   if (name === "powershell.exe" || name === "pwsh.exe" || name === "powershell" || name === "pwsh") return "powershell";
@@ -423,8 +516,7 @@ export function powershellNativeArgs(program: "powershell" | "pwsh", args: reado
   });
 }
 
-interface ProcessInfo { process_info?: { shell_pid?: number; foreground_processes?: { pid: number; argv?: string[]; cwd?: string }[] } }
-const processInfo = (paneId: string) => herdrRpc<ProcessInfo>("pane.process_info", { pane_id: paneId }).catch(() => null);
+const processInfo = (paneId: string) => paneProcessInfo(paneId).catch(() => null);
 
 /**
  * Types the agent's absolute path and args into the pane's shell and resolves once
@@ -446,20 +538,31 @@ export async function startShellAgent(kind: string, paneId: string, args: string
     }
     // through env(1), as the herdr-core adapter does: the shell's own `NAME=value` syntax differs between shells
     const env = options.env ? [shellCommandLine("posix", "/usr/bin/env", Object.entries(options.env).map(([name, value]) => `${name}=${value}`))] : [];
-    await herdrRpc("pane.send_text", { pane_id: paneId, text: `${[...env, command, ...args.map(quote)].join(" ")}\n` });
+    if (kind === "cmd") {
+      // Looking up the executable can run a login shell. Read the pane after that wait, just before writing.
+      const info = await processInfo(paneId);
+      const shellPid = info?.shell_pid;
+      const processes = info?.foreground_processes ?? [];
+      const [front] = processes;
+      if (shellPid == null || shellPid !== info?.foreground_process_group_id || processes.length !== 1
+        || front?.pid !== shellPid || !plainPosixShell(front.argv ?? [])) {
+        throw new HerdrError("agent_pane_busy", `pane ${paneId} has no idle shell in front`);
+      }
+    }
+    await paneSendText(paneId, `${[...env, command, ...args.map(quote)].join(" ")}\n`);
   } else {
     const executable = await (options.locator ?? servicePathOnly).executable(kind);
     if (!executable) throw new Error(`${kind} is not on this server's PATH`);
-    const shell = paneShell((await processInfo(paneId))?.process_info?.foreground_processes?.[0]?.argv?.[0] ?? "powershell.exe");
-    await herdrRpc("pane.send_text", { pane_id: paneId, text: shellCommandLine(shell, executable, args) });
-    await herdrRpc("pane.send_keys", { pane_id: paneId, keys: ["Enter"] });
+    const shell = paneShell((await processInfo(paneId))?.foreground_processes?.[0]?.argv?.[0] ?? "powershell.exe");
+    await paneSendText(paneId, shellCommandLine(shell, executable, args));
+    await paneSendKeys(paneId, ["Enter"]);
   }
   const deadline = Date.now() + (options.timeoutMs ?? 60_000);
   while (Date.now() < deadline) {
     const info = await processInfo(paneId);
-    const started = info?.process_info?.foreground_processes?.find((entry) => kind === "omo" ? omoProcessIdentity(entry, "", userHome()) !== null : isProcess(entry.argv ?? []));
+    const started = info?.foreground_processes?.find((entry) => kind === "omo" ? omoProcessIdentity(entry, "", userHome()) !== null : isProcess(entry.argv ?? []));
     if (started) return started.pid;
-    const shellPid = info?.process_info?.shell_pid;
+    const shellPid = info?.shell_pid;
     if (windows && typeof shellPid === "number" && descendantArgv(await windowsProcessTable(Math.max(500, Math.min(10_000, deadline - Date.now()))), shellPid).some(isProcess)) return null;
     await Bun.sleep(250);
   }

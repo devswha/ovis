@@ -94,7 +94,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
   const { agentGroupSort: sort, sidebarRows, statusIndicators } = settings;
   const all = useMemo(() => inboxOrder(machines, activity, { sort, name: (row) => agentRowTitle(row, sidebarRows === "one").drawn }), [machines, activity, sort, sidebarRows]);
   const questions = useInboxQuestions(questionReads, questionTargets(all, activity));
-  const summaries = useInboxSummaries(summaryReads, summaryTargets(all, activity));
+  const summaries = useInboxSummaries(summaryReads, summaryTargets(all, activity), focus.opening);
   const stamps = useAgentStateStamps();
   const [tick, setTick] = useState(0);
   const wordsOf = (row: AgentRow): string | null => {
@@ -286,7 +286,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
           <span className="inbox-body">
             <span className="inbox-line">
               <span className="inbox-name">{row.title}</span>
-              {!wide && at !== null && <time className="inbox-time" dateTime={at.toISOString()} title={at.toLocaleString(resolvedLanguage)}>{age}</time>}
+              {at !== null && <time className="inbox-time" dateTime={at.toISOString()} title={at.toLocaleString(resolvedLanguage)}>{age}</time>}
             </span>
             {wide ? words : <span className="inbox-sub">{words}{stateMark(row.status, row.failed, row.state)}</span>}
           </span>
