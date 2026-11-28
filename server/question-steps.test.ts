@@ -243,7 +243,7 @@ async function withPane(agent: string, screen: string, run: (pane: Pane) => Prom
       if (request.method === "session.snapshot") return answer({ snapshot: { panes: [{ pane_id: "p_1", agent: pane.agent, agent_status: "blocked", cwd: pane.cwd ?? (pane.agent === "omp" ? root : undefined), ...(pane.omo ? { agent_session: { agent: "omo", kind: "path", value: pane.omo.path } } : {}) }], layouts: [] } });
       if (request.method === "pane.read") return answer({ read: { text: pane.agent === "omp" ? request.params.format === "ansi" ? pane.visible ?? pane.screen : pane.screen.replace(ANSI_RE, "") : pane.screen } });
       if (request.method === "pane.get") return answer({ pane: { pane_id: "p_1", scroll: { offset_from_bottom: 0 } } });
-      if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: pane.omo ? [{ pid: pane.omo.pid, argv: ["omo"] }] : ["codex", "omp"].includes(pane.agent) ? [{ pid: 2147483647, argv: [`/usr/bin/${pane.foreground ?? pane.agent}`] }] : [] } });
+      if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: pane.omo ? [{ pid: pane.omo.pid, argv: ["omo"] }] : pane.agent === "agy" ? [{ pid: 4545, name: "agy", argv: ["agy"] }] : ["codex", "omp"].includes(pane.agent) ? [{ pid: 2147483647, argv: [`/usr/bin/${pane.foreground ?? pane.agent}`] }] : [] } });
       if (request.method === "agent.get") return answer({ agent: {} });
       if (request.method !== "pane.send_keys" && request.method !== "pane.send_text") throw new Error(`unexpected fixture RPC: ${request.method}`);
       for (const sent of request.params.keys ?? [`text:${request.params.text}`]) {

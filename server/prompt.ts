@@ -12,6 +12,7 @@ import { commandInvocations, commandOutcome, CommandReservations, dialogSettling
 import { codexTranscriptPath, paneCodexHomePlaced, unansweredCodexQuestions } from "./codex.ts";
 import { HerdrError, paneGet, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo } from "./herdr/client.ts";
 import { isKiroChatProcess, kiroRecordStillOpenInFile } from "./kiro.ts";
+import { isAgyProcessName } from "./agy-store.ts";
 import { kiroRecord } from "./dialogs/kiro-record.ts";
 import { isPiProcess, piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
@@ -916,6 +917,17 @@ async function kiroOwnsInput(paneId: string): Promise<boolean> {
 }
 
 /**
+ * Whether Antigravity holds the pane's input (agy is its foreground), not a shell it exited or was suspended to: its
+ * last question can stay above a shell row shaped like its model footer, and a key answered there would go to the
+ * shell. Windows lists no foreground process group, so agy stays readable there.
+ */
+async function agyOwnsInput(paneId: string): Promise<boolean> {
+  if (process.platform === "win32") return true;
+  const info = await paneProcessInfo(paneId).catch(() => null);
+  return (info?.foreground_processes ?? []).some((entry) => isAgyProcessName(entry.name));
+}
+
+/**
  * The foreground process is Hermes itself: its own executable, Python running its entry script,
  * or the installer's inline CLI launcher. Other Python code must not take an approval's keys
  * even when its arguments contain a path named Hermes.
@@ -1340,6 +1352,10 @@ async function readKnownPrompt(
   }
   // Kiro's approval answers by keys that grant or refuse: offered only while Kiro holds the input
   if (agent === "kiro" && prompt !== null && parsedByPublicPrompt.get(prompt)?.responder === "kiro-approval" && !(await kiroOwnsInput(paneId))) {
+    return { prompt: null, screen, suppressFallback: true };
+  }
+  // Antigravity's question answers by keys too: offered only while agy holds the input
+  if (agent === "agy" && prompt !== null && parsedByPublicPrompt.get(prompt)?.responder === "agy-question" && !(await agyOwnsInput(paneId))) {
     return { prompt: null, screen, suppressFallback: true };
   }
   // Kiro V3's tool approval, with the verbatim command its session record holds when the dialog shows it whole (record-cards.ts)
