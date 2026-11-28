@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { UsageReport } from "../shared/protocol.ts";
 import { badRequest, isJsonObject, jsonResponse } from "./http.ts";
-import { withOwnerGuard } from "./owner-guard.ts";
+import { OwnerGuardReleaseFailed, withOwnerGuard } from "./owner-guard.ts";
 import { readStateDocument, setAsideDamaged, writeStateDocument } from "./state-document.ts";
 import type { UsageService } from "./usage.ts";
 
@@ -30,13 +30,21 @@ export class UsageAccountList {
   }
 
   private change(next: (held: string[]) => string[]): void {
-    withOwnerGuard(this.path, () => {
-      const held = this.read();
-      const changed = next(held);
-      if (changed.length !== held.length) writeStateDocument(this.path, JSON.stringify({ accounts: changed }), false);
-    });
+    let released: OwnerGuardReleaseFailed | null = null;
+    try {
+      withOwnerGuard(this.path, () => {
+        const held = this.read();
+        const changed = next(held);
+        if (changed.length !== held.length) writeStateDocument(this.path, JSON.stringify({ accounts: changed }), false);
+      });
+    } catch (error) {
+      // a guard not let go cleanly may follow a list already written: what depends on the list still hears of it (#3426)
+      if (!(error instanceof OwnerGuardReleaseFailed)) throw error;
+      released = error;
+    }
     // told also when nothing changed: a retried removal is how a save of what depends on it that failed is tried again
     this.changed();
+    if (released !== null) throw released;
   }
 
   removed(): string[] {

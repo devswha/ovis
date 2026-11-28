@@ -8,7 +8,7 @@ import { CLIProxyService } from "./cliproxy.ts";
 import { startFakeCLIProxy } from "./cliproxy.fake.ts";
 import { CLIProxyRoutes } from "./cliproxy-routes.ts";
 import { createServer } from "./index.ts";
-import { FRESH_MS, UsageService, type UsageContext } from "./usage.ts";
+import { FRESH_MS, MIN_REFRESH_MS, UsageService, type UsageContext } from "./usage.ts";
 
 const KEY = "test-management-secret-not-in-responses";
 let dir: string;
@@ -948,6 +948,74 @@ describe("CLIProxyAPI v8", () => {
         fake.files.pop();
       }
       expect(known()).toEqual(["claude:cliproxy:claude-a.json", "codex:cliproxy:codex-b.json"]);
+    });
+
+    it("keeps what another server on the same state directory saved of a hidden account (#3426)", async () => {
+      await configure();
+      const hidden = new Set<string>();
+      const earlier = new CLIProxyService(dir);
+      earlier.skipAccounts(() => hidden);
+      service.skipAccounts(() => hidden);
+      await service.report();
+      hidden.add("claude:cliproxy:claude-a.json");
+      service.hiddenChanged();
+      earlier.hiddenChanged();
+      moveAlice();
+      await restart(hidden);
+      expect(reads()).toEqual(["a", "b", "b"]);
+    });
+
+    it("never sends a read queued behind another once its account is hidden meanwhile (#3426)", async () => {
+      await configure();
+      const hidden = new Set<string>();
+      service.skipAccounts(() => hidden);
+      const held = fake.holdRead();
+      const report = service.report();
+      await held.arrived;
+      const sent = reads();
+      hidden.add(sent[0] === "a" ? "codex:cliproxy:codex-b.json" : "claude:cliproxy:claude-a.json");
+      service.hiddenChanged();
+      held.release();
+      const rows = await report;
+      expect(reads()).toEqual(sent);
+      expect(rows.find((row) => hidden.has(row.key))).toMatchObject({ problem: null, windows: [], checked_at: null });
+    });
+
+    it("never sends a read queued behind another to a Hub saved meanwhile (#3426)", async () => {
+      await configure();
+      const other = startFakeCLIProxy(KEY);
+      try {
+        const held = fake.holdRead();
+        const report = service.report();
+        await held.arrived;
+        const saved = service.save({ url: other.server.url.origin, management_key: KEY });
+        held.release();
+        await Promise.all([report, saved]);
+        expect(reads(other)).toEqual([]);
+      } finally { other.server.stop(true); }
+    });
+
+    it("lists a kept row unread, without its numbers, once its account is hidden under another file (#3426)", async () => {
+      fake.files.push({ ...fake.files[0]!, name: "claude-a2.json", auth_index: "a2" });
+      const start = Date.now();
+      try {
+        setSystemTime(start);
+        await configure();
+        await service.report();
+        let hidden = new Set(["claude:cliproxy:claude-a2.json"]);
+        service.skipAccounts(() => hidden);
+        await service.report(false, hidden);
+        // shown again just before a refresh, so the refresh keeps its row unread
+        hidden = new Set();
+        setSystemTime(start + MIN_REFRESH_MS - 1000);
+        await service.report(false, hidden);
+        hidden = new Set(["claude:cliproxy:claude-a.json"]);
+        service.hiddenChanged();
+        setSystemTime(start + MIN_REFRESH_MS);
+        const rows = await service.report(true, hidden);
+        expect(reads()).toEqual(["a", "b", "a2", "a2", "b"]);
+        expect(rows.find((row) => row.key === "claude:cliproxy:claude-a2.json")).toMatchObject({ problem: null, windows: [], checked_at: null });
+      } finally { setSystemTime(); }
     });
 
     it("saves it at the next change after a save failed", async () => {

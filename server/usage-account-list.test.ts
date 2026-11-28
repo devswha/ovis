@@ -7,6 +7,8 @@ import type { UsageReport } from "../shared/protocol.ts";
 import { createServer } from "./index.ts";
 import { DEVICE_COOKIE } from "./auth.ts";
 import { DeviceStore } from "./devices.ts";
+import { guardLibrary, OwnerGuardReleaseFailed } from "./owner-guard.ts";
+import { UsageAccountList } from "./usage-account-list.ts";
 import { UsageLoginService } from "./usage-login.ts";
 import { FRESH_MS, UsageService, USAGE_PROVIDERS, type UsageContext, type UsageProvider } from "./usage.ts";
 
@@ -198,6 +200,23 @@ it("sets a damaged removed-accounts list aside instead of failing the usage repo
     method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ account: "claude:work" }),
   })).status).toBe(204);
   expect(keys(await (await fetch(`${host.origin}/api/usage`)).json())).toEqual(["claude:expired", "claude:home"]);
+});
+
+it("tells what depends on the removed list of a removal written before its guard failed to let go (#3426)", async () => {
+  const state = mkdtempSync(join(tmpdir(), "ovis-account-list-"));
+  roots.push(state);
+  let told = 0;
+  const listed = { id: "claude", key: "claude:work", account: "work", plan: null, windows: [], problem: null, checked_at: null } as const;
+  const list = new UsageAccountList(state, { report: async () => ({ server_time: "", providers: [listed] }) }, () => { told++; });
+  const LOCK_UN = 8;
+  if (process.platform === "win32") guardLibrary.windows = (calls) => ({ ...calls, UnlockFileEx: (...args: Parameters<typeof calls.UnlockFileEx>) => (calls.UnlockFileEx(...args), 0) });
+  else guardLibrary.posix = (calls) => ({ ...calls, flock: (fd, operation) => (operation === LOCK_UN ? -1 : calls.flock(fd, operation)) });
+  try {
+    const removal = list.handle(new Request("http://localhost/api/usage/accounts", { method: "DELETE", body: JSON.stringify({ account: "claude:work" }) }));
+    await expect(removal).rejects.toThrow(OwnerGuardReleaseFailed);
+  } finally { delete guardLibrary.posix; delete guardLibrary.windows; }
+  expect(JSON.parse(readFileSync(join(state, "usage-removed.json"), "utf8"))).toEqual({ accounts: ["claude:work"] });
+  expect(told).toBe(1);
 });
 
 it("stops looking up a provider's sign-ins once its accounts are hidden in Settings or removed from Ovis", async () => {
