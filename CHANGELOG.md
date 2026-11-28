@@ -204,6 +204,9 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - With the desktop built-in browser selected for links, localhost links in an SSH pane's terminal
   or chat open the service on the SSH PC in that browser's separate profile.
   ([#4923](https://github.com/devswha/ovis/pull/4923))
+- A GJC pane whose turn ended while a background subagent or command it started still runs reads BG
+  with its task count, not DONE, and alerts its finish once that work is delivered and answered.
+  ([#3880](https://github.com/devswha/ovis/pull/3880) by @sskys18)
 
 ## [0.5.12] - 2026-11-27
 
