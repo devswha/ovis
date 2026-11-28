@@ -153,7 +153,8 @@ enum PCStore {
         didSet { if failure == nil { failureKind = nil; failureCommand = nil } }
     }
 
-    /// An SSH PC's failure kind (`ssh-<kind>`, SshFailure) and the command that fixes it there, for error.html.
+    /// The failure's kind for error.html (an SSH PC's `ssh-<kind>`, SshFailure, or Home.failureKind's) and the command
+    /// that fixes it there.
     static var failureKind: String?
     static var failureCommand: String?
 
@@ -1513,7 +1514,9 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
 
     private static func kind(_ error: Error) -> String? {
         let nsError = error as NSError
-        return Home.failureKind(domain: nsError.domain, code: nsError.code)
+        let info = nsError.userInfo
+        return Home.failureKind(domain: nsError.domain, code: nsError.code,
+                                streamDomain: info["_kCFStreamErrorDomainKey"] as? Int, streamCode: info["_kCFStreamErrorCodeKey"] as? Int)
     }
 
     private var provisional = false

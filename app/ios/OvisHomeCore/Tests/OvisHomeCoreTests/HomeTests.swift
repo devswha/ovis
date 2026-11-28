@@ -13,8 +13,15 @@ final class HomeTests: XCTestCase {
     }
 
     func testTheErrorPageHearsThatNothingListensAtTheAddress() {
-        XCTAssertEqual(Home.failureKind(domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost), "refused")
-        XCTAssertNil(Home.failureKind(domain: "WebKitErrorDomain", code: NSURLErrorCannotConnectToHost))
+        XCTAssertEqual(Home.failureKind(domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost, streamDomain: 1, streamCode: Int(ECONNREFUSED)), "refused")
+        XCTAssertNil(Home.failureKind(domain: "WebKitErrorDomain", code: NSURLErrorCannotConnectToHost, streamDomain: 1, streamCode: Int(ECONNREFUSED)))
+    }
+
+    func testAHostThatIsAsleepOrUnreachableIsNoRefusal() {
+        for streamCode in [Int(EHOSTUNREACH), Int(ENETUNREACH), Int(ETIMEDOUT)] {
+            XCTAssertNil(Home.failureKind(domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost, streamDomain: 1, streamCode: streamCode), "\(streamCode)")
+        }
+        XCTAssertNil(Home.failureKind(domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost))
     }
 
     func testASavedPcOpensDirectlyWhateverElseHolds() {
