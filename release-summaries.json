@@ -1,4 +1,82 @@
 {
+  "0.5.13": {
+    "en": {
+      "new": [
+        "One email is one Ovis account, whichever way you sign in.",
+        "Agents can start Qwen Code, Kimi, Devin and Command Code.",
+        "Open files and images from your other PCs.",
+        "Pair with a typed code through your own relay and app."
+      ],
+      "improved": [
+        "Password prompts get a hidden field in Chat.",
+        "The built-in browser and SSH PCs reach a PC's localhost.",
+        "An offline PC says why, and shows this PC's address.",
+        "Agent alerts wait five minutes before they repeat."
+      ],
+      "fixed": [
+        "Touch selection in the terminal no longer stops swipes.",
+        "Subscription usage shows Claude's per-model weekly limits.",
+        "Many fixes across Chat, terminals and pairing."
+      ]
+    },
+    "ko": {
+      "new": [
+        "로그인 방법과 상관없이 이메일 하나가 Ovis 계정 하나예요.",
+        "에이전트가 Qwen Code, Kimi, Devin, Command Code를 띄울 수 있어요.",
+        "다른 PC의 파일과 이미지를 열 수 있어요.",
+        "직접 운영하는 릴레이와 앱으로 코드를 입력해 짝맺기를 할 수 있어요."
+      ],
+      "improved": [
+        "비밀번호를 묻는 화면에 채팅에서 가려지는 입력칸이 나와요.",
+        "내장 브라우저와 SSH PC가 그 PC의 localhost에 닿아요.",
+        "꺼진 PC는 이유를 알려 주고 이 PC 주소도 보여 줘요.",
+        "에이전트 알림은 5분이 지나야 다시 울려요."
+      ],
+      "fixed": [
+        "터미널에서 터치로 선택해도 스와이프가 끊기지 않아요.",
+        "구독 사용량에 Claude 모델별 주간 한도가 보여요.",
+        "채팅·터미널·짝맺기의 여러 문제를 고쳤어요."
+      ]
+    },
+    "ja": {
+      "new": [
+        "サインイン方法に関係なく、1 つのメールが 1 つの Ovis アカウントです。",
+        "エージェントが Qwen Code、Kimi、Devin、Command Code を起動できます。",
+        "ほかの PC のファイルや画像を開けます。",
+        "自分で運用するリレーとアプリで、コード入力によるペアリングができます。"
+      ],
+      "improved": [
+        "パスワードの入力を求められると、チャットに隠し入力欄が出ます。",
+        "内蔵ブラウザと SSH の PC がその PC の localhost に届きます。",
+        "オフラインの PC は理由を示し、この PC のアドレスも表示します。",
+        "エージェントの通知は 5 分たつまで繰り返しません。"
+      ],
+      "fixed": [
+        "ターミナルでタッチ選択してもスワイプが止まらなくなりました。",
+        "サブスクリプション使用量に Claude のモデル別週間上限が表示されます。",
+        "チャット・ターミナル・ペアリングの多くの問題を修正しました。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "无论用哪种方式登录，一个邮箱就是一个 Ovis 账户。",
+        "智能体可以启动 Qwen Code、Kimi、Devin 和 Command Code。",
+        "可以打开其他 PC 上的文件和图片。",
+        "可以通过自建的中继和应用输入代码完成配对。"
+      ],
+      "improved": [
+        "需要输入密码时，聊天中会出现隐藏输入框。",
+        "内置浏览器和 SSH PC 可以访问该 PC 的 localhost。",
+        "离线的 PC 会说明原因，并显示本机地址。",
+        "智能体提醒 5 分钟内不再重复。"
+      ],
+      "fixed": [
+        "在终端中触摸选择不再打断滑动。",
+        "订阅用量显示 Claude 各模型的每周上限。",
+        "修复了聊天、终端和配对中的许多问题。"
+      ]
+    }
+  },
   "0.5.12": {
     "en": {
       "new": [

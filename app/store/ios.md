@@ -12,8 +12,8 @@ Extension, a later build; see [Later builds](#later-builds)).
 | Setting | Value | Where |
 |---|---|---|
 | Bundle ID | `sh.ovis.app` | `PRODUCT_BUNDLE_IDENTIFIER`, `app/ios/App/App.xcodeproj` |
-| Version | `1.0.4` | `MARKETING_VERSION`, in the project's build settings, which the app and its extension share (not a target's General tab) |
-| Build | `13` | `CURRENT_PROJECT_VERSION`, in the project's build settings too; raise it by one for every upload, TestFlight included |
+| Version | `1.0.5` | `MARKETING_VERSION`, in the project's build settings, which the app and its extension share (not a target's General tab) |
+| Build | `14` | `CURRENT_PROJECT_VERSION`, in the project's build settings too; raise it by one for every upload, TestFlight included |
 | Devices | iPhone and iPad | `TARGETED_DEVICE_FAMILY = "1,2"`, so the listing needs iPad screenshots too |
 | Minimum iOS | 15.0 | `IPHONEOS_DEPLOYMENT_TARGET` |
 | Signing | Automatic, no team yet | the owner picks the team in Xcode (section 3) |
@@ -39,8 +39,8 @@ Extension, a later build; see [Later builds](#later-builds)).
 
 ## 3. Build and upload (the owner, on his Mac with Xcode)
 
-Version 1.0.4 build 13 is built from the tag `v0.5.12` with that release's shell, for internal TestFlight testing
-only. Before it, version 1.0.3 build 12, built from the tag `v0.5.11` (`ba4d41e3`) with that release's shell,
+Version 1.0.5 build 14 is built from the tag `v0.5.13` with that release's shell, for internal TestFlight testing
+only. Version 1.0.4 build 13 was built from the tag `v0.5.12` the same way. Before it, version 1.0.3 build 12, built from the tag `v0.5.11` (`ba4d41e3`) with that release's shell,
 was uploaded on 2026-11-27 for internal TestFlight testing only (not submitted for review). The App Store has version
 1.0.2 build 11, built from main at `d30527fd` (the app opens on the account sign-in, #4256, with the privacy manifest
 of #4273), approved and on sale since 2026-11-20; build 10, from `0c4f0673`, came before it. Check App Store Connect before uploading in case a later build has already been uploaded. The App and OvisNotifications targets inherit the same project-level
