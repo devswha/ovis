@@ -99,15 +99,17 @@ export const splitEdit = (paneId: string, made: string, direction: SplitDirectio
 };
 
 /**
- * The pane taken out of its tree and put beside `targetId`, a pane of its own tab (`tabId`), as a split
- * makes it: herdr moves only into another tab, herdr-core within the pane's own. A zoomed tab shows every
- * pane again, so the moved one is in view.
+ * The pane taken out of its tree and put beside `targetId`, a pane of the tab `tabId`, as a split makes
+ * it. A pane of another tab is not in this tab's tree until its labels put it in the tab
+ * (LayoutStore `moveIntoTab`): until then the edit answers `cross_tab` and writes nothing. A zoomed tab
+ * shows every pane again, so the moved one is in view.
  */
-export const moveBesideEdit = (paneId: string, tabId: string | undefined, targetId: string, split: SplitDirection) => (layout: OvisLayout): Edited => {
-  const tab = tabHolding(layout, paneId);
-  if (tab.id !== tabId) throw new AdapterError("unsupported", "herdr-core moves a pane into a tab only beside a pane of its own tab");
+export const moveBesideEdit = (paneId: string, tabId: string, targetId: string, split: SplitDirection) => (layout: OvisLayout): Edited => {
+  const tab = layout.workspaces.flatMap((workspace) => workspace.tabs).find((candidate) => candidate.id === tabId);
+  if (!tab) throw new AdapterError("unsupported", `tab ${tabId} is a tab of its own terminal: it has no splits`);
   if (!leaves(tab.root).includes(targetId)) throw new AdapterError("pane_not_found", `pane ${targetId} not found in tab ${tab.id}`);
   if (targetId === paneId) return { layout: null, reason: "same_pane" };
+  if (!leaves(tab.root).includes(paneId)) return { layout: null, reason: "cross_tab" };
   const root = splitLeaf(tab.root, targetId, paneId, split);
   return { layout: root && withTab(layout, tab.id, { root, zoomed: null }), reason: null };
 };
@@ -250,9 +252,10 @@ export function renamePlan(shown: SessionSnapshot, target: RenameTarget): { addr
 }
 
 /**
- * The labels that move a pane to a new tab, named `tabName`, of another workspace (`place`), or to Other
- * terminals (null): its terminal, its program and its id stay. It takes that workspace's name with it,
- * so it never renames the workspace by becoming its first terminal. `key: ""` takes a label off.
+ * The labels that move a pane to a tab, named `tabName`, of a workspace (`place`: a new tab of another
+ * workspace, or a tab that is there), or to Other terminals (null): its terminal, its program and its id
+ * stay. It takes that workspace's name with it, so it never renames the workspace by becoming its first
+ * terminal. `key: ""` takes a label off.
  */
 export function moveLabels(place: NewTab | null, tabName: string): Record<string, string> {
   const at = place === null
@@ -507,6 +510,38 @@ export class LayoutStore {
     if (parent && parent !== paneId && before.panes.some((candidate) => candidate.pane_id === parent)) throw new AdapterError("unsupported", `pane ${paneId} shows under the terminal that started it: it cannot go to Other terminals`);
     const place = workspaceId === OTHER_WORKSPACE_ID ? null : { space: workspaceId, tab: this.options.newId(), workspaceName: workspace!.label, worktree: await this.worktreeLabelOf(before, workspaceId) };
     await this.label([paneId], moveLabels(place, tabName));
+    return pane;
+  }
+
+  /**
+   * A pane of another tab moved beside `targetId`, a pane of `tabId`, once an edit answered `cross_tab`
+   * (moveBesideEdit): its labels put it in that tab first, with the tab's workspace, worktree and name
+   * (moveLabels), and one edit of the document then puts it beside the target. Its terminal, its program
+   * and its id stay; a tab it leaves empty is gone, and its workspace with it, as when a last pane closes.
+   * A document that cannot be written leaves it at the right of the tab (layout-doc.ts `reconcile`), and
+   * the error says so, as a split's does. Answers the pane as it was before.
+   */
+  async moveIntoTab(paneId: string, tabId: string, targetId: string, split: SplitDirection): Promise<PaneInfo> {
+    const before = await this.ownLayout();
+    const pane = before.panes.find((candidate) => candidate.pane_id === paneId);
+    if (!pane) throw new AdapterError("pane_not_found", `pane ${paneId} not found`);
+    const target = before.panes.find((candidate) => candidate.pane_id === targetId && candidate.tab_id === tabId);
+    if (!target) throw new AdapterError("pane_not_found", `pane ${targetId} not found in tab ${tabId}`);
+    const held = (await this.options.terminal(targetId)).labels ?? {};
+    // only a tab its labels make takes another pane, as for a split
+    if (held[SPACE_LABEL] !== target.workspace_id || held[TAB_LABEL] !== target.tab_id) throw new AdapterError("unsupported", `pane ${targetId} is in a tab of its own terminal: it has no splits`);
+    const workspaceName = before.workspaces.find((candidate) => candidate.workspace_id === target.workspace_id)?.label ?? "";
+    const place = { space: target.workspace_id, tab: target.tab_id, workspaceName, worktree: await this.worktreeLabelOf(before, target.workspace_id) };
+    await this.label([paneId], moveLabels(place, held[TAB_NAME_LABEL] ?? ""));
+    let placed: { changed: boolean; reason: string | null };
+    try {
+      placed = await this.edit(moveBesideEdit(paneId, tabId, targetId, split));
+    } catch (error) {
+      const reason = error instanceof AdapterError || error instanceof HcError ? error.message : String(error);
+      throw new AdapterError("layout_not_saved", `pane ${paneId} moved into tab ${tabId}, but could not be placed ${split === "right" ? "right of" : "below"} ${targetId} (${reason}); it shows at the right of the tab`);
+    }
+    // another move of the pane between its labels and this edit took it out of the tab again
+    if (!placed.changed) throw new AdapterError("pane_not_moved", `pane ${paneId} was moved elsewhere before it could be placed beside ${targetId} (${placed.reason ?? "unchanged"})`);
     return pane;
   }
 }

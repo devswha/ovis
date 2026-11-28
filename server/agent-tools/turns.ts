@@ -1,8 +1,8 @@
 import type { AcpChild, AcpChildren } from "../acp/children.ts";
 import { KeeperRequestError, type KeeperClient } from "../acp/client.ts";
-import { allowsDelegatedMode } from "./harnesses.ts";
+import { NO_MODES, allowsDelegatedMode } from "./harnesses.ts";
 import type { Ledger, ToolChild } from "./ledger.ts";
-import { HARNESS_LIMITS, answer, harnessStopReason, refuse } from "../../shared/harness-tool.ts";
+import { HARNESS_LIMITS, UNASKED_HARNESSES, answer, harnessStopReason, refuse } from "../../shared/harness-tool.ts";
 import type { SessionRef, SessionState, Untrusted } from "../../shared/harness-contract.generated.ts";
 
 export function untrusted(from: string, text: string): Untrusted {
@@ -25,8 +25,11 @@ export function childState(child: AcpChild, row?: ToolChild, parent = false): Se
   return { state: !client.connected || client.turn?.running ? "working" : client.turn ? "done" : "idle", turn };
 }
 export function delegatedMode(harness: string, client: KeeperClient): string | null {
-  const initial = client.initialPermissions;
-  if (!initial?.mode || !allowsDelegatedMode(harness, initial.mode) || client.sessionMode !== initial.mode
+  const opened = client.initialPermissions;
+  // a harness without modes reports none, at the start and since; the keeper checks the same at every prompt
+  const unmoded = UNASKED_HARNESSES.includes(harness) && opened?.mode === null && client.sessionMode === null;
+  const initial = unmoded ? { ...opened, mode: NO_MODES } : opened;
+  if (!initial?.mode || !allowsDelegatedMode(harness, initial.mode) || (!unmoded && client.sessionMode !== initial.mode)
     || initial.allowAll === true || client.allowAll === true
     || (harness === "copilot" && client.allowAll !== false)) return null;
   return initial.mode;

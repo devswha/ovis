@@ -276,9 +276,10 @@ bun scripts/e2e.ts --update --from-tray       # the same, restarting from the tr
 ```
 
 It covers the first launch (connection screen, then Ovis), a terminal and an agent pane (a
-stand-in `claude`) in the app's core, quit and relaunch (the terminals keep running, the address
-stays), the tray's items, Browser for links on Linux (a browser of the run's own is listed, chosen
-and given a link as one argument), a killed app (the next start ends the server left behind) and, with
+stand-in `claude`) in the app's core, a lone Alt (the menu bar stays hidden and the page keeps the
+keys), quit and relaunch (the terminals keep running, the address stays), the tray's items,
+Browser for links on Linux (a browser of the run's own is listed, chosen and given a link as one
+argument), a killed app (the next start ends the server left behind) and, with
 `--update`, the app's updates: an AppImage in a folder that cannot be written keeps them off; a
 downloaded update's one notification and that notification's click, its line in the window and
 on the connection screen, a later check that leaves the held version alone, the downloaded file

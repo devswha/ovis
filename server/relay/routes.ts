@@ -172,7 +172,7 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         if (service.status().phase === "error") return fail("relay_offline", "The relay is not reachable; wait until it is online before pairing.", 409);
         if (account !== null && !ACCOUNT_ID.test(account)) return invalidAccount();
         const code = await service.pairCode(caller, account ?? undefined);
-        if (code === null) return fail("code_unavailable", "Pairing with a typed code works through Ovis's relay only; scan the QR code instead.", 409);
+        if (code === null) return fail("code_unavailable", "Pairing with a typed code needs Ovis's relay, or an app of your own (OVIS_RELAY_APP_URL) beside your own relay; scan the QR code instead.", 409);
         return reply(code);
       }
       case RELAY_CONTROLS.cancelCode:

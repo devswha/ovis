@@ -8,6 +8,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { importPublicKey, openClientSecureChannel } from "../../shared/relay-e2ee.ts";
 import type { Transport } from "../../shared/relay-e2ee.ts";
 import { decodeOffer, validateOffer } from "../../shared/relay-offer.ts";
+import { GLOBAL_APP, GLOBAL_RELAY } from "../../shared/relay-regions.ts";
 import { normalizePairCode, PairCodeExpiredError, PairCodeGuest, splitPairCode } from "../../shared/relay-pair-code.ts";
 import { PAIR_CLOSE } from "../../relay/pair-room.ts";
 import { offerFromCode } from "../../src/lib/relay/pairCode.ts";
@@ -1180,7 +1181,7 @@ async function typeCode(f: Awaited<ReturnType<typeof fixture>>, code: string): P
 async function mintCode(f: Awaited<ReturnType<typeof fixture>>) {
   const response = await f.request("/code", "POST");
   expect(response.status).toBe(200);
-  const body = await response.json() as { code: string; expires_at: string; server_id: string };
+  const body = await response.json() as { code: string; expires_at: string; server_id: string; app?: string };
   expect(body.code).toMatch(/^[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}$/);
   return body;
 }
@@ -1237,7 +1238,7 @@ it("a typed code made for an account: its answer names the account and the code,
   await f.start();
   const ask = (path: string, account?: string) => fetch(`${f.base}/api/relay${path}`, { method: "POST", headers: { origin: f.base, "x-herdr-update": "1", ...(account ? { "x-ovis-expect-account": account } : {}) } });
   // without the header the answer is what it always was, and names its code by its id
-  expect(Object.keys(await mintCode(f)).sort()).toEqual(["code", "expires_at", "pairing", "server_id"]);
+  expect(Object.keys(await mintCode(f)).sort()).toEqual(["app", "code", "expires_at", "pairing", "relay", "server_id"]);
   const minted = await (await ask("/code", "acct_owner")).json() as { code: string; expect_account: string; pairing: { id: string } };
   expect(minted.expect_account).toBe("acct_owner");
   const devices = f.app.context.services.devices;
@@ -1252,12 +1253,37 @@ it("a typed code made for an account: its answer names the account and the code,
   expect((await paired.http("/api/health")).status).toBe(403);
 });
 
-it("a relay that is not Ovis's own has no codes to type", async () => {
-  const f = await fixture();
+it("a relay that is not Ovis's own has no codes to type while the app is Ovis's, which looks for them on Ovis's relay", async () => {
+  // named, since OVIS_RELAY_APP_URL is read when the options leave it out; a regional copy of Ovis's app looks on Ovis's relay too
+  for (const app of [GLOBAL_APP, "https://app-ap.ovis.sh"]) {
+    const f = await fixture(false, { app });
+    await f.start();
+    const response = await f.request("/code", "POST");
+    expect(response.status).toBe(409);
+    // the refusal names the setting a self-hosted relay is missing
+    expect(await response.json()).toMatchObject({ error: { code: "code_unavailable", message: expect.stringContaining("OVIS_RELAY_APP_URL") } });
+  }
+});
+
+it("a relay of its own beside an app of its own: the code meets on that relay, the reply names that app, and the app pairs through it", async () => {
+  const f = await fixture(false, { app: "https://app.example.test" });
   await f.start();
-  const response = await f.request("/code", "POST");
-  expect(response.status).toBe(409);
-  expect(await response.json()).toMatchObject({ error: { code: "code_unavailable" } });
+  const minted = await mintCode(f);
+  expect(minted.app).toBe("https://app.example.test");
+  const ownRelay = `wss://127.0.0.1:${f.localRelay.port}`;
+  const offer = await offerFromCode(minted.code, { relay: ownRelay, connect: (url) => new WebSocket(url.replace(ownRelay, `ws://127.0.0.1:${f.localRelay.port}`)) });
+  expect(offer.server_id).toBe(minted.server_id);
+  const paired = await client(f, offer);
+  expect((await paired.http("/api/health")).status).toBe(200);
+});
+
+it("Ovis's relay beside an app of its own: the code meets on Ovis's relay, where a shell built with no relay of its own looks", async () => {
+  // the PC is on Ovis's relay; its app is not Ovis's, and still finds the code there
+  const f = await fixture(false, { relay: GLOBAL_RELAY, app: "https://app.example.test" });
+  await f.start();
+  const minted = await mintCode(f) as Awaited<ReturnType<typeof mintCode>> & { relay?: string };
+  expect({ app: minted.app, relay: minted.relay }).toEqual({ app: "https://app.example.test", relay: GLOBAL_RELAY });
+  expect((await typeCode(f, minted.code)).offer).toBeString();
 });
 
 it("end to end: the hosted app's code screen finds the PC through the relay and the phone pairs with what it gets", async () => {
