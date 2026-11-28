@@ -20,7 +20,7 @@ import { EVENT_LINE_BYTES, openEventStream } from "./event-stream.ts";
 import { AdapterError } from "./errors.ts";
 import { layoutCalls, LayoutStore, moveBesideEdit, newLayoutId, ownsLayout, ratioEdit, readCore, RESIZE_STEP, resizeEdit, swapEdit, zoomEdit } from "./layout-ops.ts";
 import { checkoutHolding, defaultCheckoutPath, factsOf, git, gitDirIdentity, labeledWorktree, realPath, type Checkout, type Repository, repositoryOf, type RepositoryReads, WORKTREE_LABEL, WorktreeError, worktreeFolder, worktreeLabel } from "./worktrees.ts";
-import type { SessionSnapshot, WorkspaceWorktreeInfo } from "../../shared/herdr-api.generated.ts";
+import type { PaneInfo, SessionSnapshot, WorkspaceWorktreeInfo } from "../../shared/herdr-api.generated.ts";
 import type { WorktreeInfo } from "../herdr/worktree-info.ts";
 import type { HerdrWorkspaceWorktree } from "../../shared/protocol.ts";
 
@@ -1104,33 +1104,38 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       return { type: "ok" };
     },
     // A pane goes to a new tab of another workspace by its labels alone (LayoutStore `moveToNewTab`), or
-    // beside another pane of its own tab in one edit of the document (moveBesideEdit), where herdr moves
-    // only into another tab (client.ts `paneMoveBeside`). `new_tab` and that are the destinations Ovis asks for.
+    // beside another pane: of its own tab in one edit of the document (moveBesideEdit), where herdr moves
+    // only into another tab (client.ts `paneMoveBeside`), and of another tab by its labels, then that edit
+    // (LayoutStore `moveIntoTab`). `new_tab` and `tab` are the destinations Ovis asks for.
     async "pane.move"(params) {
       const paneId = paneIdOf(params);
       const destination = params["destination"];
+      /** the tab and workspace the pane left (`left`, as it was before) when they are gone after its move */
+      const closed = (after: SessionSnapshot, left: PaneInfo | null) => ({
+        closed_tab_id: left && !after.tabs.some((tab) => tab.tab_id === left.tab_id) ? left.tab_id : null,
+        closed_workspace_id: left && !after.workspaces.some((candidate) => candidate.workspace_id === left.workspace_id) ? left.workspace_id : null,
+      });
       if (isRecord(destination) && destination["type"] === "tab") {
         const targetId = paneIdOf(destination, "target_pane_id");
         const split = destination["split"];
         if (split !== "right" && split !== "down") throw new AdapterError("invalid_params", "split must be right or down");
-        const tabId = typeof destination["tab_id"] === "string" ? destination["tab_id"] : undefined;
-        const { changed, reason } = await layouts.edit(moveBesideEdit(paneId, tabId, targetId, split));
-        const moved = (await snapshot()).panes.find((candidate) => candidate.pane_id === paneId);
+        const tabId = paneIdOf(destination, "tab_id");
+        const within = await layouts.edit(moveBesideEdit(paneId, tabId, targetId, split));
+        const left = within.reason === "cross_tab" ? await layouts.moveIntoTab(paneId, tabId, targetId, split) : null;
+        const after = await snapshot();
+        const moved = after.panes.find((candidate) => candidate.pane_id === paneId);
         if (!moved) throw new AdapterError("pane_not_found", `pane ${paneId} not found`);
-        return { move_result: { changed, reason: changed ? null : reason, pane: moved, closed_tab_id: null, closed_workspace_id: null } };
+        const changed = within.changed || left !== null;
+        return { move_result: { changed, reason: changed ? null : within.reason, pane: moved, ...closed(after, left) } };
       }
-      if (!isRecord(destination) || destination["type"] !== "new_tab") throw new AdapterError("unsupported", "herdr-core moves a pane only to a new tab or beside a pane of its own tab");
+      if (!isRecord(destination) || destination["type"] !== "new_tab") throw new AdapterError("unsupported", "herdr-core moves a pane only to a new tab or beside another pane");
       const workspaceId = paneIdOf(destination, "workspace_id");
       const tabName = typeof destination["label"] === "string" ? destination["label"] : "";
       const pane = await layouts.moveToNewTab(paneId, workspaceId, tabName);
       const after = await snapshot();
       const moved = after.panes.find((candidate) => candidate.pane_id === paneId);
       if (!moved) throw new AdapterError("internal", `hc relabeled ${paneId}, but it is not in the snapshot`);
-      return { move_result: {
-        pane: moved,
-        closed_tab_id: after.tabs.some((tab) => tab.tab_id === pane.tab_id) ? null : pane.tab_id,
-        closed_workspace_id: after.workspaces.some((candidate) => candidate.workspace_id === pane.workspace_id) ? null : pane.workspace_id,
-      } };
+      return { move_result: { pane: moved, ...closed(after, pane) } };
     },
   };
 

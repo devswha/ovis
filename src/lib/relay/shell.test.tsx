@@ -16,6 +16,7 @@ import { ACCOUNT_READ_WAIT_MS, ACCOUNT_STEPS_WAIT_MS, mountRelayShell, type Rela
 import { pcHeld, setPcNewness } from "./newPcHere.ts";
 import { RelayTransport, type RelayTransportOptions } from "./transport.ts";
 import { RelayAdmissionTimeoutError, RelayPcOfflineError } from "./channel.ts";
+import type { offerFromCode } from "./pairCode.ts";
 import { MuxProtocolError, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
 
 const AP = "wss://relay-ap.ovis.sh";
@@ -2079,6 +2080,20 @@ describe("the hosted shell's front page", () => {
     expect(attempts).toBe(1);
     await mountRelayShell({ ...settings, entryUrl: paths[0] ?? "" });
     expect(last().state.kind).toBe("confirm");
+  });
+
+  it("looks a typed code up on the relay its page's ovis-relay meta names, and on Ovis's own without one", async () => {
+    const offer = { v: 1 as const, ...keyFor(), relay: AP, code: "123456" };
+    const asked: (string | undefined)[] = [];
+    const findByCode: typeof offerFromCode = async (_code, options) => { asked.push(options?.relay); return offer; };
+    const page = globalThis.document as unknown as { querySelector: (selector: string) => unknown };
+    for (const codeRelay of ["wss://relay.example.test", undefined]) {
+      page.querySelector = (selector) => codeRelay !== undefined && selector === 'meta[name="ovis-relay"]' ? { getAttribute: (name: string) => name === "content" ? codeRelay : null } : null;
+      await mountRelayShell(mountFor({ store: deviceStore([]), navigate() {}, findByCode }));
+      last().onCodeStart(); last().onCodeSubmit("ABCDE-FGHJK");
+      await until(() => last().state.kind === "code-compare", "code comparison");
+    }
+    expect(asked).toEqual(["wss://relay.example.test", undefined]);
   });
 
   it("returns from code entry in place without discarding the caller's view", async () => {

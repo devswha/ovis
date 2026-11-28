@@ -110,6 +110,8 @@ export const TERMINAL_KO: Record<string, string> = {
   "Move tab left": "탭을 왼쪽으로 이동",
   "Move tab right": "탭을 오른쪽으로 이동",
   "Move to workspace…": "워크스페이스로 이동…",
+  "Bring pane here…": "여기로 패널 가져오기…",
+  "Bring a pane right of {name}": "{name} 오른쪽으로 가져올 패널",
   "Move {tab} to": "{tab} 이동 위치",
   "Tab order did not refresh. Try again.": "탭 순서가 갱신되지 않았습니다. 다시 시도해 주세요.",
   "Jump to bottom": "맨 아래로 이동",

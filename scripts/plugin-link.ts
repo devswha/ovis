@@ -848,12 +848,12 @@ async function linkWithCode(options: LinkOptions, api: Api): Promise<number> {
     for (;;) {
       // the code first: it starts a new pairing, which the offer then carries (RelayPanel CompactRelay);
       // the offer comes whether the code did or not, since its QR code still pairs
-      let code: ({ code: string; expires_at: string; server_id: string } & ForAccount) | null = null;
+      let code: ({ code: string; expires_at: string; server_id: string; app?: string } & ForAccount) | null = null;
       let refused = "";
       let offer: { url: string; expires_at: string } & ForAccount;
       try {
         try {
-          code = await api<{ code: string; expires_at: string; server_id: string } & ForAccount>("POST", "/api/relay/code");
+          code = await api<{ code: string; expires_at: string; server_id: string; app?: string } & ForAccount>("POST", "/api/relay/code");
           // this run's from here on, by its id. One from an Ovis that names none is told only by the QR code that carries it
           mine = mineOf(undefined, code.pairing?.id);
         } catch (error) {
@@ -880,7 +880,7 @@ async function linkWithCode(options: LinkOptions, api: Api): Promise<number> {
       out([
         "",
         ...code !== null
-          ? [`Code to type: ${code.code}   (works once, expires in ${left})`, `On the other device, open ${appHost(options, offer.url)}, choose Pair with a code and type it,`, "or scan this QR code with the phone's camera:"]
+          ? [`Code to type: ${code.code}   (works once, expires in ${left})`, `On the other device, open ${code.app === undefined ? appHost(options, offer.url) : new URL(code.app).host}, choose Pair with a code and type it,`, "or scan this QR code with the phone's camera:"]
           : [`No code to type this time (${refused}).`, `Scan this QR code with the phone's camera (expires in ${left}):`],
         "",
         qr(offer.url),
@@ -1097,7 +1097,7 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
   let lost: string | null = null;
   let older = false;
   const forAccount = { headers: { "x-ovis-expect-account": joining.signedIn } };
-  let card: { readonly url: string; readonly typed: string | null; readonly refused: string; readonly serverId: string; readonly until: number } | null = null;
+  let card: { readonly url: string; readonly typed: string | null; readonly typedApp: string; readonly refused: string; readonly serverId: string; readonly until: number } | null = null;
   let screen = false;
   let drawnFor = "";
   let atPrompt = false;
@@ -1113,7 +1113,7 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
     const head = ["2/2  Let this PC in", "", "Scan this QR code with a device that is signed in to this Ovis account. It adds this PC to the account; there is no number to type.", ...!tied && !joining.plain ? [OLDER_PC] : [], ""];
     const tail = [
       ...card.typed !== null
-        ? [`Code to type: ${card.typed}   (works once, expires in ${left})`, `Or, on that device, open ${appHost(options, card.url)}, choose Pair with a code and type it.`]
+        ? [`Code to type: ${card.typed}   (works once, expires in ${left})`, `Or, on that device, open ${card.typedApp}, choose Pair with a code and type it.`]
         : [`No code to type this time (${card.refused}). The QR code expires in ${left}.`],
       `No device in the account yet? Open ${appHost(options, card.url)} on your phone, sign in, then scan.`,
       `That device then shows an ID: pair only if it matches this PC's ID, every group: ${groups(card.serverId)}`,
@@ -1161,9 +1161,9 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
   const mint = async (): Promise<void> => {
     minted++;
     pinned = null;
-    let typed: ({ code: string; expires_at: string; server_id: string } & ForAccount) | null = null;
+    let typed: ({ code: string; expires_at: string; server_id: string; app?: string } & ForAccount) | null = null;
     let refused = "";
-    try { typed = await api<{ code: string; expires_at: string; server_id: string } & ForAccount>("POST", "/api/relay/code", forAccount); } catch (error) {
+    try { typed = await api<{ code: string; expires_at: string; server_id: string; app?: string } & ForAccount>("POST", "/api/relay/code", forAccount); } catch (error) {
       if (!(error instanceof LocalError)) throw error;
       // nothing was started, and the code pending stays as it was: neither taken back here nor counted as this round's
       if (NO_CODE_STARTED.has(error.code)) throw refusal(error);
@@ -1204,7 +1204,7 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
       older = true;
       say(`${OLDER_PC}\n`);
     }
-    card = { url: offer.url, typed: typed?.code ?? null, refused, serverId: typed?.server_id ?? decoded.server_id, until: Math.min(typed === null ? Infinity : Date.parse(typed.expires_at), Date.parse(offer.expires_at)) };
+    card = { url: offer.url, typed: typed?.code ?? null, typedApp: typed?.app === undefined ? appHost(options, offer.url) : new URL(typed.app).host, refused, serverId: typed?.server_id ?? decoded.server_id, until: Math.min(typed === null ? Infinity : Date.parse(typed.expires_at), Date.parse(offer.expires_at)) };
     draw();
   };
   // a device got in, or this PC joined an account: from then on no code is shown again, whatever becomes of that device

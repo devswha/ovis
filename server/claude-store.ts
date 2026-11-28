@@ -15,7 +15,7 @@
 
 import { createHash } from "node:crypto";
 import { constants, type Dirent } from "node:fs";
-import { lstat, open, readFile, readdir, readlink, stat } from "node:fs/promises";
+import { lstat, open, readFile, readdir, readlink, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import nodePath, { basename, dirname, isAbsolute, join, normalize, type PlatformPath } from "node:path";
 import { directoryKey, withoutVerbatimPrefix } from "./codex.ts";
@@ -505,7 +505,7 @@ export async function processClaudeConfigDir(
     const paneHome = normalize(read.home ?? home);
     const store = join(paneHome, ".claude");
     try {
-      if (await trustedClaudeHomeAncestors(paneHome) && await ownedClaudeDirectory(paneHome) && await ownedClaudeDirectory(store)) return store;
+      if (await trustedClaudeHomeAncestors(paneHome) && await ownedClaudeDirectory(paneHome) && await ownedClaudeStore(store)) return store;
     } catch { /* an unverified pane store falls back to the server's configured store */ }
     return defaultClaudeConfigDir(home);
   }
@@ -574,6 +574,13 @@ async function ownedClaudeDirectory(path: string): Promise<boolean> {
   return info.isDirectory() && ownUid(info.uid);
 }
 
+/** The store root may be the user's own link to their own directory, kept in dotfiles (#4866). */
+async function ownedClaudeStore(path: string): Promise<boolean> {
+  const info = await lstat(path);
+  if (!info.isSymbolicLink()) return info.isDirectory() && ownUid(info.uid);
+  return ownUid(info.uid) && await ownedClaudeDirectory(await realpath(path));
+}
+
 async function trustedClaudeHomeAncestors(home: string): Promise<boolean> {
   const ancestors: string[] = [];
   for (let dir = dirname(home); ; dir = dirname(dir)) {
@@ -588,12 +595,12 @@ async function trustedClaudeHomeAncestors(home: string): Promise<boolean> {
 }
 
 async function ownedClaudeFile(path: string): Promise<boolean> {
-  // Inspect the implicit store and each directory beneath it without following links.
+  // Inspect the implicit store and each directory beneath it without following links below the root.
   const parents: string[] = [];
   for (let parent = dirname(path); dirname(parent) !== parent; parent = dirname(parent)) {
     parents.push(parent);
     if (basename(parent) !== ".claude") continue;
-    for (const dir of parents.reverse()) if (!await ownedClaudeDirectory(dir)) return false;
+    for (const dir of parents.reverse()) if (!await (dir === parent ? ownedClaudeStore : ownedClaudeDirectory)(dir)) return false;
     break;
   }
   const info = await lstat(path);

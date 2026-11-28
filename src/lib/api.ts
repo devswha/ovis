@@ -357,6 +357,10 @@ export interface RelayCode {
   readonly code: string;
   readonly expires_at: string;
   readonly server_id: string;
+  /** the app the code is typed in: `OVIS_RELAY_APP_URL`, app.ovis.sh unless set; absent from an older PC, which offers codes on app.ovis.sh only */
+  readonly app?: string;
+  /** the relay the code waits on, for a PC that asks another for its code (server/tailnet-pcs.ts); absent from an older PC, which holds codes on Ovis's relay */
+  readonly relay?: string;
 }
 
 export function requestRelayCode(): Promise<RelayCode> {

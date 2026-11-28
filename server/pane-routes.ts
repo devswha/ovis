@@ -491,8 +491,8 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     } catch (error) { return errorResponse(error); }
   }
 
-  // a pane put beside another of its own tab (client.ts `paneMoveBeside`): herdr's focus stays where
-  // it was, and the layout reaches every client as a swap's does, through layout.updated
+  // a pane put beside another pane, of its own tab or another one (client.ts `paneMoveBeside`): herdr's
+  // focus stays where it was, and the layout reaches every client as a swap's does, through layout.updated
   if (pathname === "/api/pane/move") {
     setRequestRoute(pathname);
     if (request.method !== "POST") return badRequest("method_not_allowed", "use POST");

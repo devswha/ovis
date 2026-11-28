@@ -382,10 +382,23 @@ it("tells herdr's passing focus on a sibling apart from the user's, until the mo
   await paneMoveBeside("source", "target", "right", path);
 });
 
-it("refuses a pane beside itself or beside a pane of another tab, moving nothing", async () => {
+it("brings a pane of another tab beside a pane in one herdr move, a swap putting it left of or above the target", async () => {
+  for (const side of ["right", "left"] as const) {
+    const { path, state, requests } = await movePeer();
+    expect(await paneMoveBeside("other", "target", side, path)).toEqual({ changed: true, reason: null });
+    expect(changes(requests)).toEqual([
+      ["pane.move", { pane_id: "other", destination: { type: "tab", tab_id: "tab", target_pane_id: "target", split: "right" }, focus: false }],
+      ...(side === "left" ? [["pane.swap", { source_pane_id: "other", target_pane_id: "target" }], ["pane.focus", { pane_id: "elsewhere" }]] : []),
+    ]);
+    expect(state.tabs.get("other")).toBe("tab");
+    expect(state.order.indexOf("other") - state.order.indexOf("target")).toBe(side === "left" ? -1 : 1);
+    expect(state.focus).toBe("elsewhere");
+  }
+});
+
+it("refuses a pane beside itself or beside a pane herdr does not have, moving nothing", async () => {
   const { path, requests } = await movePeer();
   expect(await paneMoveBeside("source", "source", "left", path)).toEqual({ changed: false, reason: "same_pane" });
-  expect(await paneMoveBeside("source", "other", "left", path)).toEqual({ changed: false, reason: "cross_tab" });
   expect((await rejection(paneMoveBeside("source", "gone", "left", path))).code).toBe("pane_not_found");
   expect((await rejection(paneMoveBeside("gone", "gone", "left", path))).code).toBe("pane_not_found");
   expect(changes(requests)).toEqual([]);

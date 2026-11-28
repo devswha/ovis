@@ -109,7 +109,9 @@ its menu (also on a phone). Alt+Shift+Left/Right moves a focused tab. Reordering
 selected pane and saves the order in herdr.
 
 Right-click a pane to rename it, split right or down, zoom it, or close it. Right-clicking another
-pane keeps the current focus, so **Swap with focused pane** exchanges the two. Drag a boundary
+pane keeps the current focus, so **Swap with focused pane** exchanges the two. **Bring pane here…**
+lists the panes of your other tabs and moves the one you pick right of this pane, still running; a
+tab it leaves empty closes. Drag a boundary
 to resize it. On a touch screen, the pane header's **⋯** opens the same menu; on a phone the tab's **⋯** carries
 the open pane's Rename and Close, while split and zoom stay with a screen that shows panes side by
 side. **Unzoom pane** stays in the phone's tab menu when the tab is zoomed, so its other panes
@@ -639,7 +641,7 @@ still upgrading. Set `--max-sockets-per-address` or `RELAY_MAX_SOCKETS_PER_ADDRE
 cap for your deployment; behind a local TLS proxy all users share it. A new socket past the cap
 gets `429` and `Retry-After: 60`, without closing sockets already open.
 
-To stop trusting `app.ovis.sh` too, host the app yourself. `bun run build:shell` builds it into `dist-shell/`. Serve that folder over HTTPS from a host that follows its `_redirects` and `_headers` files, as Cloudflare Pages does (another host needs the same rewrites and headers), and set `OVIS_RELAY_APP_URL` on the PC to its address: the PC's QR codes then open your copy. Build it from the same release as the PC's Ovis.
+To stop trusting `app.ovis.sh` too, host the app yourself. `bun run build:shell` builds it into `dist-shell/`. Serve that folder over HTTPS from a host that follows its `_redirects` and `_headers` files, as Cloudflare Pages does (another host needs the same rewrites and headers), and set `OVIS_RELAY_APP_URL` on the PC to its address: the PC's QR codes then open your copy. Build it from the same release as the PC's Ovis. Built with `OVIS_RELAY_URL` set to your relay (`OVIS_RELAY_URL=wss://relay.example.com bun run build:shell`), your copy also takes **Pair with a code**, the one way to pair an iPhone's Home Screen app, whose storage is apart from Safari's.
 
 ### Through an account
 
