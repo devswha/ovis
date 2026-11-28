@@ -4,17 +4,21 @@ import { NOTICE_VERSION } from "../../shared/telemetry-notice.ts";
 import { AttachmentTooLargeError, ApiError, cancelUsageLogin, changeTelemetry, errorFrom, fetchAgentCatalog, fetchAgentKinds, fetchPanePromptState, fetchPaneSummaries, fetchTelemetry, SUMMARY_REQUEST_MS, movePaneBeside, requestRelay, swapPaneWith, uploadPaneImage, verifySourceBoot } from "./api.ts";
 import { chatReadDeadlineMs } from "./chatReadDeadline.ts";
 import { movingHerdrFocusOn } from "./followFocus.ts";
-import { setCurrentLanguage, t } from "./i18n.ts";
+import { setCurrentLanguage } from "./i18n.ts";
 import { DEFAULT_SETTINGS, telemetrySettingsSnapshot } from "./settings.ts";
 
 const realFetch = globalThis.fetch;
-it.each(["en", "ko", "ja", "zh"] as const)("code-based PC add refusals name the right PC in %s", async (language) => {
+it.each([
+  ["en", "This PC is in an account. Add PCs from your account.", "That PC is in an account. Add it from that account."],
+  ["ko", "이 PC는 계정에 연결돼 있어요. 계정에서 PC를 추가하세요.", "그 PC는 계정에 연결돼 있어요. 그 계정에서 추가하세요."],
+  ["ja", "この PC はアカウントに接続されています。PC はアカウントから追加してください。", "その PC はアカウントに接続されています。そのアカウントから追加してください。"],
+  ["zh", "这台 PC 已连接到账号。请从你的账号添加 PC。", "那台 PC 已连接到账号。请从对应的账号添加。"],
+] as const)("code-based PC add refusals name the right PC in %s", async (language, source, target) => {
   setCurrentLanguage(language);
   try {
-    for (const [code, line] of [["pc_add_source_bound", "This PC is in an account. Add PCs from your account."],
-      ["pc_add_target_bound", "That PC is in an account. Add it from that account."]] as const) {
+    for (const [code, detail] of [["pc_add_source_bound", source], ["pc_add_target_bound", target]] as const) {
       const failure = await errorFrom("/api/machines/relay", Response.json({ error: { code, message: "Server fallback" } }, { status: 409 }));
-      expect(failure).toMatchObject({ status: 409, code, detail: t(line) });
+      expect(failure).toMatchObject({ status: 409, code, detail });
     }
   } finally { setCurrentLanguage("en"); }
 });
