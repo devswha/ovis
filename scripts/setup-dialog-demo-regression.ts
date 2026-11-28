@@ -776,6 +776,38 @@ try {
     console.log("PASS a pairing code that runs out, or a way left for another, is renewed only by New code (1920x1080)");
   }
 
+  // A phone pairs with the way's code while that way is hidden behind another tab (its device check went with its code):
+  // back in view, the way says it once, from one read of the devices (#3970)
+  {
+    const context = await appContext(browser!, { viewport: { width: 1920, height: 1080 }, colorScheme: "dark" });
+    await context.addInitScript(([guide]) => {
+      if (sessionStorage.getItem("seeded") !== null) return;
+      localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
+      localStorage.setItem("ovis:setup-guide", guide);
+      sessionStorage.setItem("seeded", "1");
+    }, [WELCOME] as const);
+    const page = await context.newPage();
+    // the fictional phone waits until it is let go (site/demo/transport.ts `demo_pairing=held`)
+    await page.goto(`${root}?demo_devices=empty&demo_via=device&demo_pairing=held`);
+    const dialog = page.getByRole("dialog", { name: DIALOG, exact: true });
+    for (const heading of ["Pick an agent", "Pick a look"]) {
+      await dialog.getByRole("heading", { name: heading, exact: true }).waitFor();
+      await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
+    }
+    const side = dialog.locator(".setup-side-phone");
+    await side.getByRole("tab", { name: /Tailscale/ }).click();
+    await side.getByRole("img", { name: /^QR code that pairs a phone with code/ }).waitFor();
+    await side.getByRole("tab", { name: /^Anywhere/ }).click();
+    await side.locator(".setup-qr-panel:visible").waitFor({ state: "detached" });
+    assert.equal(await page.evaluate(() => (globalThis as { herdrDemoReleasePairing?: () => boolean }).herdrDemoReleasePairing!()), true, "a pairing was waiting to be let go");
+    await side.getByRole("tab", { name: /Tailscale/ }).click();
+    const panel = side.locator(".setup-qr-panel:visible");
+    await panel.getByRole("status").filter({ hasText: "Paired: Living-room iPad." }).waitFor({ timeout: 5000 });
+    assert.equal(await panel.getByRole("button", { name: "New code", exact: true }).count(), 1, "the way paired while hidden offers New code, not the code the phone used");
+    await context.close();
+    console.log("PASS a phone paired while its way was hidden is said once the way is shown again (1920x1080)");
+  }
+
 } finally {
   await browser?.close();
   await server?.stop(true);
