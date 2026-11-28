@@ -507,7 +507,8 @@ function moveDemoPaneInto(pane: Pane, target: Pane, split: "right" | "down"): bo
   const into = snap.layouts.find((layout) => layout.tab_id === target.tab_id);
   const cell = into?.panes.find((candidate) => candidate.pane_id === target.pane_id);
   if (!into || !cell || !splitLayout(into, target.pane_id, { pane_id: pane.pane_id, focused: false, rect: cell.rect }, split)) return false;
-  if (from) closeLayoutPane(from, pane.pane_id);
+  // a tab the pane leaves shows its other panes again: a zoom on it would hide one of them
+  if (from) { closeLayoutPane(from, pane.pane_id); from.zoomed = false; }
   const left = { tab: pane.tab_id, workspace: pane.workspace_id };
   Object.assign(pane, { tab_id: target.tab_id, workspace_id: target.workspace_id });
   const agent = snap.agents.find((entry) => entry.pane_id === pane.pane_id);
@@ -525,9 +526,11 @@ function moveDemoPaneInto(pane: Pane, target: Pane, split: "right" | "down"): bo
   if (snap.focused_pane_id === pane.pane_id) {
     snap.focused_tab_id = target.tab_id;
     snap.focused_workspace_id = target.workspace_id;
+    into.focused_pane_id = pane.pane_id;
+    for (const candidate of into.panes) candidate.focused = candidate.pane_id === pane.pane_id;
     // as focusDemoPane does: the focused pane's tab is its workspace's active one
-    const into = snap.workspaces.find((workspace) => workspace.workspace_id === target.workspace_id);
-    if (into) into.active_tab_id = target.tab_id;
+    const workspace = snap.workspaces.find((entry) => entry.workspace_id === target.workspace_id);
+    if (workspace) workspace.active_tab_id = target.tab_id;
   }
   for (const tab of snap.tabs) {
     const own = snap.panes.filter((candidate) => candidate.tab_id === tab.tab_id);
