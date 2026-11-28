@@ -130,6 +130,28 @@ test("a move out of an account that no longer exists finishes into the destinati
   expect(f.journal()).toBe(false);
 });
 
+test("a PC whose account no longer exists stays in it, rows and all, and says so until a read of it commits", async () => {
+  const f = await fixture();
+  const mailbox = f.pc.app.context.services.accountMailbox;
+  await mailbox.pull();
+  expect((await f.pc.local("/api/account/status")).body).not.toHaveProperty("account_gone");
+  expect((await f.send("/v1/account", "DELETE", undefined, f.pc.account.issueToken(FROM))).status).toBe(204);
+  await mailbox.pull();
+  expect(f.pc.devices.account()).toBe(FROM);
+  expect(f.keptRows()).toEqual(f.original);
+  expect((await f.pc.local("/api/account/status")).body).toMatchObject({ account: FROM, account_gone: true });
+});
+
+test("a PC its living account removed leaves it, and is not said to be in a gone account", async () => {
+  const f = await fixture();
+  const mailbox = f.pc.app.context.services.accountMailbox;
+  await mailbox.pull();
+  expect((await f.send(f.path, "DELETE", undefined, f.pc.account.issueToken(FROM, { twoStep: true }))).status).toBe(204);
+  await mailbox.pull();
+  expect(f.pc.devices.account()).toBeNull();
+  expect((await f.pc.local("/api/account/status")).body).not.toHaveProperty("account_gone");
+});
+
 test("a drive device cannot start a move through the relay", async () => {
   const f = await fixture();
   const link = await relayConnection(f.pc, { serverId: f.identity.server_id });

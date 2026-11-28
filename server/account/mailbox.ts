@@ -26,25 +26,29 @@ import { applyAccountRecords, stageMailboxAdds, type AddGates, type RecordOutcom
 
 /** The account service refused a PC route: its status and error code, when it named one. */
 export class AccountServiceRefusal extends Error {
-  /** `retryAfter`: the seconds the service asks to wait (its `retry-after`), or null when it names none. */
-  constructor(readonly status: number, readonly code: string | null, readonly path: string, readonly retryAfter: number | null = null) {
+  /**
+   * `retryAfter`: the seconds the service asks to wait (its `retry-after`), or null when it names none. `accountGone`: the
+   * account named no longer exists (deleted, or folded into another), which a `not_listed` says apart from a removal.
+   */
+  constructor(readonly status: number, readonly code: string | null, readonly path: string, readonly retryAfter: number | null = null, readonly accountGone = false) {
     super(`The account service answered ${status} to ${path}`);
     this.name = "AccountServiceRefusal";
   }
 }
 
-/** The service's JSON problem envelope, including a listed PC's `step2_off` refusal. */
-async function refusalCode(response: Response): Promise<string | null> {
+/** A refusal of `path` from the service's JSON problem envelope, including a listed PC's `step2_off` refusal. */
+async function refusalOf(response: Response, path: string): Promise<AccountServiceRefusal> {
+  const retryAfter = retryAfterSeconds(response.headers.get("retry-after"));
   let body: unknown;
   try {
     body = await response.json();
   } catch (error) {
-    if (error instanceof Error) return null;
+    if (error instanceof Error) return new AccountServiceRefusal(response.status, null, path, retryAfter);
     throw error;
   }
-  if (typeof body !== "object" || body === null || !("error" in body)) return null;
-  const problem = body.error;
-  return typeof problem === "object" && problem !== null && "code" in problem && typeof problem.code === "string" ? problem.code : null;
+  const problem = typeof body === "object" && body !== null && "error" in body && typeof body.error === "object" && body.error !== null ? body.error : null;
+  const code = problem !== null && "code" in problem && typeof problem.code === "string" ? problem.code : null;
+  return new AccountServiceRefusal(response.status, code, path, retryAfter, problem !== null && "account_gone" in problem && problem.account_gone === true);
 }
 
 export const MAILBOX_PULL_MS = 5 * 60_000;
@@ -385,6 +389,11 @@ export class AccountMailbox {
 
   /** When the last pull that read the mailbox and the account's rows without an error began (Date.now()); null before one. */
   private readBegan: number | null = null;
+  /** The account the last snapshot read was told no longer exists (`account_gone`), until a read of it commits. */
+  private goneAccount: string | null = null;
+
+  /** Whether this PC's account no longer exists, as the service said on the last read of it: /api/account/status says so. */
+  accountGone(): boolean { return this.goneAccount !== null && this.goneAccount === this.options.devices.account(); }
   /** When each id this PC holds no row for first asked to sign in here (unreadKey): at most UNREAD_KEYS, in the order they asked. */
   private readonly firstAsked = new Map<string, number>();
 
@@ -672,6 +681,7 @@ export class AccountMailbox {
       return empty;
     }
     let unlisted = false;
+    let gone = false;
     let step2Off = false;
     try {
       let staged: Awaited<ReturnType<typeof stageMailboxAdds>> = [];
@@ -681,6 +691,7 @@ export class AccountMailbox {
           if (error instanceof AccountServiceRefusal && error.path === "/v1/pc/snapshot") {
             // A hidden 404 is ambiguous. Only the named refusal can excuse legacy catch-up.
             unlisted = error.status === 403 && error.code === "not_listed";
+            gone = unlisted && error.accountGone;
             if (unlisted) logAccess({ event: "account.snapshot.refused", status: 403, reason: "not_listed" });
             step2Off = error.status === 404 && error.code === "step2_off";
           }
@@ -717,7 +728,11 @@ export class AccountMailbox {
       // device's link just bound is listed by that device after its link: until then, for a bounded time, it is not yet listed
       // A PC moving out stays until its switch: the move, not the source, decides where it goes
       const moving = this.options.movingOut?.() === true;
-      if (unlisted && !moving && ((binding !== null && devices.serviceBinding() === binding) || (linked !== null && devices.linkBinding() === linked && !devices.awaitsFirstListing()))) devices.clearAccountBinding("unlisted", "account");
+      // An account that no longer exists removed nobody: the PC stays bound to it, rows and all, until its own window,
+      // signed in to an account, moves it there (src/lib/useOwnWindowPrompts.ts); only a removal makes it leave
+      if (gone) this.goneAccount = account;
+      else if (outcome.committed) this.goneAccount = null;
+      if (unlisted && !moving && !gone && ((binding !== null && devices.serviceBinding() === binding) || (linked !== null && devices.linkBinding() === linked && !devices.awaitsFirstListing()))) devices.clearAccountBinding("unlisted", "account");
       else if (outcome.committed && linked !== null && devices.linkBinding() === linked && typeof named === "string") devices.pinServiceListing(linked, named);
       return { outcome, adds, whole: outcome.committed || step2Off || (switching && moving && unlisted) };
     } catch (error) {
@@ -779,7 +794,7 @@ export class AccountMailbox {
   async leaveMovedAccount(identity: RelayIdentity, account: string): Promise<void> {
     const path = `/v1/pcs/${identity.server_id}/leave`;
     const response = await this.post(path, { server_id: identity.server_id, ...await this.prove(identity), account });
-    if (response.status !== 204) throw new AccountServiceRefusal(response.status, await refusalCode(response), path, retryAfterSeconds(response.headers.get("retry-after")));
+    if (response.status !== 204) throw await refusalOf(response, path);
   }
 
   /**
@@ -1260,7 +1275,7 @@ export class AccountMailbox {
   private async call(path: string, body: unknown, gone = false): Promise<Record<string, unknown> | null> {
     const response = await this.post(path, body);
     if (gone && response.status === 410) return null;
-    if (!response.ok) throw new AccountServiceRefusal(response.status, await refusalCode(response), path, retryAfterSeconds(response.headers.get("retry-after")));
+    if (!response.ok) throw await refusalOf(response, path);
     return await response.json() as Record<string, unknown>;
   }
 

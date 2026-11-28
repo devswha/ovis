@@ -1578,7 +1578,8 @@ export class FakeAccountService {
         if (!this.opensAll) return this.directories.get(body.account)?.has(challenge.server_id) === true
           ? problem(404, "step2_off", "Step 2 is off for this account")
           : problem(404, "not_found", "Unknown request");
-        if (this.directories.get(body.account)?.has(challenge.server_id) !== true) return problem(403, "not_listed", "This PC is not one of the account's");
+        // as the service: an account that no longer exists says so, which tells it from a removal
+        if (this.directories.get(body.account)?.has(challenge.server_id) !== true) return problem(403, "not_listed", "This PC is not one of the account's", this.deletedAccounts.has(body.account) ? { account_gone: true } : {});
         return this.snapshotPage(challenge.server_id, body.account, body.snapshot, body.page);
       }
       this.expire();

@@ -596,7 +596,11 @@ which this move does not support), `listing_changed` (the destination's listing 
 switch) or `binding_changed` (the PC left its account meanwhile). While a move is under way the old
 account no longer listing the PC (`403 not_listed`: it was deleted, or folded into the account of its
 verified email) neither makes the PC leave it nor stops the switch: there is nothing left to apply from
-it, and the move carries the PC on. A move given up never removes the
+it, and the move carries the PC on. Outside a move, a PC whose account the service says no longer
+exists (`403 not_listed` with `account_gone`) stays bound to it, rows and all, and
+`GET /api/account/status` says `account_gone: true`: its own window, signed in to an account (at once
+after a sign-in there, else within a minute), moves it into that account with no question. A removal
+by an account that still exists never says `account_gone`, and the PC leaves as before. A move given up never removes the
 destination's listing: the window says the PC is still listed there, to remove there if it is not
 wanted. `GET` answers `{ "into" }`, the destination of a move under way (else `null`), and while the
 PC stays in its account the last move given up as `aborted`. One press still refuses to move a PC

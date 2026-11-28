@@ -2,6 +2,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import type { AccountMoveAnswer, AccountMoveRequest, AccountMoveStatus } from "../../../shared/protocol.ts";
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { apiFetch } from "../api-request-id.ts";
+import { pcAccountStatus } from "./join.ts";
 import { ownPcProof } from "./pcProof.ts";
 import { AccountServiceError, indexedAccountService, sameSignIn, SignedOutError } from "./service.ts";
 
@@ -43,6 +44,21 @@ export function moveThisPc(into: string, signal: AbortSignal, resuming: boolean)
 export async function resumePcMove(signal: AbortSignal): Promise<void> {
   const { into } = await pcMoveStatus(signal);
   if (into !== null && !signal.aborted) await moveThisPc(into, signal, true);
+}
+
+/** How often this PC's own window asks whether its account is gone, which the PC learns on its own reads of the service. */
+export const GONE_CHECK_MS = 60_000;
+
+/**
+ * A PC whose account no longer exists (deleted, or folded into the account of its verified email) moves, with no question,
+ * into the account its own window is signed in to. A PC in an account that still exists is never moved this way.
+ */
+export async function moveFromGoneAccount(signal: AbortSignal): Promise<AccountMoveAnswer | null> {
+  const status = await pcAccountStatus((input) => apiFetch(input, { signal }));
+  if (status.accountGone !== true || status.account === null || signal.aborted) return null;
+  const session = await indexedAccountService.session();
+  if (session === undefined || session.account === status.account || signal.aborted) return null;
+  return await moveThisPc(session.account, signal, false);
 }
 
 async function execute(into: string, signal: AbortSignal, resuming: boolean): Promise<AccountMoveAnswer> {

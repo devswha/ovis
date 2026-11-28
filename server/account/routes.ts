@@ -189,6 +189,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       account: devices.account(), ...(named === null ? {} : { account_provider: named }), ...(devices.accountPolicyActive() ? { pc_add_from_account: devices.accountError === null ? true : "unavailable" } : {}),
       // a PC its account stopped listing: a device sends it no link, and an add at the PC brings it back (docs/account.md)
       ...(devices.addAtPcRequired() ? { pc_add_required: true } : {}),
+      // its account no longer exists (deleted, or folded into another): its own window signed in to an account moves it there
+      ...(mailbox.accountGone() ? { account_gone: true } : {}),
       ...devices.accountRows(), removals: devices.accountRemovals(), adds: devices.accountAdds(), blocked,
       enrolling: context.services.accountHolds.enrolling(), blocked_all: mailbox.holdsEveryAdd(), ...(fresh === undefined ? {} : { fresh }), mailbox: { last_pull_at: mailbox.lastPullAt, error: mailbox.error },
       // a yes or no only, never the account asked for: the account is named here once this PC is in it

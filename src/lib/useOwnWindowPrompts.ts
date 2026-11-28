@@ -4,7 +4,8 @@ import type { OwnJoinRequest, PendingKey, RelayPairingRequest } from "../../shar
 import { useOwnJoins } from "../components/OwnJoins.tsx";
 import { firstJoinPrompts, listAddPrompts, pendingKeyPrompts, tailnetPrompts, type PromptPairing } from "../components/RelayPairingPrompt.tsx";
 import { listNumberHeld, onListNumbersHeld } from "./account/addThisPc.ts";
-import { resumePcMove } from "./account/movePc.ts";
+import { GONE_CHECK_MS, moveFromGoneAccount, resumePcMove } from "./account/movePc.ts";
+import { ACCOUNT_SESSION_EVENT } from "./account/store.ts";
 import type { MachineSessionRegistry } from "./machineSession.ts";
 import { useListAdd } from "./useListAdd.ts";
 import { useTailnetNodes } from "./useTailnetNodes.ts";
@@ -41,7 +42,20 @@ export function useOwnWindowPrompts(relayPairings: readonly RelayPairingRequest[
     void resumePcMove(resume.signal).catch((error: unknown) => {
       if (!resume.signal.aborted) console.warn("Ovis: the pending PC move could not resume", error instanceof Error ? error.name : error);
     });
-    return () => resume.abort();
+    // a PC whose account no longer exists goes into the account this window is signed in to, with no question
+    let moving = false;
+    const fromGone = (): void => {
+      if (moving) return;
+      moving = true;
+      void moveFromGoneAccount(resume.signal).catch((error: unknown) => {
+        if (!resume.signal.aborted) console.warn("Ovis: this PC could not leave the account that no longer exists", error instanceof Error ? error.name : error);
+      }).finally(() => { moving = false; });
+    };
+    fromGone();
+    // a sign-in made here moves it at once; the PC itself learns its account is gone on its own reads, so it is asked again
+    window.addEventListener(ACCOUNT_SESSION_EVENT, fromGone);
+    const timer = window.setInterval(fromGone, GONE_CHECK_MS);
+    return () => { resume.abort(); window.removeEventListener(ACCOUNT_SESSION_EVENT, fromGone); window.clearInterval(timer); };
   }, [ownWindow, unlocked]);
   const addAsks = useMemo(() => listAddPrompts(listAdd).filter((ask) => !listNumberHeld(ask.run)), [listAdd?.state, listAdd !== null && listAdd.state === "number" ? `${listAdd.run} ${listAdd.digits} ${listAdd.until}` : null, holds]); // eslint-disable-line react-hooks/exhaustive-deps
   const prompts = useMemo(() => [...relayPairings, ...firstJoins, ...(ownWindow ? [...addAsks, ...pendingKeyPrompts(pendingKeys), ...tailnetAsks] : [])], [relayPairings, firstJoins, ownWindow, addAsks, pendingKeys, tailnetAsks]);
