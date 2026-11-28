@@ -23,7 +23,8 @@ CREATE INDEX IF NOT EXISTS events_day ON events (day);
 -- One row per install and UTC day a browser visited (day is the visit's, even when the message
 -- arrived later). A later message that day replaces version and harnesses (the kinds of coding
 -- agents seen, a sorted JSON array from shared/telemetry.ts TELEMETRY_HARNESSES) and usage (the
--- day's TelemetryUsage as JSON: kinds of screen, ways in, and counts; NULL from senders before it).
+-- day's TelemetryUsage as JSON: kinds of screen, ways in, and counts, and from newer senders the panes per kind of
+-- agent by who started them, their major.minor versions and the answers per way; NULL from senders before it).
 CREATE TABLE IF NOT EXISTS active (
   day TEXT NOT NULL,
   install_id TEXT NOT NULL,
@@ -38,3 +39,18 @@ CREATE TABLE IF NOT EXISTS active (
   PRIMARY KEY (day, install_id)
 );
 CREATE INDEX IF NOT EXISTS active_day ON active (day);
+
+-- One row per install and finished UTC day whose counts were sent (POST /v1/counts), kept as first
+-- received. version is the app's that day. narrow and wide are each that width's counts as JSON
+-- ({"counts": {name: bucket 1-4}, "shown": [name]}, names from shared/telemetry.ts TELEMETRY_COUNTERS and
+-- TELEMETRY_SHOWN), or NULL when the app was not used at that width. No row: the day's counts are unknown.
+-- Join active on (day, install_id) for the day's agent kinds, screens and country.
+CREATE TABLE IF NOT EXISTS counts (
+  day TEXT NOT NULL,
+  install_id TEXT NOT NULL,
+  version TEXT NOT NULL,
+  narrow TEXT CHECK (narrow IS NULL OR json_valid(narrow)),
+  wide TEXT CHECK (wide IS NULL OR json_valid(wide)),
+  PRIMARY KEY (day, install_id)
+);
+CREATE INDEX IF NOT EXISTS counts_day ON counts (day);

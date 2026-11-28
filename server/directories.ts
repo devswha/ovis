@@ -5,7 +5,6 @@ import { dirname, join, type PlatformPath, resolve, sep } from "node:path";
 import type { DirectoryListing } from "../shared/protocol.ts";
 import { otherHostsShare } from "./windows-share.ts";
 
-/** A folder with more subfolders than this lists the first ones and says it stopped. */
 export const MAX_DIRECTORY_ENTRIES = 500;
 
 /** A folder name past this many bytes is refused before the filesystem is asked (255 on every common filesystem). */
@@ -51,8 +50,7 @@ export type CreateDirectoryResult =
   | { error: "invalid_cwd" | "invalid_name" | "folder_exists" | "permission_denied" };
 
 /**
- * Makes one folder named `name` directly inside `parent` (the folder the browser shows) and
- * answers its absolute path. `name` is one path segment: no separator, not `.` or `..`, so
+ * `name` is one path segment: no separator, not `.` or `..`, so
  * nothing is made anywhere but inside `parent`; nothing is made recursively or overwritten.
  */
 export function createDirectory(parent: string, name: string): CreateDirectoryResult {
@@ -81,13 +79,9 @@ export function createDirectory(parent: string, name: string): CreateDirectoryRe
 }
 
 /**
- * The folders inside one directory, for the new-session dialog's folder browser. One
- * directory at a time, names only, nothing kept between calls: the cost is one readdir.
- * `path` takes an absolute path, `~` or `~/…` (the dialog's own syntax); empty means home.
  * Hidden folders (a leading dot) are left out unless asked for. Null when `path` is not
  * a directory this user can read.
  */
-/** `base`: the folder a relative path is read from (a pane's, for a link in its chat); else the server's own. */
 export function listDirectories(path: string, hidden = false, withFiles = false, base?: string): DirectoryListing | null {
   const home = homedir();
   const target = resolveFolder(path, home, base);
@@ -116,16 +110,25 @@ export function listDirectories(path: string, hidden = false, withFiles = false,
       files.push({ name: entry.name, size });
     }
   }
+  return directoryListing(target, home, directories, withFiles ? files : null);
+}
+
+/**
+ * The answer for the folder `target`: its folders and, when asked for, its files (`files`, null when not), sorted
+ * and cut at `MAX_DIRECTORY_ENTRIES` each; `cut` when they were read only in part. `parentOf`: this system's dirname,
+ * or another machine's (herdr-core/machine-files.ts).
+ */
+export function directoryListing(target: string, home: string, directories: string[], files: { name: string; size: number }[] | null, cut = false, parentOf: (path: string) => string = dirname): DirectoryListing {
   const byName = (left: string, right: string) => left.localeCompare(right, undefined, { sensitivity: "base", numeric: true });
   directories.sort(byName);
-  files.sort((left, right) => byName(left.name, right.name));
-  const parent = dirname(target);
+  files?.sort((left, right) => byName(left.name, right.name));
+  const parent = parentOf(target);
   return {
     path: target,
     parent: parent === target ? null : parent,
     home,
     directories: directories.slice(0, MAX_DIRECTORY_ENTRIES),
-    truncated: directories.length > MAX_DIRECTORY_ENTRIES || files.length > MAX_DIRECTORY_ENTRIES,
-    ...(withFiles ? { files: files.slice(0, MAX_DIRECTORY_ENTRIES) } : {}),
+    truncated: cut || directories.length > MAX_DIRECTORY_ENTRIES || (files?.length ?? 0) > MAX_DIRECTORY_ENTRIES,
+    ...(files !== null ? { files: files.slice(0, MAX_DIRECTORY_ENTRIES) } : {}),
   };
 }

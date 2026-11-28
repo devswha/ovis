@@ -5,18 +5,15 @@
  * the menu item before that, and a dismissal or an install keeps it away after a reload. The
  * installed iPhone app and a desktop browser never show it. No prompt reaches a real browser; all
  * files and HTTP traffic stay in this disposable, loopback-only app, and no herdr session is opened.
- *
- * UI_EVIDENCE_DIR: install-hint-<390|1440>-<light|dark>[-ko]-<state>.png and manifest.json.
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
+import type { Browser, BrowserContext, Page } from "playwright-core";
 import { KO } from "../src/lib/i18n.ko.ts";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
 type Theme = "light" | "dark";
 type Language = "en" | "ko";
@@ -68,7 +65,7 @@ async function run(browser: Browser, origin: string, theme: Theme, language: Lan
   const open = async (userAgent: string, options: { desktop?: boolean; standalone?: boolean; context?: BrowserContext } = {}) => {
     let context = options.context;
     if (!context) {
-      context = await browser.newContext({
+      context = await appContext(browser, {
         viewport: options.desktop ? DESKTOP : PHONE, userAgent, locale: language === "ko" ? "ko-KR" : "en-US",
         ...(options.desktop ? {} : { deviceScaleFactor: 3, isMobile: true, hasTouch: true }),
       });
@@ -113,7 +110,6 @@ async function run(browser: Browser, origin: string, theme: Theme, language: Lan
       assert.deepEqual([...errors, ...again.errors], []);
     }
 
-    // ---- the iPhone home-screen app: nothing to say --------------------------------------------
     {
       const { page, errors } = await open(IPHONE, { standalone: true });
       assert.equal(await hint(page).count(), 0, `${tag}: the installed iPhone app shows no line`);
@@ -148,7 +144,6 @@ async function run(browser: Browser, origin: string, theme: Theme, language: Lan
       assert.deepEqual([...errors, ...again.errors], []);
     }
 
-    // ---- a desktop browser: never ----------------------------------------------------------------
     {
       const { page, errors } = await open(DESKTOP_UA, { desktop: true });
       await offerPrompt(page);
@@ -162,34 +157,7 @@ async function run(browser: Browser, origin: string, theme: Theme, language: Lan
   console.log(`PASS install hint ${tag}: iPhone steps with the share glyph, Android menu then one-tap Install, dismissal and install remembered, none in the home-screen app or on desktop`);
 }
 
-const app = mkdtempSync(join(tmpdir(), "herdr-install-hint-demo-"));
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  const html = readFileSync(index, "utf8");
-  assert.match(html, /<script type="module"/);
-  writeFileSync(index, html.replace(/<script type="module"/, () => `${HOLD_DEMO_TURN}<script src="./demo-transport.js"></script>${RELEASE_TIMERS}\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    const prefix = "/herdr-web-ui/demo/app/";
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
-  try {
-    if (EVIDENCE) mkdirSync(EVIDENCE, { recursive: true });
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      const origin = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
-      for (const [theme, language] of [["light", "en"], ["dark", "en"], ["light", "ko"]] as const) await run(browser, origin, theme, language);
-    } finally { await browser.close(); }
-  } finally { server.stop(true); }
-  if (EVIDENCE) writeFileSync(join(EVIDENCE, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-} finally {
-  rmSync(app, { recursive: true, force: true });
-}
+await withDemoBrowser({ tempPrefix: "herdr-install-hint-demo-", beforeTransport: HOLD_DEMO_TURN, afterTransport: RELEASE_TIMERS }, async ({ browser, baseUrl: origin }) => {
+  for (const [theme, language] of [["light", "en"], ["dark", "en"], ["light", "ko"]] as const) await run(browser, origin, theme, language);
+});
+if (EVIDENCE) writeFileSync(join(EVIDENCE, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);

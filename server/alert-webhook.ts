@@ -6,7 +6,7 @@
  * alert-webhook.json in the state dir holds the destination, owner-only like the push keys: its URL
  * or token is what posts into someone's chat. It is never answered back, only masked.
  *
- * A message names the PC, the pane and what happened, with a link to open the pane; never what the
+ * A message names the PC, the pane and what happened, with a link to open the pane unless that is turned off; never what the
  * agent asked or answered, which would leave the PC for a third party.
  *
  * One post at a time, and at most one waiting: an alert that comes while another is being sent or
@@ -37,24 +37,21 @@ interface StoredWebhook {
   secret: string;
   chat_id?: string;
   alerts: AlertPrefs;
-  /** the app's address as the browser that saved it reached it: the base of each message's link */
+  /** written only when turned off: messages leave the pane link out */
+  link?: false;
   link_base?: string;
   /** who saved it, as a push subscription's `device_id`: a device, null for a local/token sign-in, absent for the open LAN */
   owner?: string | null;
 }
 
-/** One pane alert, as push.ts tells it. */
 export interface WebhookAlert {
   kind: AlertKind;
-  /** the pane's name, with its PC's for another PC (push.ts titles) */
   title: string;
   body: string;
-  /** this PC's name, for an alert of a pane on it */
   pc?: string;
   pane_id: string;
   machine_id?: string;
   workspace_id?: string;
-  /** whether the alert is still news (the pane unchanged, not muted, no window in use): asked before each try */
   current?: () => boolean;
   /** the destination's `generation()` when the alert arose: a destination set since is not told it */
   generation?: number;
@@ -63,17 +60,14 @@ export interface WebhookAlert {
 export type WebhookResult = { ok: true } | { ok: false; error: string; retry: boolean };
 
 export interface AlertWebhook {
-  /** what the destination wants told, or null: none is set */
   prefs(): AlertPrefs | null;
   wants(kind: AlertKind): boolean;
-  /** changes whenever the destination does (a new URL, token or chat, or none) */
   generation(): number;
   send(alert: WebhookAlert): void;
   test(): Promise<WebhookResult | null>;
   view(): AlertWebhookView;
   save(input: AlertWebhookSave, linkBase: string | undefined, owner?: string | null): AlertWebhookView;
   remove(): void;
-  /** resolves once nothing is being sent or waits to be (tests wait) */
   settled(): Promise<void>;
 }
 
@@ -81,7 +75,6 @@ export interface AlertWebhookOptions {
   stateDir: string;
   now?: () => number;
   retryDelays?: readonly number[];
-  /** Telegram's API, replaced by the tests' fake */
   telegramApi?: string;
   /** accept a plain-http loopback URL for every preset: only for the tests' fake destination */
   loopbackHttp?: boolean;
@@ -102,6 +95,7 @@ function parseStored(value: unknown): StoredWebhook | null {
     secret,
     ...(typeof record["chat_id"] === "string" ? { chat_id: record["chat_id"] } : {}),
     alerts: parseAlerts(record["alerts"]),
+    ...(record["link"] === false ? { link: false as const } : {}),
     ...(typeof record["link_base"] === "string" ? { link_base: record["link_base"] } : {}),
     ...(typeof record["owner"] === "string" || record["owner"] === null ? { owner: record["owner"] as string | null } : {}),
   };
@@ -126,7 +120,6 @@ export function maskSecret(preset: AlertWebhookPreset, secret: string): string {
   try { return `${new URL(secret).host}/…`; } catch { return "…"; }
 }
 
-/** Whether a link on `base` opens on another device: not this PC's own loopback address. */
 function reachable(base: string | undefined): boolean {
   if (base === undefined) return false;
   // URL writes an IPv4-mapped loopback in hex ([::ffff:7f00:1]), which isLoopbackHost does not read; an unspecified
@@ -134,7 +127,6 @@ function reachable(base: string | undefined): boolean {
   try { const host = new URL(base).host; return !isLoopbackHost(host) && !/^(?:\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]|0\.0\.0\.0|\[::\])(?::\d+)?$/i.test(host); } catch { return false; }
 }
 
-/** The link that opens the pane in the app (src/lib/deepLink.ts), where the app's address is known. */
 export function paneLink(base: string | undefined, alert: Pick<WebhookAlert, "pane_id" | "machine_id">): string | null {
   if (!base) return null;
   const url = new URL("/", base);
@@ -144,17 +136,15 @@ export function paneLink(base: string | undefined, alert: Pick<WebhookAlert, "pa
   return url.href;
 }
 
-/** The one line a chat shows: "Work PC · codex: waiting for your input". */
 export function alertText(alert: Pick<WebhookAlert, "title" | "body" | "pc">): string {
   return `${alert.pc ? `${alert.pc} · ` : ""}${alert.title}: ${alert.body}`;
 }
 
 interface Post { url: string; init: RequestInit }
 
-/** The request a preset makes of a message. */
 export function buildPost(stored: StoredWebhook, alert: WebhookAlert | null, telegramApi = "https://api.telegram.org"): Post {
   const text = alert ? alertText(alert) : "Ovis: alerts reach this destination";
-  const link = alert ? paneLink(stored.link_base, alert) : null;
+  const link = alert && stored.link !== false ? paneLink(stored.link_base, alert) : null;
   const json = (body: unknown): RequestInit => ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   switch (stored.preset) {
     case "ntfy":
@@ -185,12 +175,9 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
   let lastSuccess: number | null = null;
   let lastFailure: number | null = null;
   let lastError: string | null = null;
-  /** the alert waiting to go out after the one being sent (or retried): a newer one replaces it */
   let next: WebhookAlert | null = null;
   let running: Promise<void> | null = null;
-  /** the test out for the destination of generation `at`: a test asked for meanwhile shares its answer */
   let testing: { at: number; result: Promise<WebhookResult | null> } | null = null;
-  /** ends the backoff under way: a new destination does not wait for the old one's */
   let wake: (() => void) | null = null;
   /** bumped by a save or removal: a post for the destination before it is not retried or recorded */
   let generation = 0;
@@ -247,7 +234,6 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
         }
         // fixed wait: the backoff before the destination is tried again
         await wait(retryDelays[attempt]!);
-        // a newer alert came while this one waited: it is the news now, and goes instead
         if (next !== null) break;
       }
     }
@@ -262,6 +248,7 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
       target: target ? maskSecret(target.preset, target.secret) : null,
       chat_id: target?.chat_id ?? null,
       alerts: target?.alerts ?? DEFAULT_ALERTS,
+      link: target?.link !== false,
       reachable_link: reachable(target?.link_base),
       last_success_at: iso(lastSuccess),
       last_failure_at: iso(lastFailure),
@@ -328,11 +315,12 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
         try {
           const origin = new URL(linkBase).origin;
           if (reachable(origin) || !reachable(base)) base = origin;
-        } catch { /* keep the one saved */ }
+        } catch {}
       }
       const saved: StoredWebhook = {
         preset: input.preset, secret, ...(chatId ? { chat_id: chatId } : {}),
         alerts: input.alerts === undefined ? same?.alerts ?? DEFAULT_ALERTS : parseAlerts(input.alerts),
+        ...((input.link ?? same?.link) === false ? { link: false as const } : {}),
         ...(base ? { link_base: base } : {}),
         ...(owner === undefined ? {} : { owner }),
       };
@@ -379,6 +367,7 @@ export async function handleAlertWebhookRequest(request: Request, pathname: stri
       ...(text("token") === undefined ? {} : { token: text("token")! }),
       ...(text("chat_id") === undefined ? {} : { chat_id: text("chat_id")! }),
       ...(body["alerts"] === undefined ? {} : { alerts: parseAlerts(body["alerts"]) }),
+      ...(typeof body["link"] === "boolean" ? { link: body["link"] } : {}),
     }, request.headers.get("origin") ?? new URL(request.url).origin, owner);
     return jsonResponse(saved, 200, noStore);
   } catch (error) {

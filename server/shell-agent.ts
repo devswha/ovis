@@ -1,6 +1,6 @@
 /**
  * Agents herdr's agent.start cannot launch (`herdr agent start --kind` lists its
- * kinds; omo, gjc and DeepSeek Harness's dsh-tui are not among them). The pane's shell runs the command
+ * kinds; omo, gjc, DeepSeek Harness's dsh-tui and Command Code are not among them). The pane's shell runs the command
  * instead, and the pane's process tree, not the prompt, says when it is up.
  *
  * A Windows pane differs in three ways, each live-verified on a Windows PC (herdr 0.9.3):
@@ -11,9 +11,11 @@
  */
 import { spawn } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { userInfo } from "node:os";
-import { isAbsolute } from "node:path";
-import { herdrRpc } from "./herdr/client.ts";
+import { basename, isAbsolute, join } from "node:path";
+import { HerdrError, paneProcessInfo, paneSendKeys, paneSendText } from "./herdr/client.ts";
+import { isCmdProcess } from "./agent-identity.ts";
 import { isDshProcess } from "./dsh.ts";
 import { isGjcProcess } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity } from "./omo.ts";
@@ -22,12 +24,13 @@ import { descendantArgv, windowsProcessTable } from "./windows-processes.ts";
 import { userHome } from "./user-home.ts";
 import { COMPILED } from "./entries.ts";
 
-/** kind -> the foreground-process test that proves the agent is running in the pane. */
 export const SHELL_AGENTS: Record<string, (argv: readonly string[]) => boolean> = {
   omo: isOmoProcess,
   gjc: isGjcProcess,
   // dsh-tui's host process (node …/@deepseek-harness-tui/dsh-tui/lib/…/host-entry.js), behind its launcher shims
   "dsh-tui": isDshProcess,
+  // not on Windows (WINDOWS_SHELL_AGENTS), where `cmd` is cmd.exe
+  cmd: isCmdProcess,
 };
 /** The shell-started agents known to start on Windows; the others are not offered there. */
 const WINDOWS_SHELL_AGENTS = new Set(["omo", "gjc"]);
@@ -36,8 +39,12 @@ export function isShellAgentKind(kind: string): boolean { return Object.hasOwn(S
 
 /** Where this server finds `kind` on its own PATH; the pane's shell is herdr's child and may carry another PATH. */
 export function shellAgentExecutable(kind: string, platform: string = process.platform, path: string = process.env["PATH"] ?? ""): string | null {
-  if (platform === "win32" && !WINDOWS_SHELL_AGENTS.has(kind)) return null;
+  if (!shellAgentOnPlatform(kind, platform)) return null;
   return Bun.which(kind, { PATH: path });
+}
+
+function shellAgentOnPlatform(kind: string, platform: string): boolean {
+  return platform !== "win32" || WINDOWS_SHELL_AGENTS.has(kind);
 }
 
 const isExecutableFile = (path: string): boolean => {
@@ -63,15 +70,13 @@ const LOGIN_ENV_END = "__OVIS_LOGIN_ENV_END__";
 const loginEnvScript = (runtime: string): string =>
   `printf '\\n%s\\n' ${LOGIN_ENV_START}; ${COMPILED ? "env BUN_BE_BUN=1 " : ""}'${runtime}' --no-env-file --config=/dev/null -e 'process.stdout.write(JSON.stringify(process.env))'; printf '\\n%s\\n' ${LOGIN_ENV_END}`;
 
-/** The user's login shell as an absolute executable: $SHELL, else the account's; null when neither is one. */
 export function loginShell(env: Record<string, string | undefined> = process.env): string | null {
   let account: string | null = null;
-  try { account = userInfo().shell; } catch { /* no passwd entry */ }
+  try { account = userInfo().shell; } catch { }
   for (const shell of [env["SHELL"], account]) if (shell && isAbsolute(shell) && isExecutableFile(shell)) return shell;
   return null;
 }
 
-/** The PATH between the markers of the probe's own output; the profile's chatter around them is ignored. */
 export function parseLoginPath(output: string): string | null {
   const lines = output.split(/\r?\n/);
   const start = lines.lastIndexOf(LOGIN_PATH_START);
@@ -94,15 +99,12 @@ export function parseLoginEnv(output: string): Record<string, string> | null {
   return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(entry[0])));
 }
 
-/** The login shell's PATH, or why it gave none. */
 export type LoginPathResult = { path: string } | { path: null; reason: string };
 
 export interface LoginPathProbe {
-  /** the login shell's PATH; a miss says why: the shell failed, outran its time or said too much */
-  (signal: AbortSignal): Promise<LoginPathResult>;
-  /** has the next run read what it keeps afresh (agentPathProbe: the interactive shell's PATH) */
+  (signal: AbortSignal, profileRevision?: number | null): Promise<LoginPathResult>;
+  profileRevision?: () => Promise<number>;
   reread?: () => void;
-  /** why the PATH it keeps could not be read, or null (agentPathProbe: the interactive shell's) */
   problem?: () => string | null;
 }
 
@@ -114,12 +116,8 @@ export interface LoginPathProbe {
 export const PATH_PROBE_MARKER = "OVIS_PATH_PROBE";
 
 /**
- * Runs `shell -l -c` once with the fixed script and reads the PATH its profile sets. The shell runs
- * in a process group of its own, so a profile that leaves a child behind is killed with it; at
- * `timeoutMs`, past `maxBytes` of output (stdout and stderr together) or on `signal` the group is
- * killed and the shell reaped before this answers a miss. A shell SIGKILL cannot end (blocked in
- * the kernel, say on a hung home) is answered for `graceMs` after the kill and reaped when it
- * exits. The output is read until its pipes close, at most `graceMs` past the shell's exit.
+ * A shell SIGKILL cannot end (blocked in the kernel, say on a hung home) is answered for `graceMs`
+ * after the kill and reaped when it exits.
  */
 export function loginPathProbe(options: LoginShellOptions): LoginPathProbe {
   const probe = loginShellProbe(options, LOGIN_PATH_SCRIPT, parseLoginPath, "PATH");
@@ -129,34 +127,71 @@ export function loginPathProbe(options: LoginShellOptions): LoginPathProbe {
   };
 }
 
+function shellProfiles(shell: string, env: Record<string, string | undefined>): string[] {
+  const home = userHome(env);
+  const files = (dir: string, names: readonly string[]): string[] => isAbsolute(dir) ? names.map((name) => join(dir, name)) : [];
+  switch (basename(shell)) {
+    case "zsh":
+      return files(env["ZDOTDIR"] || home, [".zshenv", ".zprofile", ".zshrc", ".zlogin"]);
+    case "bash":
+      return files(home, [".bash_profile", ".bash_login", ".profile", ".bashrc"]);
+    case "fish": {
+      const config = env["XDG_CONFIG_HOME"];
+      return files(config && isAbsolute(config) ? config : isAbsolute(home) ? join(home, ".config") : "", [
+        "fish/config.fish", "fish/fish_variables", "fish/conf.d",
+      ]);
+    }
+    default:
+      return files(home, [".profile"]);
+  }
+}
+
 /**
  * The PATH a pane's shell starts an agent from: that of an interactive login shell (`-l -i -c`), which
  * also reads what only an interactive shell reads (zsh's .zshrc, where installers and nvm add their
- * folders), then the plain login shell's folders it does not name. Each runs as loginPathProbe runs,
- * under the same limits, with PATH_PROBE_MARKER set. The interactive shell runs once and its answer
- * is kept until `reread` (an install, Check again), so a .zshrc runs once per server start, not at
- * every login-shell run; a miss of it leaves the login PATH, is logged once per reason, and is told
- * by `problem`. When neither gives a PATH, the reasons of both are the miss's.
- *
- * A run `reread` asks for starts after the one out (which may predate an install) and at least
- * `rereadGapMs` after it started: rereads meanwhile share it, so however often they are asked for
- * (a client repeating Check again), the .zshrc runs at most once per gap.
+ * folders), then the plain login shell's folders it does not name.
  */
 export function agentPathProbe(options: LoginShellOptions & { rereadGapMs?: number }): LoginPathProbe & { reread: () => void; problem: () => string | null } {
-  const env = { ...(options.env ?? process.env), [PATH_PROBE_MARKER]: "1" };
+  const env: Record<string, string | undefined> = { ...(options.env ?? process.env), [PATH_PROBE_MARKER]: "1" };
   const interactive = loginPathProbe({ ...options, env, interactive: true });
   const login = loginPathProbe({ ...options, env });
   const gapMs = options.rereadGapMs ?? REREAD_GAP_MS;
+  const profiles = shellProfiles(options.shell, env);
+  const mtimes = new Map<string, number | null>();
+  let revision = 0;
+  let checking: Promise<number> | null = null;
+  const profileRevision = (): Promise<number> => {
+    if (checking !== null) return checking;
+    const { promise, resolve } = Promise.withResolvers<number>();
+    // A slow home mount must not hold up PATH lookup or queue up more stat calls.
+    const timer = setTimeout(() => resolve(revision), 500);
+    checking = promise;
+    void Promise.all(profiles.map(async (file) => {
+      let mtime: number | null;
+      try { mtime = (await stat(file)).mtimeMs; }
+      catch (error) {
+        if ((error instanceof Error && "code" in error) && (error.code === "ENOENT" || error.code === "ENOTDIR")) mtime = null;
+        else return; // an I/O failure is not evidence the file disappeared
+      }
+      const previous = mtimes.get(file);
+      if (previous !== undefined && previous !== mtime) revision++;
+      mtimes.set(file, mtime);
+    })).then(() => {
+      clearTimeout(timer);
+      checking = null;
+      resolve(revision);
+    });
+    return promise;
+  };
   let kept: LoginPathResult | null = null;
   let reading: Promise<LoginPathResult> | null = null;
-  /** a reread's run, waiting for the one out and the gap */
   let queued: Promise<LoginPathResult> | null = null;
   let stale = false;
   let startedAt = -Infinity;
+  let readRevision = -1;
   let logged: string | null = null;
-  const rc = (signal: AbortSignal): Promise<LoginPathResult> => {
-    if (stale) {
-      stale = false;
+  const rc = (signal: AbortSignal, wanted: number | null, reread: boolean): Promise<LoginPathResult> => {
+    if (reread || (wanted !== null && readRevision !== -1 && wanted > readRevision)) {
       if (queued !== null) return queued;
       const run: Promise<LoginPathResult> = (reading ?? Promise.resolve()).then(async () => {
         const wait = startedAt + gapMs - Date.now();
@@ -171,12 +206,18 @@ export function agentPathProbe(options: LoginShellOptions & { rereadGapMs?: numb
     if (queued !== null) return queued;
     if (reading !== null) return reading;
     if (kept !== null) return Promise.resolve(kept);
+    if (wanted === null) {
+      // Passive lookups may populate a cold cache, but never rerun a profile on an edit.
+      reading = profileRevision().then(() => start(signal));
+      return reading;
+    }
     return start(signal);
   };
   const start = (signal: AbortSignal): Promise<LoginPathResult> => {
+    // Compare with the revision at start, not at finish: the shell may already have read an edited file.
+    readRevision = revision;
     startedAt = Date.now();
     const run = interactive(signal).then((result) => {
-      // a run stopped with its caller proves nothing: the next one reads again
       if (signal.aborted) { stale = true; return result; }
       kept = result;
       const reason = result.path === null ? result.reason : null;
@@ -187,36 +228,36 @@ export function agentPathProbe(options: LoginShellOptions & { rereadGapMs?: numb
     reading = run;
     return run;
   };
-  const probe = async (signal: AbortSignal): Promise<LoginPathResult> => {
-    const [shown, plain] = await Promise.all([rc(signal), login(signal)]);
+  const probe = async (signal: AbortSignal, wanted?: number | null): Promise<LoginPathResult> => {
+    const reread = wanted !== null && stale;
+    if (reread) stale = false;
+    const interactivePath = wanted === undefined ? profileRevision().then((value) => rc(signal, value, reread)) : rc(signal, wanted, reread);
+    const [shown, plain] = await Promise.all([interactivePath, login(signal)]);
     if (shown.path === null && plain.path === null) return { path: null, reason: `${plain.reason}; interactive: ${shown.reason}` };
     const named = new Set<string>();
     const path = [shown.path, plain.path].flatMap((part) => part?.split(":") ?? []).filter((dir) => !named.has(dir) && named.add(dir)).join(":");
     return { path };
   };
   return Object.assign(probe, {
+    profileRevision,
     reread: () => { stale = true; },
     problem: () => kept !== null && kept.path === null ? kept.reason : null,
   });
 }
 
-/** The least time between two runs of the interactive shell that rereads asked for. */
 export const REREAD_GAP_MS = 5_000;
 
 let sharedProbe: { shell: string; probe: LoginPathProbe } | null = null;
-/** agentPathProbe for `shell`, one for the whole server: both locators share its single interactive run. */
 export function defaultAgentPathProbe(shell: string): LoginPathProbe {
   if (sharedProbe?.shell !== shell) sharedProbe = { shell, probe: agentPathProbe({ shell }) };
   return sharedProbe.probe;
 }
 
-/** The environment the user's login shell sets up, or why it gave none; run as loginPathProbe runs. */
 export function loginEnvProbe(options: LoginShellOptions, runtime: string = process.execPath): (signal: AbortSignal) => Promise<{ value: Record<string, string> } | { value: null; reason: string }> {
   if (runtime.includes("'")) return async () => ({ value: null, reason: `${runtime} cannot be quoted for the login shell` });
   return loginShellProbe({ maxBytes: 256 * 1024, ...options }, loginEnvScript(runtime), parseLoginEnv, "environment");
 }
 
-/** `cwd`: where the shell starts (this process's folder when unset); `interactive`: run it with `-i` too */
 interface LoginShellOptions { shell: string; env?: Record<string, string | undefined>; cwd?: string; timeoutMs?: number; maxBytes?: number; graceMs?: number; interactive?: boolean }
 
 function loginShellProbe<T>(options: LoginShellOptions, script: string, read: (output: string) => T | null, what: string): (signal: AbortSignal) => Promise<{ value: T } | { value: null; reason: string }> {
@@ -227,7 +268,6 @@ function loginShellProbe<T>(options: LoginShellOptions, script: string, read: (o
     const child = spawn(shell, interactive ? ["-l", "-i", "-c", script] : ["-l", "-c", script], { env, ...(cwd ? { cwd } : {}), stdio: ["ignore", "pipe", "pipe"], detached: true });
     const chunks: Buffer[] = [];
     let bytes = 0;
-    /** why the group was killed; set once */
     let failure: string | null = null;
     let exited = false;
     let settled = false;
@@ -238,7 +278,6 @@ function loginShellProbe<T>(options: LoginShellOptions, script: string, read: (o
       clearTimeout(timer);
       clearTimeout(grace);
       signal.removeEventListener("abort", stopped);
-      // nothing more is read: a process outside the group that kept the pipes open is not waited on
       child.stdout?.destroy();
       child.stderr?.destroy();
       resolve(result);
@@ -250,7 +289,6 @@ function loginShellProbe<T>(options: LoginShellOptions, script: string, read: (o
     const kill = (reason: string): void => {
       if (failure !== null) return;
       failure = `${shell} -l ${reason}`;
-      // after the exit the group is already killed: only the output was still being read
       if (exited) { done({ value: null, reason: failure }); return; }
       try { process.kill(-child.pid!, "SIGKILL"); } catch { child.kill("SIGKILL"); }
       // the answer never waits on an exit SIGKILL may not bring; the exit handler still reaps it
@@ -260,7 +298,6 @@ function loginShellProbe<T>(options: LoginShellOptions, script: string, read: (o
     const stopped = (): void => kill("was stopped");
     const timer = setTimeout(() => kill(`timed out after ${timeoutMs} ms`), timeoutMs);
     signal.addEventListener("abort", stopped, { once: true });
-    // both streams share one budget; only stdout carries the answer
     const count = (chunk: Buffer): boolean => {
       bytes += chunk.length;
       if (bytes > maxBytes) kill(`printed over ${maxBytes} bytes`);
@@ -272,8 +309,7 @@ function loginShellProbe<T>(options: LoginShellOptions, script: string, read: (o
     child.on("error", (error: NodeJS.ErrnoException) => done({ value: null, reason: `${shell} could not run: ${error.code ?? error.message}` }));
     child.on("exit", (code, exitSignal) => {
       exited = true;
-      // whatever the shell left in its group goes with it
-      try { process.kill(-child.pid!, "SIGKILL"); } catch { /* the group is gone */ }
+      try { process.kill(-child.pid!, "SIGKILL"); } catch { }
       if (failure !== null) { done({ value: null, reason: failure }); return; }
       if (code !== 0) { done({ value: null, reason: `${shell} -l ended with ${code === null ? exitSignal : `exit ${code}`}` }); return; }
       // stdout may still hold output at exit: it is read until close, bounded, as a process outside
@@ -284,16 +320,7 @@ function loginShellProbe<T>(options: LoginShellOptions, script: string, read: (o
   });
 }
 
-/**
- * Where the shell-started agents are, for both the offer (`/api/agents`) and the start: this
- * server's own PATH first, then, on Unix, the PATH its user's login shell sets, for a server run
- * as a service with a bare PATH. One login shell is run for every kind missing from the service
- * PATH at once, only when an offer or a start asks for a kind the service PATH misses and the last
- * run is older than `ttlMs` (callers meanwhile share that run); its hits and misses are kept until
- * then, and nothing runs while nobody asks. A run that finds no PATH says why on the console, once
- * each time the reason changes. Only the fixed names of SHELL_AGENTS are looked up, and only
- * absolute executable files are kept.
- */
+/** Only the fixed names of SHELL_AGENTS are looked up, and only absolute executable files are kept. */
 export class ShellAgentLocator {
   readonly #platform: string;
   readonly #servicePath: () => string;
@@ -301,27 +328,22 @@ export class ShellAgentLocator {
   readonly #ttlMs: number;
   readonly #now: () => number;
   #found = new Map<string, string>();
-  /** the login PATH the last run read: a kind it missed is looked for there again at each read */
   #loginPath: string | null = null;
-  /** when the last run ended; null before the first */
   #checkedAt: number | null = null;
+  #checkedRevision = -1;
+  #lookupId = 0;
   #running: Promise<void> | null = null;
-  /** a refresh waiting for the run before it to end */
+  #latestLookup: Promise<void> | null = null;
   #queued: Promise<void> | null = null;
-  /** why the last run found no PATH, as last logged; null after one that found it */
   #failure: string | null = null;
   #abort = new AbortController();
   #stopped = false;
 
   constructor(options: {
     platform?: string;
-    /** this server's PATH, read at each lookup */
     servicePath?: () => string;
-    /** reads the login shell's PATH; null: this server's PATH alone (tests, and a server with no login shell) */
     probe?: LoginPathProbe | null;
-    /** how long a run's answer is kept */
     ttlMs?: number;
-    /** the clock the answer's age is read from */
     now?: () => number;
   } = {}) {
     this.#platform = options.platform ?? process.platform;
@@ -333,21 +355,32 @@ export class ShellAgentLocator {
     this.#now = options.now ?? Date.now;
   }
 
-  /** The kept answer while it is younger than ttlMs; otherwise one login-shell run, shared by every caller meanwhile. */
-  #fresh(probe: LoginPathProbe): Promise<void> {
+  async #fresh(probe: LoginPathProbe, checkProfile: boolean): Promise<void> {
+    const wanted = checkProfile && probe.profileRevision !== undefined ? await probe.profileRevision() : null;
     if (this.#stopped) return Promise.resolve();
-    if (this.#running !== null) return this.#running;
-    if (this.#checkedAt !== null && this.#now() - this.#checkedAt < this.#ttlMs) return Promise.resolve();
-    const run: Promise<void> = this.#lookup(probe).finally(() => { if (this.#running === run) this.#running = null; });
+    const changed = wanted !== null && wanted > this.#checkedRevision;
+    if (!changed && this.#running !== null) return this.#running;
+    if (!changed && this.#checkedAt !== null && this.#now() - this.#checkedAt < this.#ttlMs) return;
+    const run: Promise<void> = this.#startLookup(probe, wanted).finally(() => { if (this.#running === run) this.#running = null; });
     this.#running = run;
     return run;
   }
 
-  async #lookup(probe: LoginPathProbe): Promise<void> {
-    const missing = Object.keys(SHELL_AGENTS).filter((kind) => shellAgentExecutable(kind, this.#platform, this.#servicePath()) === null);
+  #startLookup(probe: LoginPathProbe, wanted: number | null): Promise<void> {
+    const lookup = this.#lookup(probe, wanted);
+    this.#latestLookup = lookup;
+    return lookup;
+  }
+
+  async #lookup(probe: LoginPathProbe, wanted: number | null): Promise<void> {
+    const id = ++this.#lookupId;
+    if (wanted !== null) this.#checkedRevision = Math.max(this.#checkedRevision, wanted);
+    const missing = Object.keys(SHELL_AGENTS).filter((kind) => shellAgentOnPlatform(kind, this.#platform) && shellAgentExecutable(kind, this.#platform, this.#servicePath()) === null);
     const found = new Map<string, string>();
-    const result = missing.length === 0 ? null : await probe(this.#abort.signal).catch((error: unknown): LoginPathResult => ({ path: null, reason: `the login shell probe failed: ${error instanceof Error ? error.message : String(error)}` }));
+    const result = missing.length === 0 ? null : await probe(this.#abort.signal, wanted).catch((error: unknown): LoginPathResult => ({ path: null, reason: `the login shell probe failed: ${error instanceof Error ? error.message : String(error)}` }));
     if (this.#stopped) return;
+    // Follow only a newer lookup, not the scheduling promise, which can still wrap this lookup.
+    if (id !== this.#lookupId) return this.#latestLookup ?? undefined;
     // only absolute entries: a relative one (`./node_modules/.bin`, common in .zshrc) would make
     // whatever is in this server's working folder an agent
     const loginPath = result?.path ? result.path.split(":").filter((entry) => isAbsolute(entry)).join(":") || null : null;
@@ -357,7 +390,6 @@ export class ShellAgentLocator {
         if (executable !== null && isAbsolute(executable) && isExecutableFile(executable)) found.set(kind, executable);
       }
     }
-    // a failed run proves nothing is there: it answers as a miss until the next one
     this.#found = found;
     this.#loginPath = loginPath;
     this.#checkedAt = this.#now();
@@ -367,53 +399,41 @@ export class ShellAgentLocator {
     this.#failure = failure;
   }
 
-  /**
-   * The absolute executable `kind` is started by, or null. A kind the service PATH misses waits
-   * for a login-shell run when the kept answer is missing or older than ttlMs; a kind that run
-   * missed is looked for again on the PATH it read, so one installed since is found at once; a path
-   * a run found that is no longer an executable is not replaced by anything else until the next run.
-   */
-  async executable(kind: string): Promise<string | null> {
-    if (!isShellAgentKind(kind)) return null;
+  async executable(kind: string, checkProfile = true): Promise<string | null> {
+    if (!isShellAgentKind(kind) || !shellAgentOnPlatform(kind, this.#platform)) return null;
     const own = shellAgentExecutable(kind, this.#platform, this.#servicePath());
     if (own !== null || this.#probe === null) return own;
-    await this.#fresh(this.#probe);
+    await this.#fresh(this.#probe, checkProfile);
     const found = this.#found.get(kind);
     if (found !== undefined) return isExecutableFile(found) ? found : null;
-    // installed since the run (an install from the catalog): the kept login PATH has it, no new shell
     const late = this.#loginPath === null ? null : Bun.which(kind, { PATH: this.#loginPath });
     if (late === null || !isAbsolute(late) || !isExecutableFile(late)) return null;
     this.#found.set(kind, late);
     return late;
   }
 
-  /**
-   * Asks the login shell again, whatever the kept answer's age (an install may have changed its PATH),
-   * and with `interactive` the interactive shell too (agentPathProbe keeps its answer until then):
-   * a run already out may have read the PATH before the install, so this one starts after it, and
-   * every read meanwhile waits for it.
-   */
   refresh(interactive = true): Promise<void> {
     if (this.#probe === null || this.#stopped) return Promise.resolve();
     if (interactive) this.#probe.reread?.();
-    // one already waiting to start covers this one too
     if (this.#queued !== null) return this.#queued;
     const probe = this.#probe;
-    const run: Promise<void> = (this.#running ?? Promise.resolve()).then(() => { if (this.#queued === run) this.#queued = null; return this.#lookup(probe); }).finally(() => { if (this.#running === run) this.#running = null; });
+    const run: Promise<void> = (this.#running ?? Promise.resolve()).then(async () => {
+      if (this.#queued === run) this.#queued = null;
+      const wanted = probe.profileRevision === undefined ? null : await probe.profileRevision();
+      return this.#startLookup(probe, wanted);
+    }).finally(() => { if (this.#running === run) this.#running = null; });
     this.#queued = run;
     this.#running = run;
     return run;
   }
 
-  /** Kills a login shell still running and runs no more; later lookups use this server's PATH and the last run's answer. */
-  stop(): Promise<void> {
+  async stop(): Promise<void> {
     this.#stopped = true;
     this.#abort.abort();
-    return this.#running ?? Promise.resolve();
+    await Promise.all([this.#running, this.#latestLookup]);
   }
 }
 
-/** This server's PATH alone: what a caller that names no locator gets. */
 const servicePathOnly = new ShellAgentLocator({ probe: null });
 
 const quote = (word: string) => `'${word.replaceAll("'", `'\\''`)}'`;
@@ -425,7 +445,14 @@ export function cmdQuote(word: string): string {
 }
 
 export type PaneShell = "posix" | "powershell" | "cmd";
-/** Which shell a pane runs, from the program herdr reports in front of it. */
+const POSIX_SHELL = /(?:^|\/)-?(?:sh|bash|dash|zsh|ksh|mksh|ash|fish)$/u;
+const POSIX_SHELL_FLAGS = new Set(["-l", "--login", "-i", "--noprofile", "--norc"]);
+
+/** A POSIX shell that was not started to run a command or script. */
+export function plainPosixShell(argv: readonly string[]): boolean {
+  return POSIX_SHELL.test(argv[0] ?? "") && argv.slice(1).every((arg) => POSIX_SHELL_FLAGS.has(arg));
+}
+
 export function paneShell(argv0: string): PaneShell {
   const name = argv0.split(/[\\/]/).pop()!.toLowerCase();
   if (name === "powershell.exe" || name === "pwsh.exe" || name === "powershell" || name === "pwsh") return "powershell";
@@ -433,7 +460,6 @@ export function paneShell(argv0: string): PaneShell {
   return "posix";
 }
 
-/** The line that runs `executable` with `args` in that shell. */
 export function shellCommandLine(shell: PaneShell, executable: string, args: readonly string[]): string {
   if (shell === "powershell") return ["&", psQuote(executable), ...args.map(psQuote)].join(" ");
   if (shell === "cmd") return [executable, ...args].map(cmdQuote).join(" ");
@@ -490,8 +516,7 @@ export function powershellNativeArgs(program: "powershell" | "pwsh", args: reado
   });
 }
 
-interface ProcessInfo { process_info?: { shell_pid?: number; foreground_processes?: { pid: number; argv?: string[]; cwd?: string }[] } }
-const processInfo = (paneId: string) => herdrRpc<ProcessInfo>("pane.process_info", { pane_id: paneId }).catch(() => null);
+const processInfo = (paneId: string) => paneProcessInfo(paneId).catch(() => null);
 
 /**
  * Types the agent's absolute path and args into the pane's shell and resolves once
@@ -500,7 +525,7 @@ const processInfo = (paneId: string) => herdrRpc<ProcessInfo>("pane.process_info
  * `locator` `/api/agents` asked, so the offer and the start agree whatever the pane shell's
  * PATH says.
  */
-export async function startShellAgent(kind: string, paneId: string, args: string[] = [], options: { command?: string; timeoutMs?: number; locator?: ShellAgentLocator } = {}): Promise<number | null> {
+export async function startShellAgent(kind: string, paneId: string, args: string[] = [], options: { command?: string; timeoutMs?: number; locator?: ShellAgentLocator; env?: Record<string, string> } = {}): Promise<number | null> {
   const isProcess = SHELL_AGENTS[kind];
   if (!isProcess) throw new Error(`${kind} is not a shell-started agent`);
   const windows = process.platform === "win32";
@@ -511,21 +536,33 @@ export async function startShellAgent(kind: string, paneId: string, args: string
       if (!executable) throw new Error(`${kind} is not on this server's PATH or its login shell's`);
       command = shellCommandLine("posix", executable, []);
     }
-    await herdrRpc("pane.send_text", { pane_id: paneId, text: `${[command, ...args.map(quote)].join(" ")}\n` });
+    // through env(1), as the herdr-core adapter does: the shell's own `NAME=value` syntax differs between shells
+    const env = options.env ? [shellCommandLine("posix", "/usr/bin/env", Object.entries(options.env).map(([name, value]) => `${name}=${value}`))] : [];
+    if (kind === "cmd") {
+      // Looking up the executable can run a login shell. Read the pane after that wait, just before writing.
+      const info = await processInfo(paneId);
+      const shellPid = info?.shell_pid;
+      const processes = info?.foreground_processes ?? [];
+      const [front] = processes;
+      if (shellPid == null || shellPid !== info?.foreground_process_group_id || processes.length !== 1
+        || front?.pid !== shellPid || !plainPosixShell(front.argv ?? [])) {
+        throw new HerdrError("agent_pane_busy", `pane ${paneId} has no idle shell in front`);
+      }
+    }
+    await paneSendText(paneId, `${[...env, command, ...args.map(quote)].join(" ")}\n`);
   } else {
     const executable = await (options.locator ?? servicePathOnly).executable(kind);
     if (!executable) throw new Error(`${kind} is not on this server's PATH`);
-    const shell = paneShell((await processInfo(paneId))?.process_info?.foreground_processes?.[0]?.argv?.[0] ?? "powershell.exe");
-    await herdrRpc("pane.send_text", { pane_id: paneId, text: shellCommandLine(shell, executable, args) });
-    await herdrRpc("pane.send_keys", { pane_id: paneId, keys: ["Enter"] });
+    const shell = paneShell((await processInfo(paneId))?.foreground_processes?.[0]?.argv?.[0] ?? "powershell.exe");
+    await paneSendText(paneId, shellCommandLine(shell, executable, args));
+    await paneSendKeys(paneId, ["Enter"]);
   }
   const deadline = Date.now() + (options.timeoutMs ?? 60_000);
   while (Date.now() < deadline) {
     const info = await processInfo(paneId);
-    const started = info?.process_info?.foreground_processes?.find((entry) => kind === "omo" ? omoProcessIdentity(entry, "", userHome()) !== null : isProcess(entry.argv ?? []));
+    const started = info?.foreground_processes?.find((entry) => kind === "omo" ? omoProcessIdentity(entry, "", userHome()) !== null : isProcess(entry.argv ?? []));
     if (started) return started.pid;
-    const shellPid = info?.process_info?.shell_pid;
-    // the table query never outlasts what is left of the start's own time
+    const shellPid = info?.shell_pid;
     if (windows && typeof shellPid === "number" && descendantArgv(await windowsProcessTable(Math.max(500, Math.min(10_000, deadline - Date.now()))), shellPid).some(isProcess)) return null;
     await Bun.sleep(250);
   }

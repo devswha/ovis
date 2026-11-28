@@ -1,9 +1,4 @@
-/** Custom-runtime OmO identity and exact transcript binding through the real HTTP server
- * and Chromium, on owned herdr panes of the check's own session. Run after bun run build.
- * Two neutral launchers hold the same native session id in distinct OMO_CODING_AGENT_DIR
- * stores, a legacy `omo` launcher covers the argv identity, and a fourth neutral process
- * must stay unrecognized. Every byte of fixture text is synthetic. */
-import "./test-herdr.ts"; // a herdr session of its own: nothing shows in the user's
+import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +9,7 @@ import { createServer } from "../server/index.ts";
 import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { omoPanes, omoSessionFolder } from "../server/omo.ts";
 import { startShellAgent } from "../server/shell-agent.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-omo-browser-")));
 const launchers = join(root, "launchers");
@@ -186,6 +182,7 @@ try {
   assert.equal(negative.body.source, "scrollback");
   pass("the snapshot names only the omo panes; the no-evidence pane is undiscovered and scrollback");
 
+  checkChromeTmpdir();
   browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] ?? "/opt/google/chrome/chrome", headless: process.env["HEADED"] !== "1", args: ["--no-sandbox", "--no-proxy-server"] });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
   page = await context.newPage();
@@ -222,8 +219,6 @@ try {
 
   const logReset = await open(paneA);
   await logReset.getByText(textA, { exact: true }).waitFor();
-  // /new through the fixture's own control file: it releases the shared hold and takes
-  // an unwritten one; the open chat watches the conversation go empty, old text and all
   writeFileSync(controlA, `${AFTER_NEW_ID}\n`);
   const pending = await until("pane A holds an unwritten session", () => conversation(paneA), (answer) =>
     answer.body.source === "omo-transcript" && answer.body.history_id === `unwritten:${AFTER_NEW_ID}`);

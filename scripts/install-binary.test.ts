@@ -44,7 +44,6 @@ function release(base: string, version: string, privateKeyPem: string, host?: st
   return dir;
 }
 
-/** One PC: a HOME, a release folder, and a bin of stand-ins put before the system's on PATH */
 /** `<base>/v<version>/` as main's release step (todo 5) writes it: ovis-server.json holds only version, sources and
  * assets, signed by `privateKeyPem`; `edit` changes the manifest before it is signed */
 function oldShape(base: string, version: string, privateKeyPem: string, edit: (manifest: Record<string, unknown>) => void = () => {}): string {
@@ -72,15 +71,14 @@ function pc({ lockWait }: { lockWait?: number } = {}) {
   mkdirSync(home);
   mkdirSync(stand);
   const key = generateKeyPair();
-  const copy = lockWait === undefined ? testCopy(key.publicKey) : testCopy(key.publicKey).replace("\nINSTALL_LOCK_WAIT=600\n", `\nINSTALL_LOCK_WAIT=${lockWait}\n`);
-  if (lockWait !== undefined) expect(copy).toContain(`\nINSTALL_LOCK_WAIT=${lockWait}\n`);
+  const copy = lockWait === undefined ? testCopy(key.publicKey) : testCopy(key.publicKey).replace("\nINSTALL_LOCK_WAIT_SECONDS=600\n", `\nINSTALL_LOCK_WAIT_SECONDS=${lockWait}\n`);
+  if (lockWait !== undefined) expect(copy).toContain(`\nINSTALL_LOCK_WAIT_SECONDS=${lockWait}\n`);
   const argv = (call: string) => ["/bin/sh", "-c", `set -eu\nos=${PLATFORM.split("-")[0]}; arch=${PLATFORM.split("-")[1]}; platform=${PLATFORM}\n${copy}\n${call}`];
   const environment = (env: Record<string, string>) => ({ HOME: home, PATH: `${stand}:${process.env["PATH"]}`, OVIS_RELEASES_URL: `file://${releases}`, ...env });
   const run = (call: string, env: Record<string, string> = {}) => {
     const result = Bun.spawnSync(argv(call), { env: environment(env), stdout: "pipe", stderr: "pipe", timeout: 60_000 });
     return { code: result.exitCode, signal: result.signalCode, out: result.stdout.toString() + result.stderr.toString() };
   };
-  /** the same run, started now and awaited later: two of them overlap */
   const start = async (call: string, env: Record<string, string> = {}) => {
     const child = Bun.spawn(argv(call), { env: environment(env), stdout: "pipe", stderr: "pipe" });
     const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
@@ -94,7 +92,6 @@ function pc({ lockWait }: { lockWait?: number } = {}) {
   return { home, releases, key, run, start, standIn, dropStandIn, binary: join(home, ".local/share/ovis/bin/ovis-server"), ovis: join(home, ".local/share/ovis") };
 }
 
-/** every file and link under `dir`, with its SHA-256 or target */
 function snapshot(dir: string): Record<string, string> {
   const files: Record<string, string> = {};
   for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
@@ -212,7 +209,6 @@ describe.skipIf(process.platform === "win32")("install.sh installs the release's
     const { releases, key, start, ovis, home } = pc();
     const shas = new Map(["1.2.3", "1.2.4"].map((version) => [sha256(join(release(releases, version, key.privateKeyPem), releaseFile(PLATFORM))), version]));
     for (let pair = 0; pair < 20; pair++) {
-      // both start, then both wait for the barrier, so their installs begin together
       const barrier = join(home, `barrier-${pair}`);
       const wait = `while [ ! -e "${barrier}" ]; do sleep 0.01; done; `;
       const [first, second] = [pair % 2 ? "1.2.3" : "1.2.4", pair % 2 ? "1.2.4" : "1.2.3"];
@@ -239,8 +235,6 @@ describe.skipIf(process.platform === "win32")("install.sh installs the release's
     release(releases, "1.2.4", key.privateKeyPem);
     const sync = join(home, "sync");
     mkdirSync(sync);
-    // the first run, in its window (both files checked, nothing moved yet), goes on only once the second run says it
-    // waits for the lock, or has reached that window itself, which only a missing lock allows
     standIn("tar", `if [ "$RUN" = first ] && [ "$1" = -tzf ]; then
   : > "${sync}/first-in"
   n=0; until [ -e "${sync}/second-in" ] || grep -qs "waiting for it" "${sync}/second.out"; do n=$((n + 1)); [ "$n" -lt 3000 ] || break; sleep 0.01; done
@@ -265,7 +259,6 @@ exec "${Bun.which("tar")}" "$@"`);
     standIn("mkdir", `exec "${Bun.which("mkdir")}" -p "$@"`);
     const sync = join(home, "sync");
     mkdirSync(sync);
-    // inside the locked section (the archive is read there): a second run inside at once marks an overlap
     standIn("tar", `if [ "$1" = -tzf ]; then
   if (set -C; : > "${sync}/inside") 2>/dev/null; then sleep 0.05; rm -f "${sync}/inside"; else : > "${sync}/overlap"; fi
 fi
@@ -285,6 +278,88 @@ exec "${Bun.which("tar")}" "$@"`);
     expect(readFileSync(join(ovis, "bin", "dist", "index.html"), "utf8")).toMatch(/1\.2\.[34]/);
   }, 60_000);
 
+  it("leaves the lock to a waiter that claims it while the holder removes it, and both succeed", async () => {
+    const { releases, key, start, standIn, ovis, home } = pc();
+    release(releases, "1.2.3", key.privateKeyPem);
+    release(releases, "1.2.4", key.privateKeyPem);
+    const sync = join(home, "sync");
+    mkdirSync(sync);
+    const lock = join(ovis, ".install.lock");
+    standIn("tar", `[ "$RUN" != first ] || [ "$1" != -tzf ] || : > "${sync}/first-holds"
+exec "${Bun.which("tar")}" "$@"`);
+    // the first removal of a lock folder pauses where rm -rf does, between the pid it unlinks and the folder it
+    // removes, until another run holds the lock; then, as rm -f, it takes a folder already gone as removed
+    standIn("rm", `case "$*" in "-rf ${lock}"*) if [ -d "$2" ] && (set -C; : > "${sync}/paused") 2>/dev/null; then
+  "${Bun.which("rm")}" -f "$2/pid"
+  end=$(($(date +%s) + 20)); until [ -s "${lock}/pid" ] || [ "$(date +%s)" -ge "$end" ]; do sleep 0.01; done
+  [ ! -s "${lock}/pid" ] || : > "${sync}/claimed"
+  rmdir "$2" 2>/dev/null || [ ! -e "$2" ] || exec rmdir "$2"
+  exit 0
+fi ;; esac
+exec "${Bun.which("rm")}" "$@"`);
+    const first = start("install_binary 1.2.3", { RUN: "first" });
+    const second = start(`end=$(($(date +%s) + 20)); until [ -e "${sync}/first-holds" ]; do
+  [ "$(date +%s)" -lt "$end" ] || { echo "the first run never held the lock: no ${sync}/first-holds after 20 s" >&2; exit 3; }; sleep 0.01
+done; install_binary 1.2.4`);
+    const [one, two] = await Promise.all([first, second]);
+    expect(two.code, two.out).toBe(0);
+    expect(existsSync(join(sync, "claimed")), "the second run never claimed the lock during the first's release").toBe(true);
+    expect(one.code, one.out).toBe(0);
+    expect(readFileSync(join(ovis, "bin", "ovis-server.json"), "utf8")).toContain('"version": "1.2.4"');
+    expect(readdirSync(ovis).filter((name) => name.startsWith(".install.lock"))).toEqual([]);
+  }, 90_000);
+
+  for (const paused of ["release", "sweep"] as const) it(`fails no run when the holder's sweep and a release remove the same folder at once, with an rm that refuses a folder removed meanwhile (busybox), the ${paused} inside it first`, async () => {
+    const { releases, key, start, standIn, ovis, home } = pc();
+    release(releases, "1.2.3", key.privateKeyPem);
+    release(releases, "1.2.4", key.privateKeyPem);
+    const sync = join(home, "sync");
+    mkdirSync(sync);
+    const lock = join(ovis, ".install.lock");
+    const rm = Bun.which("rm");
+    standIn("tar", `[ "$RUN" != first ] || [ "$1" != -tzf ] || : > "${sync}/first-holds"
+exec "${Bun.which("tar")}" "$@"`);
+    // the first run's release, or the second's sweep, removes its folder as busybox rm -rf does: it unlinks what is
+    // inside, then fails on the folder if the other run removed it meanwhile. The other removes it only once that one
+    // is inside it, so the two meet
+    const inside = paused === "release" ? "first" : "second";
+    standIn("rm", `case "$*" in "-rf ${lock}.gone-"*) if [ -d "$2" ]; then
+  end=$(($(date +%s) + 20))
+  if [ "$RUN" = ${inside} ] && (set -C; : > "${sync}/inside") 2>/dev/null; then
+    "${rm}" -f "$2/pid"
+    until [ ! -e "$2" ] || [ "$(date +%s)" -ge "$end" ]; do sleep 0.01; done
+    [ ! -e "$2" ] || exec rmdir "$2"
+    : > "${sync}/refused"
+    echo "rm: can't remove '$2': No such file or directory" >&2
+    exit 1
+  elif [ "$RUN" != ${inside} ] && (set -C; : > "${sync}/other") 2>/dev/null; then
+    until { [ -e "${sync}/inside" ] && [ ! -e "$2/pid" ]; } || [ "$(date +%s)" -ge "$end" ]; do sleep 0.01; done
+  fi
+fi ;; esac
+exec "${rm}" "$@"`);
+    const first = start("install_binary 1.2.3", { RUN: "first" });
+    const second = start(`end=$(($(date +%s) + 20)); until [ -e "${sync}/first-holds" ]; do
+  [ "$(date +%s)" -lt "$end" ] || { echo "the first run never held the lock: no ${sync}/first-holds after 20 s" >&2; exit 3; }; sleep 0.01
+done; install_binary 1.2.4`, { RUN: "second" });
+    const [one, two] = await Promise.all([first, second]);
+    expect(one.code, one.out).toBe(0);
+    expect(two.code, two.out).toBe(0);
+    expect(existsSync(join(sync, "refused")), "the two removals never met in the same folder").toBe(true);
+    expect(readFileSync(join(ovis, "bin", "ovis-server.json"), "utf8")).toContain('"version": "1.2.4"');
+    expect(readdirSync(ovis).filter((name) => name.startsWith(".install.lock"))).toEqual([]);
+  }, 90_000);
+
+  it("removes the lock folder a run cut off while it released the lock left, and fails no run whose pid it names", () => {
+    const { releases, key, run, ovis } = pc();
+    release(releases, "1.2.3", key.privateKeyPem);
+    mkdirSync(join(ovis, ".install.lock.gone-1"), { recursive: true });
+    writeFileSync(join(ovis, ".install.lock.gone-1", "pid"), "1\n");
+    const result = run(`mkdir -p "${ovis}/.install.lock.gone-$$/.install.lock" && echo 1 > "${ovis}/.install.lock.gone-$$/.install.lock/pid" && install_binary 1.2.3`);
+    expect(result.code, result.out).toBe(0);
+    expect(result.out).toContain("installed Ovis 1.2.3");
+    expect(readdirSync(ovis).filter((name) => name.startsWith(".install.lock"))).toEqual([]);
+  });
+
   it("lets one waiter at a time break a stale lock, with a mkdir that never refuses", async () => {
     const { releases, key, start, standIn, ovis, home } = pc();
     release(releases, "1.2.3", key.privateKeyPem);
@@ -292,12 +367,10 @@ exec "${Bun.which("tar")}" "$@"`);
     const sync = join(home, "sync");
     mkdirSync(sync);
     const lock = join(ovis, ".install.lock");
-    // a lock naming no holder, older than a minute: the breaker asks find its age, so a second breaker at once shows there
     standIn("find", `if [ "$1" = "${lock}" ]; then
   if (set -C; : > "${sync}/breaking") 2>/dev/null; then sleep 0.1; rm -f "${sync}/breaking"; else : > "${sync}/two-breakers"; fi
 fi
 exec "${Bun.which("find")}" "$@"`);
-    // an empty pid file: nobody can claim the lock, and nobody is named as its holder, so only breaking it frees it
     mkdirSync(lock, { recursive: true });
     writeFileSync(join(lock, "pid"), "");
     utimesSync(lock, new Date(Date.now() - 300_000), new Date(Date.now() - 300_000));
@@ -316,7 +389,6 @@ exec "${Bun.which("find")}" "$@"`);
     const sync = join(home, "sync");
     mkdirSync(sync);
     const lockPid = join(ovis, ".install.lock", "pid");
-    // the breaker's first read of the holder pauses, after it, until the test has put a fresh holder in place
     standIn("cat", `if [ "$1" = "${lockPid}" ] && [ ! -e "${sync}/judged" ]; then
   "${Bun.which("cat")}" "$1"; : > "${sync}/judged"
   until [ -e "${sync}/fresh" ]; do sleep 0.01; done; exit 0
@@ -451,7 +523,6 @@ exec "${Bun.which("cat")}" "$@"`);
     expect(run("install_binary 1.2.3").code).toBe(0);
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
     writeFileSync(join(home, ".local", "bin", "herdr"), "#!/bin/sh\n", { mode: 0o755 });
-    // the binary the launcher runs reports the herdr it finds, as herdrConfigDir() asks Bun.which
     const binary = realpathSync(join(ovis, "bin", "ovis-server"));
     rmSync(binary);
     writeFileSync(binary, "#!/bin/sh\ncommand -v herdr || echo none\n", { mode: 0o755 });

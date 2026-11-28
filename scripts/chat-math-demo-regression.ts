@@ -1,23 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser } from "playwright-core";
+import type { Browser } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { appFaces } from "./app-faces.ts";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
-// Math in a reply (#2407): `$…$` inline, `$$…$$` and a ```math fence as display math, beside
-// `\(…\)` and `\[…\]`, while prices (`$5 and $10`) stay text. On the unmodified app over the
-// demo's fixture transport, at 1280 and 390, Codex palette dark and light: every formula is drawn
-// by KaTeX in the theme's text color, the prices read as written, and the reply's MD copy keeps the
-// source. The omp pane's conversation answers TURNS; all files and HTTP traffic stay in this
-// disposable, loopback-only app and no herdr session is opened. Screenshots go to UI_EVIDENCE_DIR
-// when it is set.
-const app = mkdtempSync(join(tmpdir(), "herdr-chat-math-demo-"));
+// All files and HTTP traffic stay in this disposable, loopback-only app and no herdr session is opened.
 const evidence = process.env["UI_EVIDENCE_DIR"] || null;
-if (evidence !== null) mkdirSync(evidence, { recursive: true });
 
 const PANE = panes.omp;
 const REPLY = [
@@ -44,32 +34,24 @@ const TURNS = [
   { role: "assistant", ts: "2026-10-31T10:00:05.000Z", parts: [{ kind: "text", text: REPLY }] },
 ];
 
-async function prepareDemo(): Promise<void> {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  const html = readFileSync(index, "utf8");
-  assert.match(html, /<script type="module"/);
-  // over the demo's own fetch: only this pane's conversation read is answered here
-  const override = `<script>(() => {
-    const demo = window.fetch;
-    const turns = ${JSON.stringify(TURNS).replaceAll("<", "\\u003c")};
-    window.fetch = (input, init) => {
-      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
-      if (url.pathname === "/api/pane/conversation" && url.searchParams.get("pane_id") === ${JSON.stringify(PANE)}) {
-        const body = { source: "claude-transcript", history_id: "math", cursor: null, turns: url.searchParams.has("before") ? [] : turns };
-        return Promise.resolve(new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } }));
-      }
-      return demo(input, init);
-    };
-  })();</script>`;
-  writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${override}\n    <script type="module"`));
-}
+const override = `<script>(() => {
+  const demo = window.fetch;
+  const turns = ${JSON.stringify(TURNS).replaceAll("<", "\\u003c")};
+  window.fetch = (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
+    if (url.pathname === "/api/pane/conversation" && url.searchParams.get("pane_id") === ${JSON.stringify(PANE)}) {
+      const body = { source: "claude-transcript", history_id: "math", cursor: null, turns: url.searchParams.has("before") ? [] : turns };
+      return Promise.resolve(new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } }));
+    }
+    return demo(input, init);
+  };
+})();</script>`;
 
 async function check(browser: Browser, origin: string, width: number, theme: "dark" | "light"): Promise<void> {
   const phone = width <= 480;
-  const context = await browser.newContext(phone
-    ? { viewport: { width, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en-US" }
-    : { viewport: { width, height: 900 }, locale: "en-US" });
+  const context = await appContext(browser, phone
+    ? { viewport: { width, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true }
+    : { viewport: { width, height: 900 } });
   try {
     await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin });
     await context.addInitScript(([settings, pane]) => {
@@ -101,7 +83,6 @@ async function check(browser: Browser, origin: string, width: number, theme: "da
 
     await scope.locator(".markdown-math-display").first().scrollIntoViewIfNeeded();
     if (evidence !== null) await page.screenshot({ path: join(evidence, `chat-math-codex-${theme}-${width}.png`) });
-    // the reply's MD copy is its source, dollars and all
     const reply = scope.locator("article.chat-turn-agent").last();
     await reply.scrollIntoViewIfNeeded();
     await reply.hover();
@@ -113,27 +94,8 @@ async function check(browser: Browser, origin: string, width: number, theme: "da
   } finally { await context.close(); }
 }
 
-try {
-  await prepareDemo();
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      for (const width of [1280, 390]) {
-        for (const theme of ["dark", "light"] as const) await check(browser, `http://127.0.0.1:${server.port}`, width, theme);
-      }
-    } finally { await browser.close(); }
-  } finally { await server.stop(true); }
-} finally {
-  rmSync(app, { recursive: true, force: true });
-}
+await withDemoBrowser({ tempPrefix: "herdr-chat-math-demo-", afterTransport: `\n    ${override}` }, async ({ browser, origin }) => {
+  for (const width of [1280, 390]) {
+    for (const theme of ["dark", "light"] as const) await check(browser, origin, width, theme);
+  }
+});

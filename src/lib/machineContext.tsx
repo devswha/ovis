@@ -1,10 +1,11 @@
-import { createContext, useContext, useMemo } from "react";
+import { createContext, useContext, useMemo, type RefObject } from "react";
 import * as api from "./api.ts";
-import type { HerdrIdentity } from "../../shared/machines.ts";
+import type { HerdrIdentity, Machine } from "../../shared/machines.ts";
 import type { CreateWorktreeRequest, OpenWorktreeRequest, PaneDirection, PluginActionRequest, RemoveWorktreeRequest, SessionHistoryAgent, SessionResumeRequest, SplitPaneDirection } from "../../shared/protocol.ts";
 import type { ZoomMode } from "./layoutMap.ts";
 import { ReorderCoordinator } from "./workspaceOrder.ts";
 export const MachineContext = createContext("local");
+export const MachineRosterContext = createContext<RefObject<readonly Machine[]> | null>(null);
 export const useMachineId = () => useContext(MachineContext);
 /**
  * Which layout calls a PC's herdr answers, so the components offer only those, as VS Code's `when`
@@ -17,12 +18,9 @@ export const useMachineId = () => useContext(MachineContext);
 export interface LayoutOffer { rename: boolean; split: boolean; move: boolean; arrange: boolean; worktrees: boolean }
 export const FULL_LAYOUT: LayoutOffer = Object.freeze({ rename: true, split: true, move: true, arrange: true, worktrees: true });
 const NO_LAYOUT: LayoutOffer = Object.freeze({ rename: false, split: false, move: false, arrange: false, worktrees: false });
-/** one object per herdr-core offer, so a context value or a hook's dependency stays the same between renders */
 const coreOffers = new Map<string, LayoutOffer>();
 export const AppLayoutContext = createContext<LayoutOffer>(FULL_LAYOUT);
 export const useAppLayout = () => useContext(AppLayoutContext);
-/** the value AppLayoutContext carries for a PC's herdr (this PC's from /api/health, a remote PC's from its roster entry);
- * a herdr not known yet (health still loading) offers none of the layout calls, until it says what it is */
 export const appLayoutOf = (herdr: HerdrIdentity | undefined): LayoutOffer => {
   if (herdr === undefined) return NO_LAYOUT;
   if (herdr.runtime !== "herdr-core") return FULL_LAYOUT;
@@ -32,10 +30,8 @@ export const appLayoutOf = (herdr: HerdrIdentity | undefined): LayoutOffer => {
   if (!offer) coreOffers.set(key, offer = Object.freeze({ rename, split, move, arrange, worktrees }));
   return offer;
 };
-/** App's workspace order for every PC (lib/workspaceOrder.ts); a Sidebar outside App gets its own */
 export const ReorderContext = createContext(new ReorderCoordinator());
 export const useReorderCoordinator = () => useContext(ReorderContext);
-/** Bound functions retain their owner across an async upload or a fast PC switch. */
 export function useMachineApi() {
   const id = useMachineId();
   return useMemo(() => ({
@@ -44,7 +40,7 @@ export function useMachineApi() {
     peekPaneConversation: (pane: string, prompts?: number) => api.peekPaneConversation(pane, id, prompts),
     searchPaneConversation: (pane: string, query: string, page?: Parameters<typeof api.searchPaneConversation>[3]) => api.searchPaneConversation(pane, query, id, page),
     fetchPanePrompt: (pane: string) => api.fetchPanePrompt(pane, id),
-    fetchPanePromptState: (pane: string) => api.fetchPanePromptState(pane, id),
+    fetchPanePromptState: (pane: string, signal?: AbortSignal) => api.fetchPanePromptState(pane, id, signal),
     answerPanePrompt: (answer: Parameters<typeof api.answerPanePrompt>[0]) => api.answerPanePrompt(answer, id),
     uploadPaneImage: (pane: string, image: Blob) => api.uploadPaneImage(pane, image, id),
     fetchPaneCommands: (pane: string) => api.fetchPaneCommands(pane, id),

@@ -12,12 +12,17 @@
 #    SHA-256; where it cannot run, they are mirrored.
 # 2. Installs Ovis as a herdr plugin (a small plugin folder, ~/.local/share/ovis/plugin, that herdr
 #    links and that runs the binary), so it starts with herdr, and starts it now when herdr is running.
+#    When herdr is not running (just installed, or installed and stopped), starts herdr's server headless,
+#    and the app with it, and has a user service start it again: on a Linux PC used without a desktop,
+#    ovis-herdr.service, where lingering is on or can be turned on without a password, so at boot and past
+#    every logout; on a Mac, at the screen or over SSH, the Mac app's LaunchAgent sh.ovis.herdr-server, at
+#    login, inside the person's login session. Elsewhere (a Linux desktop, no lingering, --no-service) herdr
+#    is started once and outlives a logout. No service stops herdr.
 #
 # A release from before the compiled server, a branch (OVIS_REF), an install from source that is
 # already here, or OVIS_FROM_SOURCE=1 keep the earlier way instead: Bun (its own installer, into
-# ~/.bun), herdr's plugin checkout built from source, which Settings → Updates keeps current, and Node
-# 22 (the official build, checked against its published SHA-256) only where the Rust PTY host cannot
-# be installed.
+# ~/.bun) and herdr's plugin checkout built from source, which Settings → Updates keeps current, with
+# the release's Rust PTY host beside it.
 # 3. When Tailscale runs on this PC, serves the app to your tailnet (`tailscale serve`, on the first
 #    free HTTPS port, or only the one OVIS_TAILSCALE_HTTPS_PORT names) and prints the address
 #    a phone opens as a QR code (scripts/plugin.ts phone).
@@ -26,19 +31,31 @@
 #    never stars by itself.
 #
 # It also puts an `ovis` command into ~/.local/bin, which runs the installed Ovis's own command line
-# (scripts/plugin.ts): `ovis add` adds this PC to your Ovis account from its terminal, `ovis pair` shows
-# a pairing code, `ovis status` says whether the app runs. To end the install with `ovis add`:
+# (scripts/plugin.ts): `ovis login` (also `ovis add`) adds this PC to your Ovis account from its terminal,
+# `ovis pair` shows a pairing code, `ovis status` says whether the app runs, `ovis --help` lists the rest. To end the install with `ovis add`:
 #
 #   curl -fsSL https://ovis.sh/install.sh | sh -s -- --add
 #
-# That step needs a terminal to sign in and answer at; without one the installer says what to run.
+# That step needs a terminal to sign in and answer at; without one the installer says what to run. With
+# the account named, it needs none, so a script or a coding agent can run it, and the installer then exits
+# non-zero when the PC was not added:
+#
+#   curl -fsSL https://ovis.sh/install.sh | sh -s -- --add --account <id>
+#
+# Or the PC joins the account with an invite a device signed in to it made (one line, ovis-join:1:…), with no sign-in
+# here: the installer ends with `ovis join`, which takes the line in its environment, never on a command line. The line
+# is a key, so give it in a file (--join-file <path>) or in OVIS_JOIN: `--join <line>` works too, but shows in the process
+# list to every user of this PC while the install runs. `ovis join` asks at a terminal whether the invite's account is
+# yours; --account <id> answers that where nobody can type (without it there, nothing is installed), and the installer
+# then exits non-zero unless the PC joined:
+#
+#   curl -fsSL https://ovis.sh/install.sh | sh -s -- --join-file ./ovis-invite.txt --account <id>
 #
 # On a PC with herdr-core (hc, the core the Herdr app runs on) and no herdr, steps 1 and 2 are instead:
 # the compiled server alone (from source: Bun, and Ovis in its own checkout, ~/.local/share/ovis/app),
 # started on herdr-core (OVIS_RUNTIME=herdr-core) as a user service that starts again at login
 # (systemd's on Linux, launchd's on macOS).
 #
-# Run it again at any time: what is already there is kept, and step 3 is repeated.
 #   OVIS_REF=<branch or tag>   install that ref instead of the latest release (a branch: from source)
 #   OVIS_RELEASES_URL=<https:// address or file:// folder>   where releases are downloaded from,
 #     laid out as GitHub's (<url>/v<version>/<file>); the pinned key checks the server, its client and the
@@ -47,26 +64,40 @@
 #   OVIS_RUNTIME=herdr|herdr-core   pick the runtime instead of going by what is installed
 #   OVIS_TAILSCALE_HTTPS_PORT=<port>   serve the app on that HTTPS port only, keeping 443 free
 #   OVIS_ADD=1   the same as --add, for where the installer's arguments cannot be given
+#   OVIS_ADD_ACCOUNT=<id>   the same as --account <id>
+#   OVIS_JOIN=<line>   the same as --join <line>, kept out of the process list; the installer removes it from what it starts
+#   OVIS_NO_SERVICE=1   the same as --no-service: where herdr is not running, start it once and set up no service or
+#     lingering, so it starts again only when you open it
 set -eu
 
 REPO="devswha/ovis"
 PLUGIN="devswha.ovis"
-# the id before the rename: an install under it moves to PLUGIN, keeping its config
 LEGACY_PLUGIN="devswha.herdr-web-ui"
 BIN_DIR="$HOME/.local/bin"
+# where an earlier install put Ovis's own Node: still on PATH here, for a signature check that has no openssl 3
 NODE_DIR="$HOME/.local/share/ovis/node"
-# where an install from before the rename put it
 LEGACY_NODE_DIR="$HOME/.local/share/herdr-web-ui/node"
-# Ovis on herdr-core: its checkout, and the user service that starts it at login
 APP_DIR="$HOME/.local/share/ovis/app"
 SERVICE="ovis"
 AGENT_LABEL="sh.ovis.server"
-# Official digests from nodejs.org/dist/v22.23.2/SHASUMS256.txt, as scripts/build-remote-bundle.ts pins them
+HERDR_SERVICE="ovis-herdr"
+# the unit's own line, which tells a unit this installer wrote from one of the same name that is someone else's
+HERDR_UNIT_DESCRIPTION="herdr for Ovis: herdr's server, headless, which starts Ovis"
+# the Mac app's (app/mac/Sources/OvisMac/Run.swift, Ovis.agentLabel): one LaunchAgent, whichever of the two set it up
+HERDR_AGENT_LABEL="sh.ovis.herdr-server"
+# the first release whose `ovis add` takes --account (scripts/plugin-link.ts): an older one would not check the account
+ACCOUNT_SINCE="0.5.10"
+# the first release with `ovis join` (scripts/plugin-join.ts), and the shape of the line it takes
+# (shared/account-list-join.ts: JOIN_LINE_PREFIX, then base64url, JOIN_LINE_MAX_CHARS in all)
+JOIN_SINCE="0.5.10"
+JOIN_PREFIX="ovis-join:1:"
+JOIN_MAX=1024
+# the Node a signature check fetches where it has neither openssl 3 nor node (pick_checker); official digests from
+# nodejs.org/dist/v22.23.2/SHASUMS256.txt
 NODE_VERSION="v22.23.2"
 # the second line of the `ovis` launcher this installer writes: a file of that name without it is not ours
 LAUNCHER_MARK="# ovis launcher, written by install.sh"
-USAGE="usage: curl -fsSL https://ovis.sh/install.sh | sh -s -- [--add]"
-# The release's compiled server (install_binary): bin is a link to the release that runs, under releases/
+USAGE="usage: curl -fsSL https://ovis.sh/install.sh | sh -s -- [--add | --join-file <path>] [--account <id>] [--no-service] [--help]"
 OVIS_HOME="$HOME/.local/share/ovis"
 # The public half of the key every release's ovis-server.json is signed with: scripts/server-manifest.ts
 # RELEASE_PUBLIC_KEY, which the release jobs check against too. Nothing else can stand in for it.
@@ -75,8 +106,7 @@ RELEASE_PUBLIC_KEY="C8+dOD0gpFHoy008ZqHO89vXutaLqlt5uWyIh250OiY="
 # and refuses the same signature over another message, so one that says yes to everything is never trusted
 VECTOR_KEY="PUAXw+hDiVqStwqnTRt+vJyYLM8uxJaMwM1V8Sr0Zgw="
 VECTOR_SIG="kqAJqfDUyrhyDoILX2QlQKKye1QWUD+Ps3YiI+vbadoIWsHkPhWZbkWPNhPQ8R2MOHsurrQwKu6wDSkWErsMAA=="
-# seconds one install waits for another's lock on OVIS_HOME before it gives up (install_lock)
-INSTALL_LOCK_WAIT=600
+INSTALL_LOCK_WAIT_SECONDS=600
 
 say() { printf '%s\n' "Ovis: $*"; }
 
@@ -100,8 +130,6 @@ adopt_legacy_config() {
 link() { if [ "$terminal" = 1 ]; then printf '\033]8;;%s\033\\%s\033]8;;\033\\' "$1" "$1"; else printf '%s' "$1"; fi; }
 fail() { printf '%s\n' "Ovis: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || fail "needs '$1', which is not installed. Install it and run this again."; }
-# The highest vX.Y.Z tag, as the updater picks it: a new install gets what existing ones run,
-# never the commits merged to main since the last release.
 latest_release() {
   git ls-remote --tags --refs "https://github.com/$REPO.git" 'v*' 2>/dev/null |
     sed -n 's|.*refs/tags/\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$|\1|p' |
@@ -118,7 +146,6 @@ ref_plugin_id() {
   fi
   printf '%s' "$ref_id"
 }
-# at_least 1.4.0 1.10.2: is the second dotted version the first or newer
 at_least() {
   awk -v want="$1" -v have="$2" 'BEGIN { split(want, w, "."); split(have, h, ".");
     for (i = 1; i <= 3; i++) { if (h[i] + 0 > w[i] + 0) exit 0; if (h[i] + 0 < w[i] + 0) exit 1 } exit 0 }'
@@ -127,14 +154,16 @@ sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else sh
 
 # gh api, given 10 seconds: a gh that does not answer must not hold up an install that is done.
 # The watcher looks once a second, so it is gone soon after gh is; a gh that ignores TERM is killed.
+# OVIS_STAR_GH_TIMEOUT_SECONDS, OVIS_STAR_GH_KILL_GRACE_SECONDS and OVIS_STAR_READ_TIMEOUT_SECONDS
+# (offer_star) only let scripts/install-star.test.ts shorten these waits.
 gh_api() {
   gh api --hostname github.com "$@" </dev/null &
   gh_pid=$!
   (
     waited=0
-    while [ "$waited" -lt 10 ]; do sleep 1; kill -0 "$gh_pid" 2>/dev/null || exit 0; waited=$((waited + 1)); done
+    while [ "$waited" -lt "${OVIS_STAR_GH_TIMEOUT_SECONDS:-10}" ]; do sleep 1; kill -0 "$gh_pid" 2>/dev/null || exit 0; waited=$((waited + 1)); done
     kill -TERM "$gh_pid" 2>/dev/null || exit 0
-    sleep 2
+    sleep "${OVIS_STAR_GH_KILL_GRACE_SECONDS:-2}"
     kill -KILL "$gh_pid" 2>/dev/null || true
   ) >/dev/null 2>&1 &
   watch_pid=$!
@@ -167,7 +196,6 @@ starred() {
 offer_star() {
   [ "$terminal" = 1 ] && [ -z "${CI:-}" ] || return 0
   command -v bash >/dev/null 2>&1 || return 0
-  # perl is what checks the terminal is this install's to ask at, and empties what was typed before
   command -v perl >/dev/null 2>&1 || return 0
   (exec </dev/tty) 2>/dev/null || return 0
   # Only in the foreground: a background job that reached for the terminal would be stopped, with no
@@ -181,7 +209,7 @@ offer_star() {
   trap 'echo; exit 0' INT
   printf '%s' "Ovis: star it now with the GitHub account gh is signed in to? [y/N] " >/dev/tty 2>/dev/null || { trap - INT; return 0; }
   # shellcheck disable=SC2016 # bash's variable, not this shell's
-  answer=$(bash -c 'read -r -t 20 answer </dev/tty && printf %s "$answer"' 2>/dev/null) || { answer=""; echo; }
+  answer=$(bash -c 'read -r -t "$1" answer </dev/tty && printf %s "$answer"' ovis-star "${OVIS_STAR_READ_TIMEOUT_SECONDS:-20}" 2>/dev/null) || { answer=""; echo; }
   trap - INT
   case "$answer" in
     y | Y | yes | Yes | YES) ;;
@@ -194,9 +222,6 @@ offer_star() {
   fi
 }
 
-# After a first install, on a PC with a desktop: opens the app in the browser, which is where its
-# Install button is. Over SSH, or with no desktop, it says how to reach the app instead of opening
-# one nobody sees. Nothing here can fail the install, and nothing reads stdin.
 open_app() {
   [ "$new_install" = 1 ] || return 0
   if [ "${binary:-0}" = 1 ]; then
@@ -235,16 +260,12 @@ open_app() {
   fi
 }
 
-# The folder of the code that runs for the checkout $1 (bun -e "$(release_js)" <checkout>): the release
-# Settings → Updates installed for it, or the checkout itself. JavaScript, with no single quote in it,
-# since the launcher keeps it in one. It finds what scripts/plugin.ts finds, the same way:
+# JavaScript, with no single quote in it, since the launcher keeps it in one. It finds what
+# scripts/plugin.ts finds, the same way:
 # - the settings: the shell's own, then the plugin's `env` and `.env` files (KEY=value lines, read and
 #   never run; `.env` wins, and a file wins over the shell), each with its names from before the rename
 #   (readEnvFile, mergeEnvLayers). The files are in HERDR_PLUGIN_CONFIG_DIR, else the folder herdr
 #   names for the plugin, else ~/.config/ovis;
-# - the state dir: OVIS_STATE_DIR, else ovis under XDG_CONFIG_HOME or ~/.config, or herdr-web-ui there
-#   while that still holds state of its own (defaultStateDir);
-# - the port: PORT, else the one a start settled on (<state>/plugin-port), else 7317;
 # - the release: updates/<the first 16 of sha256("<checkout>:<port>")>/current.json and no other
 #   folder, taken only while it names the checkout's commit and a release-* folder of its own
 #   (updateStateDir, activePluginScript). Another port's folder, or another checkout's at the same
@@ -332,17 +353,12 @@ release_js() {
 EOF
 }
 
-# The `ovis` launcher, as written into BIN_DIR. It holds no path of this install: where Ovis is, it
-# looks up each time it runs, so an update, a reinstall or a move to herdr-core needs no new launcher.
-# First the herdr plugin, under its id or the one before the rename; then Ovis on herdr-core (its
-# checkout, with the settings and state dirs its service gives it). The plugin first, as the installer
-# has it: with a plugin listed it installs herdr-core's Ovis nowhere, so a checkout found beside a
-# plugin is an earlier install the plugin took over from. scripts/plugin.ts itself hands `add` on
-# to the release that runs, so the launcher picks no version; a checkout from before `add` and `login`
-# gets the name it knows, `link`. herdr's checkout stays at the version first installed, so one from
-# before `link` cannot hand on at all: for it the launcher finds the release that runs, as
-# running_code does below (release_js, which the launcher carries), and runs that; where that one has
-# no `link` either, it says to update. `tui` is handed on the same way.
+# herdr's checkout stays at the version first installed while Settings → Updates runs newer releases, so
+# the launcher finds the release that runs, as running_code does below (release_js, which the launcher
+# carries), and runs every command but start and stop there: status and the usage then name that
+# release, and a checkout from before `link`, `tui` or `join` still has them. start and stop stay with
+# the checkout, which starts that release's server and finds it by its own path. Where the release that
+# runs lacks a command too, the launcher says to update.
 launcher_text() {
   printf '%s\n' '#!/bin/sh' "$LAUNCHER_MARK"
   cat <<'EOF'
@@ -407,12 +423,15 @@ if [ -z "$root" ] || [ ! -f "$root/scripts/plugin.ts" ]; then
 fi
 code=$root
 case "${1:-}" in
+  start | stop) ;;
+  *)
+    # --no-env-file: a .env in the folder it runs in is some project's, not Ovis's settings
+    code=$(bun --no-env-file -e "$release_js" "$root" 2>/dev/null </dev/null) || code=$root
+    [ -n "$code" ] || code=$root
+    ;;
+esac
+case "${1:-}" in
   add | login | link)
-    if ! grep -qs '"link"' "$root/scripts/plugin.ts"; then
-      # a checkout from before link: Settings → Updates runs newer releases from the app's state dir
-      code=$(bun -e "$release_js" "$root" 2>/dev/null </dev/null) || code=$root
-      [ -n "$code" ] || code=$root
-    fi
     if grep -qs COMMAND_ALIASES "$code/scripts/plugin.ts"; then
       :
     elif grep -qs '"link"' "$code/scripts/plugin.ts"; then
@@ -424,14 +443,15 @@ case "${1:-}" in
     fi
     ;;
   tui)
-    # a checkout from before ovis tui: the release Settings → Updates installed may know it
-    if ! grep -qs '"tui"' "$root/scripts/plugin.ts"; then
-      code=$(bun -e "$release_js" "$root" 2>/dev/null </dev/null) || code=$root
-      [ -n "$code" ] || code=$root
-      if ! grep -qs '"tui"' "$code/scripts/plugin.ts"; then
-        echo "ovis: this Ovis is from before ovis tui. Update it in Settings → Updates, then run this again" >&2
-        exit 1
-      fi
+    if ! grep -qs '"tui"' "$code/scripts/plugin.ts"; then
+      echo "ovis: this Ovis is from before ovis tui. Update it in Settings → Updates, then run this again" >&2
+      exit 1
+    fi
+    ;;
+  join)
+    if [ ! -f "$code/scripts/plugin-join.ts" ]; then
+      echo "ovis: this Ovis is from before ovis join. Update it in Settings → Updates, then run this again" >&2
+      exit 1
     fi
     ;;
 esac
@@ -439,9 +459,6 @@ exec bun "$code/scripts/plugin.ts" "$@"
 EOF
 }
 
-# Another program called ovis on the user's own PATH, outside BIN_DIR: its path in $other_ovis (empty:
-# none), and in $other_ovis_hidden whether BIN_DIR comes before it there, so that a launcher in BIN_DIR
-# would take its name.
 find_other_ovis() {
   other_ovis=""
   other_ovis_hidden=0
@@ -462,12 +479,11 @@ find_other_ovis() {
   [ -n "$other_ovis" ] || other_ovis_hidden=0
 }
 
-# Writes the launcher, and says in $launcher_ours whether BIN_DIR/ovis is it. A file of that name the
-# installer did not write (no mark on its second line, or a link) is someone's own: it stays, and the
-# installer says so. So does another ovis elsewhere on the PATH: where BIN_DIR comes first, a new
-# launcher would take its name, so none is written; where it comes first, the launcher is written and
-# the installer says which one the name runs, and that it is the launcher's once BIN_DIR comes first (a
-# profile that puts ~/.local/bin first does that at the next login). Nothing here can fail the install.
+# A file of that name the installer did not write (no mark on its second line, or a link) is someone's
+# own: it stays, and the installer says so. So does another ovis elsewhere on the PATH: where BIN_DIR
+# comes first, a new launcher would take its name, so none is written; where it comes first, the
+# launcher is written and the installer says which one the name runs, and that it is the launcher's once
+# BIN_DIR comes first (a profile that puts ~/.local/bin first does that at the next login).
 write_launcher() {
   launcher="$BIN_DIR/ovis"
   launcher_ours=0
@@ -511,9 +527,6 @@ quoted() {
   esac
 }
 
-# How to call the launcher, in what the installer prints: by its name where the user's own PATH finds
-# it, by its path where it does not (or finds another ovis first), and without a launcher of ours, the
-# script it would run ($add_code, as find_add_name picks it), which is what the launcher itself ends at.
 ovis_command() {
   if [ "$launcher_ours" != 1 ] && [ "${binary:-0}" = 1 ]; then
     printf '%s plugin' "$(quoted "$OVIS_HOME/bin/ovis-server")"
@@ -526,11 +539,6 @@ ovis_command() {
   fi
 }
 
-# The script that adds this PC, by its folder in $add_code, and the name it knows the add step by in
-# $add_name: `add`, `link` for one from before `add`, or nothing for one from before both, which cannot
-# add a PC from its terminal. The checkout's own script where it knows `link`: it hands on to the
-# release that runs by itself, with settings the installer does not read. Only a checkout from before
-# `link` cannot, so for it the release that runs ($code) is the script.
 find_add_name() {
   if [ "${binary:-0}" = 1 ]; then
     add_code=$OVIS_HOME
@@ -553,20 +561,30 @@ find_add_name() {
 # typed during the minutes of its sign-in would approve the first device that asks: nothing this
 # installer discards before the add starts covers those. The reader that takes a line only when it
 # was typed under the request shown, and approves only with that request's own digits, is `answerOf`
-# (scripts/plugin-link.ts), a name only releases with that reader have. Looked for in the release that
-# runs ($code): the checkout's own script hands the add on to it (find_add_name).
+# (scripts/plugin-link.ts), a name only releases with that reader have.
 add_reads_answers() {
   [ "${binary:-0}" != 1 ] || return 0
   grep -qs 'export function answerOf' "${code:-$root}/scripts/plugin-link.ts"
 }
 
-# The command that adds this PC, as the closing lines print it: `ovis add` through the launcher, which
-# finds the name the release knows by itself; without a launcher of ours, the script under that name.
 add_command() {
   if [ "$launcher_ours" = 1 ]; then
     printf '%s' "$(ovis_command) add"
   else
     printf '%s' "$(ovis_command) $add_name"
+  fi
+  [ -z "${account:-}" ] || printf ' --account %s' "$(quoted "$account")"
+}
+
+# Whether the add step that would run checks the account --account names: one from before it would not check it, so
+# it is not started for --account. From source that is the release that runs, as add_reads_answers reads it: the
+# checkout's script hands the add on to it (scripts/plugin.ts, linkCommand), and Settings → Updates may have made it
+# newer, or the checkout newer than it.
+add_takes_account() {
+  if [ "${binary:-0}" = 1 ]; then
+    at_least "$ACCOUNT_SINCE" "$version"
+  else
+    grep -qs '"--account"' "${code:-$root}/scripts/plugin-link.ts"
   fi
 }
 
@@ -576,9 +594,7 @@ in_foreground() {
   if command -v perl >/dev/null 2>&1; then
     perl -MPOSIX -e 'exit 1 unless POSIX::tcgetpgrp(0) == POSIX::getpgrp()' </dev/tty >/dev/null 2>&1
   else
-    # the terminal's foreground process group and this shell's own, as ps has them
     foreground_ids=$(ps -o tpgid= -o pgid= -p $$ 2>/dev/null) || return 1
-    # shellcheck disable=SC2086 # two numbers, split on purpose
     set -- $foreground_ids
     [ $# = 2 ] && [ "$1" = "$2" ]
   fi
@@ -600,26 +616,21 @@ discard_typed() {
   stty -icanon min 0 time 0 </dev/tty 2>/dev/null || return 1
   typed_discarded=0
   dd bs=4096 of=/dev/null </dev/tty 2>/dev/null || typed_discarded=1
-  # the terminal is given back as it was, whatever the read came to
   stty "$typed_settings" </dev/tty 2>/dev/null || return 1
   return "$typed_discarded"
 }
 
-# --add (or OVIS_ADD=1): ends the install by adding this PC to the account, as `ovis add` does, and
-# says in $add_result how that went (none: it did not run; done; failed). It signs in and asks y/N, so it runs only with someone to answer: at a
-# terminal that shows what it prints and can be read from (under `curl | sh` stdin is the script, so
-# the answers come from /dev/tty itself), and never under OVIS_NO_OPEN, which an install run for
-# someone else sets (the app's own SSH installer), and only in the terminal's foreground: the add reads
-# its answer there, and a background job that did would be stopped. What was typed at the terminal
-# before the add starts is discarded first (discard_typed), and where it cannot be, the add does not
-# run: nothing typed for something else answers it. A release from before `add` knows
-# it as `link`; one from before that has neither. It asks the running app, so it runs only while the
-# app does ($add_waits says it does not: a fresh PC whose herdr this install could not start). Wherever
-# it does not run, the closing lines say what to run instead. Nor does it run on a release whose add step
-# would take a line typed ahead for its answer (add_reads_answers; $add_old says so): the closing lines
-# then say to update first.
+# It signs in and asks questions, so it runs only with someone to answer: at a terminal that shows what it
+# prints and can be read from (under `curl | sh` stdin is the script, so the answers come from /dev/tty
+# itself), and never under OVIS_NO_OPEN, which an install run for someone else sets (the app's own SSH
+# installer), and only in the terminal's foreground: the add reads its answer there, and a background
+# job that did would be stopped. What was typed at the terminal before the add starts is discarded first
+# (discard_typed), and where it cannot be, the add does not run: nothing typed for something else
+# answers it. Nor does it run on a release whose add step would take a line typed ahead for its answer
+# (add_reads_answers; $add_old says so): the closing lines then say to update first.
+# With the account named ($account: --account, OVIS_ADD_ACCOUNT) nothing is asked, so it runs anywhere, reading nothing,
+# on a release whose add checks that account (add_takes_account; $add_old says so otherwise).
 # Who counts as this PC is said before it starts, while the token can still be set first ($token_said).
-# Ctrl+C ends the add, not the install: what follows it is still printed.
 add_pc() {
   add_result=none
   token_said=0
@@ -628,12 +639,27 @@ add_pc() {
   find_add_name
   [ "$add" = 1 ] || return 0
   [ -n "$add_name" ] || return 0
-  if ! add_reads_answers; then
+  if { [ -n "${account:-}" ] && ! add_takes_account; } || { [ -z "${account:-}" ] && ! add_reads_answers; }; then
     add_old=1
     return 0
   fi
   if ! { if [ "${binary:-0}" = 1 ]; then ovis_cli status; else bun "$root/scripts/plugin.ts" status; fi; } </dev/null 2>/dev/null | grep -q '^running'; then
     add_waits=1
+    return 0
+  fi
+  if [ -n "${account:-}" ]; then
+    echo
+    token_line
+    token_said=1
+    add_result=done
+    # Ctrl-C ends the add, not the install, as at a terminal below
+    trap ':' INT
+    if [ "${binary:-0}" = 1 ]; then
+      ovis_cli "$add_name" --account "$account" </dev/null || add_result=failed
+    else
+      bun "$add_code/scripts/plugin.ts" "$add_name" --account "$account" </dev/null || add_result=failed
+    fi
+    trap - INT
     return 0
   fi
   [ "$terminal" = 1 ] && [ -z "${OVIS_NO_OPEN:-${HERDR_WEB_NO_OPEN:-}}" ] || return 0
@@ -657,22 +683,186 @@ add_pc() {
   trap - INT
 }
 
+# Whether the release that runs has `ovis join`: from source, as add_takes_account reads it, since the checkout's script
+# hands a command on to the release that runs. $join_code: the script that runs it, the checkout's where that has it.
+join_takes() {
+  if [ "${binary:-0}" = 1 ]; then
+    at_least "$JOIN_SINCE" "$version"
+  else
+    join_code=$root
+    [ -f "$root/scripts/plugin-join.ts" ] || join_code=${code:-$root}
+    [ -f "${code:-$root}/scripts/plugin-join.ts" ]
+  fi
+}
+
+# Whether a person can answer `ovis join`'s question here: a terminal that shows the installer's words and can be read
+# from, in its foreground (a background job that read it would be stopped), and no install run for someone else
+# (OVIS_NO_OPEN, which the app's SSH installer sets).
+join_answerable() {
+  [ "$terminal" = 1 ] && [ -z "${OVIS_NO_OPEN:-${HERDR_WEB_NO_OPEN:-}}" ] || return 1
+  (exec 3<>/dev/tty) 2>/dev/null || return 1
+  in_foreground
+}
+
+# `ovis join` as a person runs it again: from the file the invite came in, never with the line itself.
+join_command() {
+  printf '%s join --invite-file ' "$(ovis_command)"
+  if [ "${join_given:-}" = file ]; then quoted "$join_path"; else printf '%s' '<a file holding the invite>'; fi
+  [ -z "${account:-}" ] || printf ' --account %s' "$(quoted "$account")"
+}
+
+# The join, once Ovis runs (an invite's line: --join-file, OVIS_JOIN or --join): `ovis join` lists this PC in the invite's
+# account on its own key's proof, with no sign-in here. The line goes to it in its environment (OVIS_INVITE), never on a
+# command line, and to nothing else. Whoever handed the invite over chose the account, so it is confirmed here first:
+# with --account (OVIS_ADD_ACCOUNT), and nothing is read, as a script or an agent runs it; or at a terminal, where `ovis
+# join` asks for yes, once what was typed before is discarded, as for the add. Where nobody can answer, main refused the
+# join before the install; unconfirmed is left for a terminal whose typing cannot be discarded. $join_result: none (no invite), old (a
+# release without it), waits (Ovis does not run), unconfirmed (nobody can confirm the account), or the exit code of
+# `ovis join` (scripts/plugin-join.ts, JOIN_EXIT).
+join_pc() {
+  join_result=none
+  [ -n "${join_given:-}" ] || return 0
+  if ! join_takes; then
+    join_result=old
+    return 0
+  fi
+  if ! { if [ "${binary:-0}" = 1 ]; then ovis_cli status; else bun "$root/scripts/plugin.ts" status; fi; } </dev/null 2>/dev/null | grep -q '^running'; then
+    join_result=waits
+    return 0
+  fi
+  join_input=/dev/null
+  set -- join
+  if [ -n "${account:-}" ]; then
+    set -- join --account "$account"
+  else
+    join_result=unconfirmed
+    join_answerable || return 0
+    trap ':' INT
+    if ! discard_typed; then
+      trap - INT
+      return 0
+    fi
+    join_input=/dev/tty
+  fi
+  echo
+  token_line
+  token_said=1
+  join_result=0
+  # Ctrl-C ends the join, not the install
+  trap ':' INT
+  if [ "${binary:-0}" = 1 ]; then
+    OVIS_INVITE=$join_line "$OVIS_HOME/bin/ovis-server" plugin "$@" <"$join_input" || join_result=$?
+  else
+    OVIS_INVITE=$join_line bun "$join_code/scripts/plugin.ts" "$@" <"$join_input" || join_result=$?
+  fi
+  trap - INT
+}
+
+# What became of the join, in one line ($join_result): what `ovis join` said is above it.
+join_lines() {
+  case "${join_result:-none}" in
+    none) ;;
+    old) say "this Ovis release has no ovis join (it came in $JOIN_SINCE), so this PC did not join your Ovis account. Update Ovis in Settings → Updates, then run on this PC: $(join_command)" ;;
+    waits) say "the app is not running, so this PC did not join your Ovis account. Once it runs, run on this PC: $(join_command)" ;;
+    unconfirmed) say "nobody here can confirm the account the invite is for, so this PC did not join it, and the invite was not used. Name that account: run this again with --account <id> (the id shown with the invite, or ovis status --json on a PC already in it), or run in a terminal on this PC: $(join_command)" ;;
+    0) say "this PC is in the Ovis account the invite is for. Check: $(ovis_command) status --json" ;;
+    3) say "the invite did not work: it is mistyped, used or expired (an invite works once, for 15 minutes), or for another account service. Ask for a new one on a device signed in to your account" ;;
+    4) say "the account the invite is for was not confirmed, so this PC did not join it, and the invite was not used" ;;
+    5) say "the invite is for another Ovis account than --account names, so this PC did not join it, and the invite was not used" ;;
+    6) say "this PC is in another Ovis account, so it did not join the invite's, and the invite was not used. To move it: $(ovis_command) logout, then run on this PC: $(join_command)" ;;
+    7) say "the account service asks this PC to wait, so it did not join your Ovis account yet; what ovis join said is above" ;;
+    8) say "your Ovis account has added as many PCs as it may for now, so this PC did not join it, and the invite was not used; what ovis join said is above" ;;
+    9) say "your Ovis account holds as many PCs as it can, so this PC did not join it: remove one in the Ovis app, then try again with a new invite" ;;
+    10) say "the account service did not answer, so this PC did not join your Ovis account. Try again in a moment (the invite works for 15 minutes): $(join_command)" ;;
+    12) say "the relay or the account service is off on this PC, so it did not join your Ovis account; what ovis join said is above" ;;
+    13) say "the app stopped running, so this PC did not join your Ovis account. Once it runs, run on this PC: $(join_command)" ;;
+    14) say "nobody pressed Add for this PC while its card showed, so it did not join your Ovis account. Ask for a new invite" ;;
+    *) say "this PC did not join your Ovis account; what ovis join said is above" ;;
+  esac
+}
+
 # Who counts as this PC while it has no token: said before the PC is added, by whichever adds it.
 token_line() {
   say "on a PC other people log in to, set OVIS_TOKEN first: without it any local user counts as this PC ($(link "https://github.com/$REPO/blob/main/docs/relay.md#a-pc-with-no-screen"))"
 }
 
-# The installer's last words before the star: how this PC gets into the account (unless --add just put
-# it there), by a command that can run here: a release from before the add step is told to update
-# instead. Then who counts as this PC while it has no token (unless the add step said it as it began).
+# What runs now, how to see it and how to stop it, as the install leaves it ($herdr_kept: how start_herdr kept herdr).
+running_lines() {
+  running_at=$(ovis_cli status </dev/null 2>/dev/null | awk '$1 == "running" { print $2 }') || running_at=""
+  [ -n "$running_at" ] || return 0
+  if [ "${runtime:-herdr}" != herdr ]; then
+    say "Ovis runs now at $(link "$running_at"). See it: $(ovis_command) status. Stop it: $(ovis_command) stop"
+    return 0
+  fi
+  herdr_again=""
+  case "${herdr_kept:-}" in
+    systemd)
+      herdr_way="the user service $HERDR_SERVICE starts whenever this PC starts, with nobody logged in"
+      herdr_again="until this PC starts again"
+      ;;
+    launchd)
+      herdr_way="launchd starts at your login ($HOME/Library/LaunchAgents/$HERDR_AGENT_LABEL.plist)"
+      herdr_again="until your next login"
+      ;;
+    login) herdr_way="was started in the background, and launchd starts from your next login at this Mac's screen ($HOME/Library/LaunchAgents/$HERDR_AGENT_LABEL.plist)" ;;
+    linger-off) herdr_way="was started in the background and keeps running after you log out. Nothing starts it after a restart: lingering is off for $(id -un), and turning it on needs an administrator (sudo loginctl enable-linger $(id -un)); then run this installer again and herdr starts whenever this PC starts" ;;
+    desktop) herdr_way="was started for now: this PC has ${desktop_found:-a desktop session}, so after a restart herdr starts when you open it there, as before" ;;
+    declined) herdr_way="was started for now, with no service (--no-service): after a restart herdr starts when you open it" ;;
+    once) herdr_way="was started in the background: this PC has no user service manager, so after a restart run this installer again" ;;
+    *) herdr_way="" ;;
+  esac
+  if [ -z "$herdr_way" ]; then
+    say "Ovis runs now at $(link "$running_at"), and starts whenever herdr does. See it: $(ovis_command) status. Stop it: $(ovis_command) stop"
+    [ "${herdr_doomed:-0}" != 1 ] || say "this herdr was started at this login by the user service $HERDR_SERVICE, inside your service manager, and lingering is off for $(id -un): it ends when you log out, with every terminal in it. The installer removed that service. To have herdr outlive the logout, stop it ($(herdr_command) server stop) and run this installer again; to have it start whenever this PC starts, an administrator turns lingering on (sudo loginctl enable-linger $(id -un)), then run this installer again"
+    [ "${herdr_doomed:-0}" = 1 ] || unit_gone_line
+    mac_agent_line
+    return 0
+  fi
+  say "Ovis runs now at $(link "$running_at"), in herdr, which $herdr_way"
+  say "see them: $(ovis_command) status, $(herdr_command) status server. Stop Ovis: $(ovis_command) stop (it starts again with herdr). Stop herdr and every terminal in it: $(herdr_command) server stop"
+  # the service starts herdr; it does not watch it
+  [ -z "$herdr_again" ] || say "a herdr that stops or crashes is not started again $herdr_again, or until this installer runs again"
+  [ "${lingering:-}" != turned-on ] || say "lingering is on for $(id -un) now, so herdr runs with nobody logged in; the guide's Uninstall turns it off again"
+  unit_gone_line
+  mac_agent_line
+}
+
+# Why the unit an earlier run wrote is gone ($herdr_unit_gone: forget_herdr_unit's reason).
+unit_gone_line() {
+  case "${herdr_unit_gone:-}" in
+    linger-off) say "removed the user service $HERDR_SERVICE an earlier run set up: lingering is off for $(id -un) now, so it would start herdr at each login inside your service manager, which ends herdr with that login" ;;
+    declined) say "removed the user service $HERDR_SERVICE an earlier run set up, as --no-service asks: nothing starts herdr at boot now; herdr runs on until you stop it" ;;
+    desktop) say "removed the user service $HERDR_SERVICE an earlier run set up: this PC has ${desktop_found:-a desktop session}, and herdr started at boot would give its terminals no display; herdr runs on until you stop it" ;;
+  esac
+}
+
+# --no-service sets up no LaunchAgent, and leaves one that is there: the Mac app sets up the same one, and nothing tells
+# whose it is, so the person removes it, with the guide's Uninstall line.
+mac_agent_line() {
+  [ "${no_service:-0}" = 1 ] && [ "${os:-}" = darwin ] && [ -f "$HOME/Library/LaunchAgents/$HERDR_AGENT_LABEL.plist" ] || return 0
+  say "the LaunchAgent $HERDR_AGENT_LABEL is still there and starts herdr at your login: --no-service leaves it, since the Mac app sets up the same one. To have none: launchctl disable gui/$(id -u)/$HERDR_AGENT_LABEL; rm $(quoted "$HOME/Library/LaunchAgents/$HERDR_AGENT_LABEL.plist")"
+}
+
+# herdr as a command typed here runs it: by its name where the user's PATH finds this one, else by its path
+herdr_command() {
+  if [ "$(PATH="${original_path:-}"; command -v herdr 2>/dev/null || true)" = "$herdr_bin" ]; then printf herdr; else quoted "$herdr_bin"; fi
+}
+
 closing_lines() {
   echo
-  if [ "$add_result" = done ]; then
+  running_lines
+  if [ -n "${join_given:-}" ]; then
+    join_lines
+  elif [ "$add_result" = done ]; then
     :
   elif [ -z "$add_name" ]; then
     say "this Ovis is from before it could add a PC to an account from its terminal: update it in Settings → Updates, then run this installer again"
+  elif [ "$add" = 1 ] && [ "${add_old:-0}" = 1 ] && [ -n "${account:-}" ]; then
+    say "this Ovis release does not check the account --account names, so the installer does not add this PC with it. Update Ovis in Settings → Updates, then run on this PC: $(add_command)"
   elif [ "$add" = 1 ] && [ "${add_old:-0}" = 1 ]; then
     say "this Ovis release would take a line typed ahead as its answer about the device that adds this PC, so the installer does not start that step for it. Update Ovis in Settings → Updates, then run in a terminal on this PC: $(add_command)"
+  elif [ "$add_result" = failed ] && [ -n "${account:-}" ]; then
+    say "this PC was not added to your Ovis account; what the add said is above. To try again: $(add_command)"
   elif [ "$add" = 1 ] && [ "${add_waits:-0}" = 1 ]; then
     say "the app is not running yet, so this PC was not added to your Ovis account. Once it runs, run in a terminal on this PC: $(add_command)"
   elif [ "$add" = 1 ] && [ "$add_result" = none ]; then
@@ -685,14 +875,18 @@ closing_lines() {
 
 # kills a process and everything it started (ps -A -o pid= -o ppid= reads the same on Linux and macOS)
 kill_tree() {
+  # stopped before its children are listed, so it starts none between that list and its own kill. A fork already under
+  # way when the stop comes ends first, so its child is in the list once the process shows as stopped (or gone); where
+  # ps cannot say, the list is taken at once
+  kill -STOP "$1" 2>/dev/null || true
+  kill_tries=0
+  while [ "$kill_tries" -lt 50 ] && ps -o stat= -p "$1" 2>/dev/null | grep -q '^ *[^T ]'; do kill_tries=$((kill_tries + 1)); done
   for kill_child in $(ps -A -o pid= -o ppid= 2>/dev/null | awk -v parent="$1" '$2 == parent { print $1 }'); do
     kill_tree "$kill_child"
   done
   kill -KILL "$1" 2>/dev/null || true
 }
 
-# runs "$@" for at most $1 seconds: past that it is killed with all it started (and fails), so a
-# command that hangs cannot hold the install. The watcher looks once a second, as gh_api's does.
 bounded() {
   bounded_limit=$1
   shift
@@ -717,9 +911,7 @@ bounded() {
   return "$bounded_status"
 }
 
-# the server's own check of the Rust PTY host (server/pty/host.ts), with its deadlines: its usage
-# line with exit 2, then a pty; a host that hangs on either counts as one that does not run here
-rust_host_runs() {
+answers_usage() {
   [ -x "$1" ] || return 1
   probe_err=$(mktemp) || return 1
   probe_status=0
@@ -727,8 +919,16 @@ rust_host_runs() {
   probe_first=$(sed -n 1p "$probe_err" 2>/dev/null)
   rm -f "$probe_err"
   [ "$probe_status" = 2 ] || return 1
-  case "$probe_first" in "pty-sidecar: usage:"*) ;; *) return 1 ;; esac
+  case "$probe_first" in "$2"*) return 0 ;; *) return 1 ;; esac
+}
+
+rust_host_runs() {
+  answers_usage "$1" "pty-sidecar: usage:" || return 1
   bounded 3 "$1" 1 1 true </dev/null >/dev/null 2>&1
+}
+
+keeper_runs() {
+  answers_usage "$1" "Usage: ovis-acp-keeper "
 }
 
 # the published SHA-256 of the official Node build for $platform, in $node_sha
@@ -741,29 +941,9 @@ node_sha_for() {
   esac
 }
 
-install_node() {
-  node_sha_for
-  say "installing Node $NODE_VERSION into $NODE_DIR"
-  # it runs as a condition, where set -e does nothing: each step says itself when it fails
-  tmp=$(mktemp -d) || return 1
-  archive="$tmp/node.tar.gz"
-  curl -fsSL --retry 3 "https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-$platform.tar.gz" -o "$archive" || { rm -rf "$tmp"; return 1; }
-  [ "$(sha256 "$archive")" = "$node_sha" ] || { rm -rf "$tmp"; say "the Node download does not match its published SHA-256; nothing was installed"; return 1; }
-  # unpacked beside the old one and swapped in only once it holds a node: a failed unpack leaves an
-  # existing install as it was
-  mkdir -p "$tmp/node" || { rm -rf "$tmp"; return 1; }
-  tar -xzf "$archive" -C "$tmp/node" --strip-components=1 || { rm -rf "$tmp"; return 1; }
-  [ -x "$tmp/node/bin/node" ] || { rm -rf "$tmp"; say "the Node download holds no bin/node; nothing was installed"; return 1; }
-  mkdir -p "$(dirname "$NODE_DIR")" || { rm -rf "$tmp"; return 1; }
-  rm -rf "$NODE_DIR.old"
-  if [ -e "$NODE_DIR" ]; then mv "$NODE_DIR" "$NODE_DIR.old" || { rm -rf "$tmp"; return 1; }; fi
-  mv "$tmp/node" "$NODE_DIR" || { [ ! -e "$NODE_DIR.old" ] || mv "$NODE_DIR.old" "$NODE_DIR"; rm -rf "$tmp"; return 1; }
-  rm -rf "$NODE_DIR.old" "$tmp"
-}
-
 # The architecture the server runs on: that of the Bun that runs it. Bun's installer picks arm64 on
-# an arm64 Mac even from a Rosetta shell, where uname -m says x86_64, so the Node install_node
-# downloads and node_fits accepts follow Bun, not uname.
+# an arm64 Mac even from a Rosetta shell, where uname -m says x86_64, so the native helpers follow Bun,
+# not uname.
 server_arch() {
   # into a file, not $( ): a bun that left a child holding its output would hold a pipe's reader
   # past the bound, where a file is read once bounded has returned (as in starred)
@@ -777,69 +957,10 @@ server_arch() {
   esac
 }
 
-# Whether the node $1 (a path, or a name on PATH) is one the Node sidecar takes (server/pty/sidecar.ts
-# isRealNode): Node 18 or newer, not Bun, built for the server's architecture ($arch, server_arch).
-# Bounded, as the server's probe is: a node that keeps running (a NODE_OPTIONS preload) cannot hold
-# the install.
-node_fits() {
-  # into a file for the same reason as server_arch's
-  fit_file=$(mktemp 2>/dev/null) || return 1
-  fit_status=0
-  bounded 3 "$1" -p '(process.versions.bun ? "bun" : process.versions.node.split(".")[0]) + " " + process.arch' </dev/null >"$fit_file" 2>/dev/null || fit_status=$?
-  fit=$(cat "$fit_file" 2>/dev/null || true)
-  rm -f "$fit_file"
-  [ "$fit_status" = 0 ] || return 1
-  fit_major=${fit%% *}
-  case "$fit_major" in '' | *[!0-9]*) return 1 ;; esac
-  [ "$fit_major" -ge 18 ] && [ "${fit#* }" = "$arch" ]
-}
-
-# The Node install_node puts in NODE_DIR stays out of the user's PATH: linked into BIN_DIR, it went
-# first there and overrode the user's own Node (#596). A release whose server looks for it in
-# NODE_DIR itself (server/pty/sidecar.ts, in the code at $1) needs no link, so a link of ours goes
-# and anything else there stays. An older release finds Node on the PATH only, so our Node is linked
-# for it as before, the one from before the rename too: where it needs one ($2 = needed: no Rust PTY
-# host) and the user's PATH has no Node 18 or newer, or always once herdr's build said its own PATH
-# has none ($2 = installed), since herdr's PATH need not be the user's (nvm in .bashrc).
-node_link() {
-  if grep -qs 'share/ovis/node' "$1/server/pty/sidecar.ts"; then
-    [ -L "$BIN_DIR/node" ] || return 0
-    case "$(readlink "$BIN_DIR/node")" in
-      "$NODE_DIR/bin/node" | "$LEGACY_NODE_DIR/bin/node")
-        rm -f "$BIN_DIR/node"
-        # it may have been the only node on the user's PATH, so say so
-        say "removed $BIN_DIR/node, the link to Ovis's own Node that an earlier install made: Ovis finds that Node itself now, and your shells use your own Node (install one if you need node outside Ovis)"
-        ;;
-    esac
-  elif [ ! -e "$BIN_DIR/node" ] && [ ! -L "$BIN_DIR/node" ]; then
-    case "${2:-}" in
-      installed) ;;
-      needed)
-        # only node runs on the user's PATH: sed may not be on it
-        user_version=$(PATH="${original_path:-}"; export PATH; node --version 2>/dev/null) || user_version=""
-        user_major=$(printf '%s\n' "$user_version" | sed -n 's/^v\([0-9][0-9]*\).*/\1/p')
-        [ "${user_major:-0}" -lt 18 ] || return 0
-        ;;
-      *) return 0 ;;
-    esac
-    for private in "$NODE_DIR" "$LEGACY_NODE_DIR"; do
-      [ -x "$private/bin/node" ] || continue
-      if mkdir -p "$BIN_DIR" && ln -s "$private/bin/node" "$BIN_DIR/node"; then
-        installed_here="$installed_here node"
-      else
-        say "could not link Node into $BIN_DIR, so this release's panes are mirrored until it is updated"
-      fi
-      return 0
-    done
-  fi
-}
-
 # herdr's checkout stays at the version first installed: Settings → Updates builds each newer release
-# in the app's state dir and runs it from there (server/updater.ts, current.json). The directory of the
-# code that runs now, so the phone step is the running version's, not the first install's: the release
-# kept for this checkout and the port its server has, as release_js finds it, and never another folder's.
+# in the app's state dir and runs it from there (server/updater.ts, current.json).
 running_code() {
-  running_found=$(bun -e "$(release_js)" "$1" 2>/dev/null </dev/null) || running_found=""
+  running_found=$(bun --no-env-file -e "$(release_js)" "$1" 2>/dev/null </dev/null) || running_found=""
   printf '%s\n' "${running_found:-$1}"
 }
 
@@ -923,7 +1044,6 @@ manifest_entry() {
   entry_size=$(printf '%s\n' "$entry" | sed -n 's/^ *"size": \([0-9]\{1,15\}\)$/\1/p')
 }
 
-# Refuses this install: the folder it downloaded into goes, and the one that runs was never touched
 refuse() {
   [ -z "${stage:-}" ] || rm -rf "$stage"
   fail "$*; nothing was changed"
@@ -945,43 +1065,128 @@ take() {
   [ "$got_sha" = "$entry_sha" ] || refuse "$1 does not match its SHA-256 in ovis-server.json (got $got_sha)"
 }
 
-# The release's Rust PTY host into $stage/bin, only the one the signed ovis-server.json names (its SHA-256 and size
-# there, never another file's word for it), run once here; the record beside it is what the server checks before it
-# runs it (server/pty/host.ts). Without one that runs, terminals are mirrored: nothing here fails the install.
-binary_pty_host() {
-  case "$platform" in
-    linux-x64 | linux-arm64) pty_asset=$platform ;;
-    darwin-*) pty_asset=darwin-universal ;;
-    *) return 0 ;;
-  esac
-  manifest_entry "$stage/ovis-server.json" "pty-$pty_asset"
-  pty_file=$entry_file pty_sha=$entry_sha pty_size=$entry_size
-  if [ "$pty_file" != "ovis-pty-sidecar-$pty_asset" ] || [ -z "$pty_sha" ] || [ -z "$pty_size" ]; then
-    say "the signed ovis-server.json names no Rust PTY host for $platform, so terminals are mirrored"
-    return 0
-  fi
-  mkdir -p "$stage/bin"
-  if ! fetch "$at/$pty_file" "$stage/bin/ovis-pty-sidecar" "$pty_size" || [ "$(wc -c <"$stage/bin/ovis-pty-sidecar" | tr -d ' ')" != "$pty_size" ] ||
-    [ "$(sha256 "$stage/bin/ovis-pty-sidecar")" != "$pty_sha" ]; then
-    rm -rf "$stage/bin"
-    say "the Rust PTY host did not download or does not match its SHA-256 and size in ovis-server.json, so it is not run and terminals are mirrored"
-    return 0
-  fi
-  chmod 755 "$stage/bin/ovis-pty-sidecar"
-  if ! rust_host_runs "$stage/bin/ovis-pty-sidecar"; then
-    rm -rf "$stage/bin"
-    say "the Rust PTY host does not run on this PC, so terminals are mirrored"
-    return 0
-  fi
-  printf '{"sha256":"%s","version":"%s"}\n' "$pty_sha" "$version" >"$stage/bin/ovis-pty-sidecar.json"
+# Reconstruct the exact signed format using only fixed file names, decimal sizes and lowercase digests.
+# A byte comparison rejects duplicates, extra fields, noncanonical JSON and a different server release.
+canonical_keeper() {
+  server_sha=$(sha256 "$stage/ovis-server.json") || return 1
+  printf '{\n  "schema": 1,\n  "version": "%s",\n  "serverSha256": "%s",\n  "assets": {\n' "$version" "$server_sha"
+  for asset_key in linux-x64 linux-arm64 darwin-universal; do
+    manifest_entry "$1" "$asset_key"
+    [ "$entry_file" = "ovis-acp-keeper-$asset_key" ] && [ -n "$entry_sha" ] || return 1
+    case "$entry_size" in ''|0[0-9]*) return 1 ;; esac
+    comma=,
+    [ "$asset_key" != darwin-universal ] || comma=
+    printf '    "%s": {\n      "file": "%s",\n      "sha256": "%s",\n      "size": %s\n    }%s\n' "$asset_key" "$entry_file" "$entry_sha" "$entry_size" "$comma"
+  done
+  printf '  }\n}\n'
 }
 
-# One install at a time in OVIS_HOME: $OVIS_HOME/.install.lock, made by mkdir (atomic) and holding this
-# shell's pid. Another run waits for it, at most INSTALL_LOCK_WAIT seconds, and then fails, saying who holds
-# it. A lock whose holder is gone (its pid does not run, or it never wrote one more than a minute ago) is
-# broken under .install.lock.break, one breaker at a time. With three or more installs started at the same
-# instant a narrow race remains (a follow-up). Released on every exit, a signal's included; only kill -9
-# leaves it, stale.
+# The keeper is optional: all its transfers share the same clock, including redirects and the identity probe.
+keeper_fetch() {
+  left=$((keeper_end - $(date +%s)))
+  [ "$left" -gt 0 ] && [ "$3" -le 33554432 ] || return 1
+  case "$1" in
+    file:///*)
+      # Decode the local file URL before checking its type; never open a pipe, device or symlink.
+      path=$(printf '%s\n' "${1#file://}" | LC_ALL=C awk '
+        function hex(c) { return index("0123456789abcdef", tolower(c))-1 }
+        { for (i=1;i<=length;i++) { c=substr($0,i,1); if (c=="%") {
+          a=hex(substr($0,i+1,1)); b=hex(substr($0,i+2,1)); n=16*a+b;
+          if (a<0 || b<0 || n<32) exit 1; printf "%c",n; i+=2
+        } else { if (c=="?" || c=="#") exit 1; printf "%s",c } } }') || return 1
+      [ -f "$path" ] && [ ! -L "$path" ] || return 1 ;;
+  esac
+  curl -gfsSL --path-as-is --proto '=https,file' --proto-redir '=https' --max-time "$left" --max-filesize "$3" -o "$2" "$1" </dev/null
+}
+
+checked_keeper_manifest() {
+  doc="$verify_dir/ovis-acp-keeper-server.json"
+  keeper_fetch "$at/ovis-acp-keeper-server.json" "$doc" 65536 && [ "$(wc -c <"$doc")" -le 65536 ] &&
+    keeper_fetch "$at/ovis-acp-keeper-server.json.sig" "$doc.sig" 1024 &&
+    [ "$(wc -c <"$doc.sig")" -eq 89 ] && [ "$(wc -l <"$doc.sig")" -eq 1 ] && LC_ALL=C grep -Eqx '[A-Za-z0-9+/]{85}[AQgw]==' "$doc.sig" &&
+    "$checker" "$RELEASE_PUBLIC_KEY" "$doc" "$doc.sig" &&
+    canonical_keeper "$doc" >"$verify_dir/expected-keeper.json" && cmp -s "$doc" "$verify_dir/expected-keeper.json"
+}
+
+# Each optional native binary gets its own probe and record. Never remove its sibling on failure.
+binary_helper() {
+  case "$1" in
+    pty) helper_dir="$stage/bin" helper_name=ovis-pty-sidecar helper_label="Rust PTY host" helper_probe=rust_host_runs helper_fetch=fetch without="terminals are mirrored" ;;
+    acpKeeper) helper_dir="$keeper_work" helper_name=ovis-acp-keeper helper_label="ACP keeper" helper_probe=keeper_runs helper_fetch=keeper_fetch without="ACP children are unavailable" ;;
+    *) return 1 ;;
+  esac
+  case "$platform" in
+    linux-x64 | linux-arm64) build=$platform ;;
+    darwin-*) build=darwin-universal ;;
+    *) return 1 ;;
+  esac
+  if [ "$1" = pty ]; then
+    native_manifest=ovis-server.json
+    manifest_entry "$stage/$native_manifest" "pty-$build"
+  else
+    native_manifest=ovis-acp-keeper-server.json
+    if ! checked_keeper_manifest; then
+      say "no verified $native_manifest for this release, so $without"
+      return 1
+    fi
+    manifest_entry "$verify_dir/$native_manifest" "$build"
+  fi
+  target="$helper_dir/$helper_name"
+  if [ "$1" = acpKeeper ] && [ "$entry_size" -le 33554432 ]; then
+    present="$stage/bin/$helper_name"
+    if [ -f "$present" ] && [ ! -L "$present" ] && [ -x "$present" ] && [ -f "$present.json" ] && [ ! -L "$present.json" ] &&
+      [ "$(wc -c <"$present" | tr -d ' ')" = "$entry_size" ] && [ "$(sha256 "$present")" = "$entry_sha" ] &&
+      printf '{"sha256":"%s","version":"%s"}\n' "$entry_sha" "$version" | cmp -s - "$present.json"; then
+      say "verified ACP keeper already installed"
+      return 0
+    fi
+  fi
+  if [ "$entry_file" != "$helper_name-$build" ] || [ -z "$entry_sha" ] || [ -z "$entry_size" ]; then
+    say "the signed $native_manifest names no $helper_label for $platform, so $without"
+    return 1
+  fi
+  if ! mkdir -p "$helper_dir" || ! "$helper_fetch" "$at/$entry_file" "$target" "$entry_size" || [ "$(wc -c <"$target" | tr -d ' ')" != "$entry_size" ] ||
+    [ "$(sha256 "$target")" != "$entry_sha" ]; then
+    rm -f "$target"
+    say "the $helper_label did not download or does not match its SHA-256 and size in $native_manifest, so it is not run and $without"
+    return 1
+  fi
+  if ! chmod 755 "$target" || ! "$helper_probe" "$target"; then
+    rm -f "$target"
+    say "the $helper_label does not run on this PC, so $without"
+    return 1
+  fi
+  if ! printf '{"sha256":"%s","version":"%s"}\n' "$entry_sha" "$version" >"$target.json"; then
+    rm -f "$target" "$target.json"
+    say "could not record the $helper_label, so $without"
+    return 1
+  fi
+}
+
+# A failed or interrupted optional download is never inside the release being activated.
+stage_keeper() (
+  keeper_work=$(mktemp -d "$OVIS_HOME/releases/.keeper-XXXXXX") || { say "could not stage the optional keeper"; return 0; }
+  verify_dir=$keeper_work
+  keeper_end=$(($(date +%s) + 12))
+  prepare_keeper() {
+    if [ "$1" = repair ]; then
+      pick_checker && "$checker" "$RELEASE_PUBLIC_KEY" "$stage/ovis-server.json" "$stage/ovis-server.json.sig" || return 1
+    fi
+    binary_helper acpKeeper
+  }
+  if bounded 12 prepare_keeper "${1:-install}"; then
+    if [ -f "$keeper_work/ovis-acp-keeper.json" ]; then
+      mkdir -p "$stage/bin" && mv -f "$keeper_work/ovis-acp-keeper.json" "$stage/bin/ovis-acp-keeper.json" &&
+        mv -f "$keeper_work/ovis-acp-keeper" "$stage/bin/ovis-acp-keeper" || say "could not install the optional keeper"
+    fi
+  else
+    say "no verified ACP keeper installed"
+  fi
+  rm -rf "$keeper_work" || say "could not clean optional keeper files at $keeper_work"
+)
+
+# One install at a time in OVIS_HOME: $OVIS_HOME/.install.lock, a folder whose pid file, created only where none is,
+# holds this shell's pid. Released on every exit, a signal's included; only kill -9 leaves it, stale.
 install_lock() {
   lock="$OVIS_HOME/.install.lock"
   mkdir -p "$OVIS_HOME"
@@ -989,7 +1194,6 @@ install_lock() {
   # The claim is the pid file, created only where none is (noclobber opens it O_EXCL in the shell itself): mkdir's
   # exit alone does not exclude, as some mkdir commands report success to two callers at once (uutils coreutils)
   while ! { mkdir "$lock" 2>/dev/null; (set -C; printf '%s\n' "$$" >"$lock/pid") 2>/dev/null; }; do
-    # the breaker is claimed as the lock is, by a file created only where none is
     if (set -C; printf '%s\n' "$$" >"$lock.break") 2>/dev/null; then
       lock_holder=$(cat "$lock/pid" 2>/dev/null || true)
       lock_stale=0
@@ -999,13 +1203,13 @@ install_lock() {
         lock_stale=1
       fi
       # removed only while it still holds the record judged stale: a fresh holder's lock is never taken
-      if [ "$lock_stale" = 1 ] && [ "$(cat "$lock/pid" 2>/dev/null || true)" = "$lock_holder" ]; then rm -rf "$lock" || true; fi
+      if [ "$lock_stale" = 1 ] && [ "$(cat "$lock/pid" 2>/dev/null || true)" = "$lock_holder" ]; then install_lock_drop || true; fi
       rm -rf "$lock.break" 2>/dev/null || true
       [ -e "$lock" ] || continue
     elif [ -n "$(find "$lock.break" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
       rm -rf "$lock.break" 2>/dev/null || true
     fi
-    if [ "$lock_waited" -ge "$INSTALL_LOCK_WAIT" ]; then
+    if [ "$lock_waited" -ge "$INSTALL_LOCK_WAIT_SECONDS" ]; then
       fail "another install is running in $OVIS_HOME (pid $(cat "$lock/pid" 2>/dev/null || echo unknown)); run this again once it ends. Nothing was changed"
     fi
     [ "$lock_waited" != 0 ] || say "another install is running in $OVIS_HOME; waiting for it"
@@ -1016,10 +1220,21 @@ install_lock() {
   trap 'install_unlock; exit 129' HUP
   trap 'install_unlock; exit 130' INT
   trap 'install_unlock; exit 143' TERM
+  # a run cut off between its lock's rename and its removal left that folder: the holder removes it, before its own
+  # rename may need the same name. A run releasing its lock may be removing the same folder at that moment, and
+  # busybox rm then fails on what the other removed (No such file or directory): neither removal has to succeed, as
+  # whatever is left is the next holder's to remove
+  rm -rf "$lock".gone-* 2>/dev/null || true
 }
 install_unlock() {
-  if [ -n "${lock:-}" ] && [ "$(cat "$lock/pid" 2>/dev/null || true)" = "$$" ]; then rm -rf "$lock"; fi
+  if [ -n "${lock:-}" ] && [ "$(cat "$lock/pid" 2>/dev/null || true)" = "$$" ]; then install_lock_drop; fi
   trap - EXIT HUP INT TERM
+}
+# rm -rf in place unlinks the pid a moment before the folder: a waiter could claim the lock in that moment (its pid
+# file is created wherever none is), and the folder it holds would then not be removed (Directory not empty), failing
+# the run that let it go
+install_lock_drop() {
+  mv "$lock" "$lock.gone-$$" && { rm -rf "$lock.gone-$$" 2>/dev/null || true; }
 }
 
 # Whether the release of $version runs in OVIS_HOME already: its manifest there names it, and the binary
@@ -1028,18 +1243,14 @@ binary_current() {
   [ "$(sed -n 's/^  "version": "\([^"]*\)",$/\1/p' "$OVIS_HOME/bin/ovis-server.json" 2>/dev/null)" = "$version" ] || return 1
   manifest_entry "$OVIS_HOME/bin/ovis-server.json" "$platform"
   [ -n "$entry_sha" ] && [ -f "$OVIS_HOME/bin/ovis-server" ] && [ "$(sha256 "$OVIS_HOME/bin/ovis-server")" = "$entry_sha" ] &&
-    [ -f "$OVIS_HOME/bin/dist/index.html" ] # the client it serves too: one gone missing is installed again
+    [ -f "$OVIS_HOME/bin/dist/index.html" ]
 }
 
-# install_binary <version>: the release's server for $platform into OVIS_HOME, unless that version runs
-# there already ($binary_changed says which). In order, and nothing in OVIS_HOME changes before the last
-# step: the manifest and its signature, checked against RELEASE_PUBLIC_KEY and for this very version (a
-# valid signature alone would let an older release through); the binary and the client archive, each with
-# the size and SHA-256 the manifest names; the archive's listing, only plain files and folders inside it;
-# then releases/<version>-<id> takes its name and bin, a link to it, is swapped by one rename. A run that
-# is cut off leaves a .stage folder, which the next run removes, beside the install that ran before.
-# It holds the install lock from its first download to the swap: a run that waited for it finds the version
-# the other run installed and has nothing to do, or installs its own.
+# In order, and nothing in OVIS_HOME changes before the last step: the manifest and its signature, checked
+# against RELEASE_PUBLIC_KEY and for this very version (a valid signature alone would let an older release
+# through); the binary and the client archive, each with the size and SHA-256 the manifest names; the
+# archive's listing, only plain files and folders inside it; then releases/<version>-<id> takes its name
+# and bin, a link to it, is swapped by one rename.
 install_binary() {
   version=$1
   binary_changed=0
@@ -1048,18 +1259,14 @@ install_binary() {
   if [ -e "$OVIS_HOME/bin" ] && [ ! -L "$OVIS_HOME/bin" ]; then
     fail "$OVIS_HOME/bin is there and is not this installer's link; move it away and run this again. Nothing was changed"
   fi
-  if binary_current; then
-    say "Ovis $version is installed already in $OVIS_HOME; nothing to do"
-    return 0
-  fi
   install_lock
   if binary_current; then
+    (stage="$OVIS_HOME/bin"; stage_keeper repair)
     install_unlock
     say "Ovis $version is installed already in $OVIS_HOME; nothing to do"
     return 0
   fi
   mkdir -p "$OVIS_HOME/releases"
-  # only the lock's holder makes a stage or a link: one found now was left by a run that died
   rm -rf "$OVIS_HOME"/releases/.stage-* "$OVIS_HOME"/.bin-*
   stage=$(mktemp -d "$OVIS_HOME/releases/.stage-XXXXXX") || fail "could not make a folder in $OVIS_HOME/releases"
   verify_dir="$stage/.check"
@@ -1087,7 +1294,8 @@ install_binary() {
   [ -z "$(find "$stage/dist" ! -type f ! -type d)" ] || refuse "ovis-dist.tar.gz unpacked something other than files and folders"
   [ -f "$stage/dist/index.html" ] || refuse "ovis-dist.tar.gz holds no index.html"
   rm -f "$stage/ovis-dist.tar.gz"
-  binary_pty_host
+  binary_helper pty || :
+  stage_keeper
   rm -rf "$verify_dir"
   release_name="$version-${stage##*.stage-}"
   mv "$stage" "$OVIS_HOME/releases/$release_name" || refuse "could not move the checked release into place"
@@ -1099,7 +1307,6 @@ install_binary() {
   # one rename over the old link: -T (GNU) and -h (BSD) keep mv from moving the link into the folder bin names
   if [ "$os" = darwin ]; then swap_flag=-fh; else swap_flag=-fT; fi
   mv "$swap_flag" "$link" "$OVIS_HOME/bin" || { rm -f "$link"; fail "could not swap $OVIS_HOME/bin; nothing was changed"; }
-  # the releases no server can run from: never the new one, nor the one bin named before this install
   for old in "$OVIS_HOME"/releases/*; do
     case "$old" in "$OVIS_HOME/releases/$release_name" | "$previous") ;; *) rm -rf "$old" ;; esac
   done
@@ -1121,8 +1328,6 @@ is_core() {
   [ "$core_status" = 0 ] && [ "$core_answer" = yes ]
 }
 
-# The folders of Ovis on herdr-core, in $settings_dir and $state_dir: under the Ovis name, or the name
-# before the rename while only that one exists (as scripts/plugin.ts picks them).
 core_dirs() {
   settings_dir="$HOME/.config/ovis"
   [ -d "$settings_dir" ] || [ ! -d "$HOME/.config/herdr-web-ui" ] || settings_dir="$HOME/.config/herdr-web-ui"
@@ -1130,16 +1335,12 @@ core_dirs() {
   [ -d "$state_dir" ] || [ ! -d "$HOME/.local/state/herdr-web-ui" ] || state_dir="$HOME/.local/state/herdr-web-ui"
 }
 
-# The value the settings files give $1, .env's over env's and unquoted, as scripts/plugin.ts reads them.
 saved_setting() {
   core_dirs
   sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$settings_dir/env" "$settings_dir/.env" 2>/dev/null \
     | tail -n 1 | sed -e 's/[[:space:]]*$//' -e "s/^[\"']//" -e "s/[\"']\$//"
 }
 
-# The herdr-core (hc) on this PC, in $core, looked for as the server looks (server/herdr-core/discovery.ts):
-# OVIS_HC_BIN, the one an earlier run saved, the PATH, then the usual install places, herdr-core before
-# hc in each.
 find_core() {
   core=""
   for core_candidate in "${OVIS_HC_BIN:-}" "$(saved_setting OVIS_HC_BIN)" "$(command -v herdr-core 2>/dev/null || true)" "$(command -v hc 2>/dev/null || true)"; do
@@ -1153,10 +1354,6 @@ find_core() {
   return 1
 }
 
-# The runtime to install for, in $runtime: OVIS_RUNTIME when set; else herdr-core where an earlier run
-# installed Ovis on it, or where there is no herdr but herdr-core answers; else herdr, installed if
-# missing. herdr-core needs an hc that answers, and no herdr plugin already running Ovis here: one
-# Ovis per PC, and the plugin's own settings are where it moves to herdr-core.
 pick_runtime() {
   case "${OVIS_RUNTIME:-}" in
     herdr) runtime=herdr; return 0 ;;
@@ -1182,10 +1379,7 @@ pick_runtime() {
 
 # The settings file of Ovis on herdr-core (core_dirs), which its service hands scripts/plugin.ts as
 # HERDR_PLUGIN_CONFIG_DIR, so a herdr plugin's settings found later are not read in its place; owner-only,
-# as the token in it needs. The installer owns two lines, written anew each run in place of any either
-# file had (under their names from before the rename too): OVIS_RUNTIME=herdr-core, and OVIS_HC_BIN, the hc find_core checked (a release before the
-# server's own search runs only that or `hc` on the PATH). It adds the hc session the installer ran with
-# (HC_SESSION, HC_SOCKET), which a service would not otherwise have, unless a file names one.
+# as the token in it needs.
 core_settings() {
   core_dirs
   mkdir -p "$settings_dir"
@@ -1223,15 +1417,10 @@ unit_text() {
   fi
 }
 
-# Registers the user service that runs `scripts/plugin.ts start` at login, with core_settings' dirs:
-# launchd's on macOS, systemd's on Linux. That start runs the server in the background and records it, as the plugin's start does,
-# so `plugin.ts stop` and `status` work on it as on the plugin's. Where there is neither, it says how
-# to start the app by hand.
 core_service() {
   # one line each in the unit: a newline in a value would start a directive of its own
   case "$PATH$settings_dir$state_dir$APP_DIR$OVIS_HOME" in *'
 '*) fail "a newline in PATH or HOME cannot go into a service file; remove it and run this again" ;; esac
-  # what the service runs: bun and the checkout's script, or the binary and its plugin entry ($1 $2)
   bun_bin=${1:-$(command -v bun)}
   service_entry=${2:-$APP_DIR/scripts/plugin.ts}
   start_line="HERDR_PLUGIN_CONFIG_DIR=$settings_dir HERDR_PLUGIN_STATE_DIR=$state_dir ${1:-bun} $service_entry start"
@@ -1298,12 +1487,265 @@ EOF
   fi
 }
 
-# Ovis on herdr-core, without herdr or its plugin: its own checkout in APP_DIR, built with herdr-plugin.toml's
-# [[build]] steps as herdr builds the plugin (the Rust PTY host aside: herdr-core's terminals need none),
-# its settings, its service, and a start now.
+herdr_running() { herdr status server --json 2>/dev/null </dev/null | grep -q '"running":true'; }
+
+# Lingering keeps this user's service manager, and so herdr, running with nobody logged in, and starts it at boot. It
+# is turned on only after an explicit "no" and only where no password is asked; the installer notes that it did
+# ($OVIS_HOME/lingering), so the guide's Uninstall turns it off again. $lingering: on, turned-on, off or unknown.
+keep_lingering() {
+  linger_user=$(id -un)
+  lingering=$(loginctl show-user "$linger_user" -p Linger --value 2>/dev/null </dev/null) || lingering=""
+  case "$lingering" in
+    yes) lingering=on ;;
+    no)
+      lingering=off
+      if loginctl --no-ask-password enable-linger "$linger_user" </dev/null >/dev/null 2>&1; then
+        mkdir -p "$OVIS_HOME"
+        printf '%s\n' "$linger_user" >"$OVIS_HOME/lingering"
+        lingering=turned-on
+      fi
+      ;;
+    *) lingering=unknown ;;
+  esac
+}
+
+# Whether this PC is used with a desktop: there herdr is the person's to open, as before, and a login service would
+# start it at boot, before the desktop gives the person's session its display, so its terminals would lack it. Told from
+# this login (XDG_SESSION_TYPE x11, wayland or mir; where no session type is set, an X or Wayland display: forwarded X
+# alone, in an SSH login's tty session, does not count) and from the machine, for an SSH login into a desktop PC: a
+# display manager is enabled, or this user has a graphical session. systemd's default target says nothing: Debian and
+# Ubuntu ship graphical.target as the default on servers too. $desktop_found names what was found.
+desktop_pc() {
+  case "${XDG_SESSION_TYPE:-}" in
+    x11 | wayland | mir) desktop_found="a desktop session"; return 0 ;;
+    "") if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then desktop_found="a desktop session"; return 0; fi ;;
+  esac
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled --quiet display-manager.service </dev/null 2>/dev/null; then
+    desktop_found="a display manager (a desktop's login screen)"
+    return 0
+  fi
+  command -v loginctl >/dev/null 2>&1 || return 1
+  desktop_found="a graphical session of yours"
+  [ -z "$(loginctl show-user "$(id -un)" -p Display --value 2>/dev/null </dev/null || true)" ] || return 0
+  for desktop_id in $(loginctl list-sessions --no-legend 2>/dev/null </dev/null | awk '{ print $1 }'); do
+    case "$(loginctl show-session "$desktop_id" -p Type --value 2>/dev/null </dev/null || true)" in
+      x11 | wayland | mir) desktop_found="a graphical session"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# The PATH a service gives herdr, and so its terminals: the user's own, in its order, with the folders this installer
+# puts herdr and Bun in added at the end where it lacks them.
+service_path() {
+  service_path=${original_path:-$PATH}
+  for service_dir in "$BIN_DIR" "$HOME/.bun/bin"; do
+    case ":$service_path:" in *":$service_dir:"*) ;; *) service_path="$service_path:$service_dir" ;; esac
+  done
+}
+
+# A locale's name that says UTF-8 (en_US.UTF-8, C.utf8, ko_KR.UTF-8@euro).
+utf8_locale() { case "$1" in *.[Uu][Tt][Ff]-8 | *.[Uu][Tt][Ff]8 | *.[Uu][Tt][Ff]-8@* | *.[Uu][Tt][Ff]8@*) return 0 ;; esac; return 1; }
+
+# Whether the unit at its fixed path is the one this installer writes (its description), not someone else's.
+herdr_unit_ours() {
+  herdr_unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$HERDR_SERVICE.service"
+  grep -qsxF "Description=$HERDR_UNIT_DESCRIPTION" "$herdr_unit"
+}
+
+# The unit an earlier run wrote, where none is wanted now ($1, said in the closing lines as $herdr_unit_gone): lingering
+# is off (turned off since, or refused), so at every login it would start herdr inside the user's service manager, which
+# logind ends with that login and every terminal with it, and a herdr the person starts would attach to that one instead
+# of starting one that outlives the logout; --no-service; or this PC has a desktop. It is disabled and removed, never
+# stopped (a stop would end nothing anyway). The note that the installer turned lingering on goes only when lingering is
+# off: otherwise it is still on, and the guide's Uninstall turns it off. Fails where there is no such unit of ours.
+forget_herdr_unit() {
+  herdr_unit_ours || return 1
+  systemctl --user disable "$HERDR_SERVICE.service" </dev/null >/dev/null 2>&1 || true
+  rm -f "$herdr_unit"
+  [ "$1" != linger-off ] || rm -f "$OVIS_HOME/lingering"
+  systemctl --user daemon-reload </dev/null >/dev/null 2>&1 || true
+  herdr_unit_gone=$1
+}
+
+# herdr runs (nothing is started or stopped then), but the unit an earlier run wrote goes where none is wanted now:
+# --no-service, a desktop, or lingering off (forget_herdr_unit). With lingering off and the unit run at this login, the
+# herdr that runs is most likely the one it started, inside the service manager: $herdr_doomed says so, and the closing
+# lines say what that means.
+unit_not_wanted() {
+  [ "$os" = linux ] && herdr_unit_ours || return 0
+  herdr_bin=$(command -v herdr)
+  if [ "${no_service:-0}" = 1 ]; then
+    forget_herdr_unit declined || true
+  elif desktop_pc; then
+    forget_herdr_unit desktop || true
+  elif [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null </dev/null || true)" != yes ]; then
+    herdr_unit_ran=$(systemctl --user is-active "$HERDR_SERVICE.service" 2>/dev/null </dev/null || true)
+    forget_herdr_unit linger-off || return 0
+    [ "$herdr_unit_ran" != active ] || herdr_doomed=1
+  fi
+}
+
+# herdr's server, started headless where none runs (herdr just installed, or installed and stopped): the plugin starts
+# with it (its startup hook), so the app runs now. The user's service manager starts it again: on macOS the Mac app's
+# LaunchAgent (app/mac/README.md) at login; on a Linux PC used without a desktop ovis-herdr.service, only where
+# lingering is on (turned on here when no password is asked), so at boot and past every logout. Without lingering a
+# user service would run herdr inside the user's manager, which logind stops with the last session, and every terminal
+# with it: there, as on a PC with a desktop (desktop_pc), with --no-service, or without a service manager, herdr is
+# started once in a session of its own, which outlives a logout as a herdr started by hand does, and nothing starts it
+# after a restart; a unit an earlier run wrote goes (forget_herdr_unit). On a Mac the agent is set up at the screen too:
+# launchd runs it inside the person's login, with that login's window server and keychain, as the Mac app's does.
+# Neither service ever stops herdr: herdr's own update hands its terminals to a new server and exits, and a service that
+# took that exit for the end of herdr would stop the new server with them; disabling it (the guide's Uninstall) leaves
+# herdr running. herdr's output (as the services') stays away from this installer's, which a script may be reading to
+# its end. $herdr_kept says how: systemd, launchd, login (launchd from the next login), linger-off, desktop, declined or
+# once. Fails when herdr does not answer within 20 s.
+start_herdr() {
+  herdr_bin=$(command -v herdr)
+  service_path
+  case "$service_path$HOME$herdr_bin${HERDR_SESSION:-}${LANG:-}${LC_ALL:-}${LC_CTYPE:-}" in *'
+'*) fail "a newline in PATH, HOME, HERDR_SESSION or the locale cannot go into a service file; remove it and run this again" ;; esac
+  if [ "${no_service:-0}" = 1 ]; then
+    herdr_kept=declined
+  elif [ "$os" = darwin ]; then
+    herdr_kept=login
+    herdr_agent="$HOME/Library/LaunchAgents/$HERDR_AGENT_LABEL.plist"
+    mkdir -p "$(dirname "$herdr_agent")" "$HOME/Library/Logs/Ovis"
+    # the Mac app's keys: launchd gives a job no locale, and the panes' shells read Korean and emoji as bytes without
+    # LC_CTYPE; AbandonProcessGroup, or launchd would end the server herdr hands its terminals to when herdr exits
+    {
+      printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' '<plist version="1.0">' '<dict>'
+      printf '  <key>Label</key><string>%s</string>\n' "$HERDR_AGENT_LABEL"
+      printf '  <key>ProgramArguments</key><array><string>%s</string><string>server</string></array>\n' "$(xml_text "$herdr_bin")"
+      printf '%s\n' '  <key>RunAtLoad</key><true/>'
+      printf '  <key>WorkingDirectory</key><string>%s</string>\n' "$(xml_text "$HOME")"
+      printf '%s\n' '  <key>EnvironmentVariables</key><dict>'
+      printf '    <key>PATH</key><string>%s</string>\n' "$(xml_text "$service_path")"
+      printf '    <key>HOME</key><string>%s</string>\n' "$(xml_text "$HOME")"
+      printf '%s\n' '    <key>LC_CTYPE</key><string>UTF-8</string>'
+      [ -z "${HERDR_SESSION:-}" ] || printf '    <key>HERDR_SESSION</key><string>%s</string>\n' "$(xml_text "$HERDR_SESSION")"
+      printf '%s\n' '  </dict>' '  <key>AbandonProcessGroup</key><true/>'
+      printf '  <key>StandardOutPath</key><string>%s</string>\n' "$(xml_text "$HOME/Library/Logs/Ovis/herdr-server.log")"
+      printf '  <key>StandardErrorPath</key><string>%s</string>\n' "$(xml_text "$HOME/Library/Logs/Ovis/herdr-server.log")"
+      printf '%s\n' '  <key>ProcessType</key><string>Interactive</string>' '</dict>' '</plist>'
+    } >"$herdr_agent.new"
+    mv -f "$herdr_agent.new" "$herdr_agent"
+    herdr_job="gui/$(id -u)/$HERDR_AGENT_LABEL"
+    # an agent the Mac app's Remove disabled stays off until enabled; a loaded one is kicked, never booted out
+    launchctl enable "$herdr_job" </dev/null >/dev/null 2>&1 || true
+    if launchctl print "$herdr_job" </dev/null >/dev/null 2>&1; then
+      ! launchctl kickstart "$herdr_job" </dev/null >/dev/null 2>&1 || herdr_kept=launchd
+    elif launchctl bootstrap "gui/$(id -u)" "$herdr_agent" </dev/null >/dev/null 2>&1; then
+      herdr_kept=launchd
+    fi
+    # otherwise no login at this Mac's screen (reached over SSH alone): launchd loads the agent at the next one
+  elif desktop_pc; then
+    herdr_kept=desktop
+  elif ! { command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; }; then
+    herdr_kept=once
+  elif keep_lingering; [ "$lingering" != on ] && [ "$lingering" != turned-on ]; then
+    herdr_kept=linger-off
+  else
+    herdr_kept=once
+    herdr_unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$HERDR_SERVICE.service"
+    mkdir -p "$(dirname "$herdr_unit")"
+    # a UTF-8 locale, as the Mac app gives launchd's job: the installer's own when it has one, else C.UTF-8
+    herdr_ctype=C.UTF-8
+    for herdr_locale in "${LC_ALL:-}" "${LC_CTYPE:-}" "${LANG:-}"; do
+      if utf8_locale "$herdr_locale"; then herdr_ctype=$herdr_locale; break; fi
+    done
+    # oneshot that stays active and starts herdr in the background: systemd follows no process of it, and with
+    # KillMode=process and no ExecStop a stop or restart of the unit ends nothing that runs. herdr runs in the home
+    # folder, as from a login, not in systemd's /, and its output goes to the journal (journalctl --user -u ovis-herdr)
+    {
+      printf '%s\n' '[Unit]' "Description=$HERDR_UNIT_DESCRIPTION" '' '[Service]' 'Type=oneshot' 'RemainAfterExit=yes' 'KillMode=process' 'WorkingDirectory=~'
+      printf 'Environment="PATH=%s"\n' "$(unit_text "$service_path")"
+      printf 'Environment="LC_CTYPE=%s"\n' "$(unit_text "$herdr_ctype")"
+      ! utf8_locale "${LANG:-}" || printf 'Environment="LANG=%s"\n' "$(unit_text "$LANG")"
+      [ -z "${HERDR_SESSION:-}" ] || printf 'Environment="HERDR_SESSION=%s"\n' "$(unit_text "$HERDR_SESSION")"
+      # shellcheck disable=SC2016 # $$0 is systemd's escape for the $0 of sh -c
+      printf 'ExecStart=/bin/sh -c '\''"$$0" server </dev/null &'\'' "%s"\n' "$(unit_text "$herdr_bin" exec)"
+      printf '%s\n' '' '[Install]' 'WantedBy=default.target'
+    } >"$herdr_unit.new"
+    mv -f "$herdr_unit.new" "$herdr_unit"
+    # restart, not start: a unit still active from an earlier start whose herdr was stopped since would start nothing
+    if systemctl --user daemon-reload </dev/null >/dev/null 2>&1 && systemctl --user enable "$HERDR_SERVICE.service" </dev/null >/dev/null 2>&1 \
+      && systemctl --user restart "$HERDR_SERVICE.service" </dev/null >/dev/null 2>&1; then
+      herdr_kept=systemd
+    else
+      say "systemd did not take $herdr_unit, so herdr does not start by itself"
+    fi
+  fi
+  # a unit an earlier run wrote, where none is wanted now (lingering off, --no-service, a desktop)
+  case "$os:$herdr_kept" in linux:linger-off | linux:declined | linux:desktop) forget_herdr_unit "$herdr_kept" || true ;; esac
+  herdr_pid=""
+  if [ "$herdr_kept" != systemd ] && [ "$herdr_kept" != launchd ]; then
+    if command -v setsid >/dev/null 2>&1; then herdr_detach=setsid; elif command -v nohup >/dev/null 2>&1; then herdr_detach=nohup; else herdr_detach=""; fi
+    # shellcheck disable=SC2086 # no word when there is neither
+    (cd "$HOME" && exec $herdr_detach "$herdr_bin" server </dev/null >/dev/null 2>&1) &
+    herdr_pid=$!
+  fi
+  herdr_waited=0
+  until herdr_running; do
+    # a herdr started here that ended (a zombie until this shell reaps it) answers no more: said at once, not after the bound
+    if [ -n "$herdr_pid" ] && { ! kill -0 "$herdr_pid" 2>/dev/null || ps -o stat= -p "$herdr_pid" 2>/dev/null | grep -q '^Z'; }; then
+      herdr_running && break
+      return 1
+    fi
+    herdr_waited=$((herdr_waited + 1))
+    [ "$herdr_waited" -lt 20 ] || return 1
+    sleep 1
+  done
+}
+
+# Why herdr did not start, where to read it.
+herdr_failed() {
+  case "${herdr_kept:-once}" in
+    systemd) herdr_log="journalctl --user -u $HERDR_SERVICE" ;;
+    launchd) herdr_log="$HOME/Library/Logs/Ovis/herdr-server.log" ;;
+    *) herdr_log="run $(quoted "$herdr_bin") server" ;;
+  esac
+  say "herdr did not start, so neither did the app; to see why: $herdr_log"
+}
+
+ref_not_moved() {
+  [ -n "${OVIS_REF:-${HERDR_WEB_UI_REF:-}}" ] || return 0
+  # What git answers, by the rule scripts/plugin-launch.ts (checkoutCommit) and install.ps1 read the installed commit
+  # by: a checkout's top level has its commit; a folder inside another repository (--show-prefix names its path there:
+  # git would read that repository's commit, not the plugin's) or one git says is no repository has none; anything else
+  # is git failing, which is said with git's first line (untranslated: LC_ALL=C). Only git's stdout is the prefix and
+  # the commit: a warning it prints on stderr while it succeeds is neither. With no checkout to read (herdr did not name
+  # the plugin's root), git -C "" would read the current directory's. With no file for git's stderr (mktemp failed), the
+  # commit is still read, git's stderr discarded, and git's failures, which can no longer be told apart, are not said.
+  ref_not_moved_at=""
+  if [ -n "$1" ]; then
+    ref_not_moved_err=$(mktemp 2>/dev/null) || ref_not_moved_err=""
+    if ref_not_moved_git=$(LC_ALL=C git -C "$1" rev-parse --show-prefix 2>"${ref_not_moved_err:-/dev/null}" </dev/null); then
+      if [ -z "$ref_not_moved_git" ]; then
+        if ref_not_moved_git=$(LC_ALL=C git -C "$1" rev-parse --short=12 HEAD 2>"${ref_not_moved_err:-/dev/null}" </dev/null); then
+          ref_not_moved_at="the installed checkout is at commit $ref_not_moved_git; "
+        elif [ -n "$ref_not_moved_err" ]; then
+          ref_not_moved_at="git could not read the installed checkout's commit ($(sed -n 1p "$ref_not_moved_err")); "
+        fi
+      fi
+    elif [ -n "$ref_not_moved_err" ] && ! grep -q "not a git repository" "$ref_not_moved_err"; then
+      ref_not_moved_at="git could not read the installed checkout's commit ($(sed -n 1p "$ref_not_moved_err")); "
+    fi
+    [ -z "$ref_not_moved_err" ] || rm -f "$ref_not_moved_err"
+  fi
+  say "${ref_not_moved_at}OVIS_REF does not move an installed Ovis (INSTALL.md, Update)"
+}
+
+install_native_helpers() {
+  [ ! -f "$1/scripts/pty-sidecar.ts" ] || (cd "$1" && bun scripts/pty-sidecar.ts install </dev/null) || true
+}
+
+# Ovis on herdr-core, without herdr or its plugin: its own checkout in APP_DIR, its native helpers,
+# settings and service, and a start now.
 install_core() {
   if [ -d "$APP_DIR/.git" ]; then
     say "already installed in $APP_DIR, on herdr-core; Settings → Updates keeps it current"
+    ref_not_moved "$APP_DIR"
   elif [ -e "$APP_DIR" ]; then
     fail "$APP_DIR is there but is not an Ovis checkout; move it away and run this again"
   else
@@ -1311,13 +1753,10 @@ install_core() {
     [ -n "$ref" ] || fail "could not look up the latest release on github.com. Check the connection and run this again."
     say "found herdr-core ($core), so Ovis runs on it: no herdr or herdr plugin needed"
     say "installing Ovis $ref into $APP_DIR (about a minute)"
-    # built beside it and moved in once built, so a failed or cut-short run leaves no half-built app to keep
     rm -rf "$APP_DIR.new"
     mkdir -p "$(dirname "$APP_DIR")"
     git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$ref" "https://github.com/$REPO.git" "$APP_DIR.new" </dev/null \
       || { rm -rf "$APP_DIR.new"; fail "could not download Ovis $ref from github.com. Check the connection and run this again."; }
-    # on a branch named main at that release: Settings → Updates updates a source checkout from main only,
-    # and takes a detached one only as herdr's plugin checkout (server/updater.ts sourceBlock)
     git -C "$APP_DIR.new" checkout --quiet -B main </dev/null || { rm -rf "$APP_DIR.new"; fail "could not set up the checkout in $APP_DIR.new"; }
     log=$(mktemp)
     if ! (cd "$APP_DIR.new" && sh scripts/preflight.sh && sh scripts/with-bun.sh install && sh scripts/with-bun.sh run build) </dev/null >"$log" 2>&1; then
@@ -1331,22 +1770,17 @@ install_core() {
   fi
   root=$APP_DIR
   core_settings
-  # every scripts/plugin.ts this run starts (the start below, the phone step, open_app) reads what the service does
   HERDR_PLUGIN_CONFIG_DIR=$settings_dir
   HERDR_PLUGIN_STATE_DIR=$state_dir
   export HERDR_PLUGIN_CONFIG_DIR HERDR_PLUGIN_STATE_DIR
-  # after them: the release that runs is found with the settings the service reads
   code=$(running_code "$root")
+  install_native_helpers "$code"
   core_service
   bun "$root/scripts/plugin.ts" start </dev/null \
     || say "Ovis did not start; what it said is above. Start it again with: $start_line"
 }
 
-# Ovis as a herdr plugin: installed (or moved from its id before the rename) by herdr, with the Rust
-# PTY host or Node for its terminals, and started now when herdr runs.
 install_plugin() {
-  # The ref to install is settled before anything moves: a release from before the rename still
-  # names the plugin by its old id, and installing it cannot move an install to the new one
   ref=""
   move=1
   if ! herdr plugin list 2>/dev/null | grep -q "$PLUGIN "; then
@@ -1354,11 +1788,7 @@ install_plugin() {
     ref=${OVIS_REF:-${HERDR_WEB_UI_REF:-$(latest_release)}}
     [ -n "$ref" ] || fail "could not look up the latest release on github.com. Check the connection and run this again."
     case "$(ref_plugin_id "$ref")" in
-      # that release installs, runs and updates under the old id: the move waits for a release
-      # that names the new one, which Settings → Updates or this script brings
       "$LEGACY_PLUGIN") PLUGIN=$LEGACY_PLUGIN ;;
-      # a branch whose manifest cannot be read: an install under the old id is left running, since
-      # the ref may not be able to move it
       "") move=0 ;;
     esac
   fi
@@ -1378,6 +1808,7 @@ install_plugin() {
 
   if herdr plugin list 2>/dev/null | grep -q "$PLUGIN "; then
     say "already installed as a herdr plugin; Settings → Updates keeps it current"
+    ref_not_moved "$(plugin_root "$PLUGIN")"
   else
     say "installing the herdr plugin at $ref (herdr clones and builds it: about a minute)"
     # a branch builds its own sources: the plugin's launcher (scripts/plugin-launch.ts) would otherwise run the
@@ -1389,11 +1820,6 @@ install_plugin() {
     installed=0
     if OVIS_FROM_SOURCE=$plugin_source herdr plugin install "$REPO" --ref "$ref" --yes </dev/null >"$log" 2>&1; then
       installed=1
-    elif grep -q "Ovis needs Node 18 or newer" "$log" && ( install_node ); then
-      # a release from before the Rust PTY host was the default still asks for Node in its first build
-      # step, on herdr's PATH
-      node_link "" installed
-      OVIS_FROM_SOURCE=$plugin_source herdr plugin install "$REPO" --ref "$ref" --yes </dev/null >"$log" 2>&1 && installed=1
     fi
     if [ "$installed" = 1 ]; then
       grep '^Installed ' "$log" || true
@@ -1407,7 +1833,6 @@ install_plugin() {
   fi
 
   root=$(plugin_root "$PLUGIN")
-  # the id unknown before the install: the ref may have named the old one
   if [ -z "$root" ] && [ "$move" = 0 ]; then
     PLUGIN=$LEGACY_PLUGIN
     root=$(plugin_root "$PLUGIN")
@@ -1421,47 +1846,37 @@ install_plugin() {
 
   # the Rust PTY host of the release that runs, checked against its SHA-256: herdr's build step and
   # Settings → Updates fetch it too, so this is for an install from before it shipped, or one whose
-  # download failed. Without it, terminals use the Node sidecar where there is Node, or a mirror.
+  # download failed. Without it, herdr's terminals are mirrored.
   code=$(running_code "$root")
-  [ ! -f "$code/scripts/pty-sidecar.ts" ] || (cd "$code" && bun scripts/pty-sidecar.ts install </dev/null) || true
-  # Node only where terminals would otherwise have no PTY host: a release without the Rust host (one
-  # from before it, or a branch), or one whose host failed its checks here
-  needs_node=""
-  if ! rust_host_runs "$code/bin/ovis-pty-sidecar"; then
-    needs_node=needed
-    # the app's own Node first, as the server looks (server/pty/sidecar.ts realNode), then the PATH's.
-    # Optional now: a Node that cannot be installed leaves the panes mirrored, never the install unfinished
-    if ! node_fits "$NODE_DIR/bin/node" && ! node_fits "$LEGACY_NODE_DIR/bin/node" && ! node_fits node && ! ( install_node ); then
-      say "could not install Node, so this PC's panes are mirrored until the Rust PTY host can be installed (run this again later)"
-    fi
-  fi
-  node_link "$code" "$needs_node"
+  install_native_helpers "$code"
+  rust_host_runs "$code/bin/ovis-pty-sidecar" || rust_host_runs "$code/crates/pty-sidecar/target/release/ovis-pty-sidecar" || say "the Rust PTY host does not run on this PC ($code/bin/ovis-pty-sidecar: missing, or in a folder that cannot run programs), so herdr's terminals are mirrored: run this again later, or build one with cargo build --release --manifest-path crates/pty-sidecar/Cargo.toml in $code"
 
-  if herdr status server --json 2>/dev/null | grep -q '"running":true'; then
-    # the action only queues the start (its output goes to herdr's plugin log), so wait for it here
+  # the action only queues the start (its output goes to herdr's plugin log), and a herdr started here starts the app
+  # itself once it is up (the plugin's startup hook): either way, wait for it here
+  ovis_wait=25
+  if herdr_running; then
+    unit_not_wanted
     herdr plugin action invoke "$PLUGIN.start" >/dev/null </dev/null
-    tries=0
-    until bun "$root/scripts/plugin.ts" status </dev/null | grep -q '^running'; do
-      tries=$((tries + 1))
-      [ "$tries" -lt 25 ] || {
-        say "did not start within 25 s; see: herdr plugin log list"
-        # the start ran inside herdr, so what it said is in herdr's plugin log, not on this terminal
-        # shellcheck disable=SC2016 # JavaScript, not shell
-        herdr plugin log list 2>/dev/null </dev/null | bun -e 'const logs = JSON.parse(await Bun.stdin.text()).result.logs.filter((log) => log.plugin_id === process.argv[1] && log.stderr); if (logs.length > 0) console.error(logs.at(-1).stderr.trim())' "$PLUGIN" || true
-        break
-      }
-      sleep 1
-    done
+  elif start_herdr; then
+    ovis_wait=60
   else
-    say "herdr is not running, so neither is the app yet: it starts with herdr. Run: herdr"
+    herdr_failed
+    return 0
   fi
+  tries=0
+  until bun "$root/scripts/plugin.ts" status </dev/null | grep -q '^running'; do
+    tries=$((tries + 1))
+    [ "$tries" -lt "$ovis_wait" ] || {
+      say "did not start within $ovis_wait s; see: herdr plugin log list"
+      # the start ran inside herdr, so what it said is in herdr's plugin log, not on this terminal
+      # shellcheck disable=SC2016 # JavaScript, not shell
+      herdr plugin log list 2>/dev/null </dev/null | bun -e 'const logs = JSON.parse(await Bun.stdin.text()).result.logs.filter((log) => log.plugin_id === process.argv[1] && log.stderr); if (logs.length > 0) console.error(logs.at(-1).stderr.trim())' "$PLUGIN" || true
+      break
+    }
+    sleep 1
+  done
 }
 
-# Whether this run installs the release's compiled server ($binary=1) or builds from source ($binary=0),
-# and of which version ($version, $ref). From source: OVIS_FROM_SOURCE=1, a ref that is not a release tag
-# (a branch has no release to fetch), an install from source that is here already (herdr's plugin checkout,
-# or herdr-core's in APP_DIR: Settings → Updates keeps those current), or a release that ships no
-# ovis-server.json yet (one from before the compiled server). Nothing is installed here.
 # old_shape_valid <manifest>: the release's ovis-server.json.sig is a valid signature of it by RELEASE_PUBLIC_KEY, and
 # it names $version (a checker needs a folder of its own: made and removed here)
 old_shape_valid() {
@@ -1495,7 +1910,6 @@ pick_install() {
   fi
   [ ! -d "$APP_DIR/.git" ] || return 0
   if command -v herdr >/dev/null 2>&1 && herdr plugin list 2>/dev/null </dev/null | grep -q -e "$PLUGIN " -e "$LEGACY_PLUGIN "; then
-    # the plugin this installer links runs the binary; any other is a checkout from source
     [ -f "$OVIS_HOME/plugin/herdr-plugin.toml" ] || return 0
   fi
   releases_base
@@ -1531,7 +1945,6 @@ pick_install() {
     22 | 37)
       [ "$old_shape" = 0 ] || say "Ovis $ref's signed ovis-server.json has the shape from before this installer"
       if [ "$binary_home" = 1 ]; then
-        # an explicit tag without the binary asks for source; the latest release unreachable keeps what runs
         [ -z "${OVIS_REF:-${HERDR_WEB_UI_REF:-}}" ] || refuse_source_over_binary "Ovis $ref ships no compiled server, so it would be a source install"
         say "could not check the release $ref ($releases, curl exit $probe_status); the installed Ovis stays as it is, nothing was changed"
         exit 0
@@ -1549,13 +1962,10 @@ binary_platform() {
   platform="$os-$arch"
 }
 
-# scripts/plugin.ts's commands as this install runs them: the installed binary, or Bun and the source
 ovis_cli() {
   if [ "${binary:-0}" = 1 ]; then "$OVIS_HOME/bin/ovis-server" plugin "$@"; else bun "$code/scripts/plugin.ts" "$@"; fi
 }
 
-# The plugin herdr links for the binary: its manifest, with the commands of herdr-plugin.toml, each run
-# through run.sh, which hands it to bin/ovis-server. Written beside the old ones and moved over them.
 write_plugin() {
   mkdir -p "$OVIS_HOME/plugin"
   cat >"$OVIS_HOME/plugin/.run.sh.new" <<'EOF'
@@ -1580,9 +1990,16 @@ EOF
   mv -f "$OVIS_HOME/plugin/.herdr-plugin.toml.new" "$OVIS_HOME/plugin/herdr-plugin.toml"
 }
 
-# Ovis as the release's binary under herdr: installed and checked (install_binary), the plugin folder
-# linked into herdr once, and started now when herdr runs. A new version stops the server the old one
-# started, so the start runs the new one.
+# The plugin's own Ovis, by the state dir herdr gives the plugin (scripts/plugin-state.ts): without it, `stop` takes
+# ~/.local/state/ovis whenever a live server is recorded there, which is Ovis on herdr-core's, or one started by hand.
+stop_plugin_server() {
+  (
+    HERDR_PLUGIN_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/$PLUGIN"
+    export HERDR_PLUGIN_STATE_DIR
+    ovis_cli stop </dev/null >/dev/null 2>&1
+  ) || true
+}
+
 install_plugin_binary() {
   install_binary "$version"
   write_plugin
@@ -1599,22 +2016,26 @@ install_plugin_binary() {
       fail "herdr could not link the plugin in $OVIS_HOME/plugin; its output is above"
     fi
   fi
-  if herdr status server --json 2>/dev/null </dev/null | grep -q '"running":true'; then
-    [ "$binary_changed" = 0 ] || ovis_cli stop </dev/null >/dev/null 2>&1 || true
+  ovis_wait=25
+  # the release's server outlives a stopped herdr: one from the binary before keeps serving unless stopped first
+  [ "$binary_changed" = 0 ] || stop_plugin_server
+  if herdr_running; then
+    unit_not_wanted
     herdr plugin action invoke "$PLUGIN.start" >/dev/null </dev/null
-    tries=0
-    until ovis_cli status </dev/null 2>/dev/null | grep -q '^running'; do
-      tries=$((tries + 1))
-      [ "$tries" -lt 25 ] || { say "did not start within 25 s; see: herdr plugin log list"; break; }
-      sleep 1
-    done
+  elif start_herdr; then
+    ovis_wait=60
   else
-    say "herdr is not running, so neither is the app yet: it starts with herdr. Run: herdr"
+    herdr_failed
+    return 0
   fi
+  tries=0
+  until ovis_cli status </dev/null 2>/dev/null | grep -q '^running'; do
+    tries=$((tries + 1))
+    [ "$tries" -lt "$ovis_wait" ] || { say "did not start within $ovis_wait s; see: herdr plugin log list"; break; }
+    sleep 1
+  done
 }
 
-# Ovis as the release's binary on herdr-core: installed and checked, its settings, the user service that
-# runs `ovis-server plugin start` at login, and a start now
 install_core_binary() {
   say "found herdr-core ($core), so Ovis runs on it: no herdr or herdr plugin needed"
   install_binary "$version"
@@ -1631,16 +2052,99 @@ install_core_binary() {
   ovis_cli start </dev/null || say "Ovis did not start; what it said is above. Start it again with: $start_line"
 }
 
+usage_help() {
+  cat <<EOF
+$USAGE
+
+Installs Ovis for this user (and herdr where it is missing), and leaves it running.
+
+  --add               end with \`ovis add\`: this PC signs in to your Ovis account, at a terminal you answer at
+  --account <id>      your Ovis account's id (ovis status on a PC already in it shows it): the add asks nothing
+                      (alone, it means --add), and a join checks the invite is for that account
+  --join-file <path>  join your Ovis account with an invite a device signed in to it made: a file holding its one
+                      line ($JOIN_PREFIX…). Nothing is signed in to on this PC
+  --join <line>       the same with the line itself, which then shows in the process list to every user of this PC:
+                      use --join-file or OVIS_JOIN instead
+  --no-service        where herdr is not running, start it once and set up no service or lingering
+  --help              this text
+
+Where arguments cannot be given, the same as variables: OVIS_ADD=1, OVIS_ADD_ACCOUNT=<id>, OVIS_JOIN=<line>,
+OVIS_NO_SERVICE=1. Also OVIS_REF=<branch or tag>, OVIS_FROM_SOURCE=1, OVIS_RUNTIME=herdr|herdr-core and
+OVIS_TAILSCALE_HTTPS_PORT=<port>. More: https://github.com/$REPO/blob/main/docs/guide.md#quick-start
+EOF
+}
+
+# The invite's line, from where it was given ($join_given: argument, file or env), trimmed as `ovis join` trims it, and
+# refused before anything is installed unless it has a join line's shape (shared/account-list-join.ts): its prefix,
+# then base64url only, at most JOIN_MAX characters. `ovis join` reads the rest. Nothing of it is ever printed: it holds the
+# invite's key. A file is read only when it is a regular file (a FIFO would hold the install), and never named back.
+read_join() {
+  if [ "$join_given" = file ]; then
+    case "$join_file" in /*) join_path=$join_file ;; *) join_path="$(pwd)/$join_file" ;; esac
+    [ -f "$join_path" ] && [ -r "$join_path" ] || fail "--join-file names no file you can read (a file holding the invite's line). Nothing was installed. $USAGE"
+    join_line=$(dd if="$join_path" bs=4097 count=1 2>/dev/null) || fail "could not read the file --join-file names. Nothing was installed. $USAGE"
+  fi
+  join_line=$(printf '%s\n' "$join_line" | awk '{ sub(/^[ \t\r]+/, ""); sub(/[ \t\r]+$/, ""); if ($0 != "") { out = out (n++ ? "\n" : "") $0 } } END { printf "%s", out }')
+  join_shaped=1
+  case "$join_line" in "$JOIN_PREFIX"?*) ;; *) join_shaped=0 ;; esac
+  case "${join_line#"$JOIN_PREFIX"}" in *[!A-Za-z0-9_-]*) join_shaped=0 ;; esac
+  [ "${#join_line}" -le "$JOIN_MAX" ] || join_shaped=0
+  [ "$join_shaped" = 1 ] || fail "that is not an Ovis invite: an invite is one line that starts with $JOIN_PREFIX, made on a device signed in to your account. Nothing was installed. $USAGE"
+}
+
 main() {
   # before anything is installed: a misspelt option must not install without what it asked for
   add=0
   [ "${OVIS_ADD:-}" != 1 ] || add=1
-  for option in "$@"; do
-    case "$option" in
+  account=${OVIS_ADD_ACCOUNT:-}
+  case "$account" in -*) fail "OVIS_ADD_ACCOUNT takes your Ovis account's id (ovis status on a PC already in it shows it). $USAGE" ;; esac
+  no_service=0
+  [ "${OVIS_NO_SERVICE:-}" != 1 ] || no_service=1
+  join_given=""
+  join_line=""
+  join_file=""
+  join_path=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
       --add) add=1 ;;
-      *) fail "does not know the option '$option'. $USAGE" ;;
+      --account | --account=*)
+        if [ "$1" = --account ]; then account=${2:-}; [ $# -lt 2 ] || shift; else account=${1#--account=}; fi
+        case "$account" in "" | -*) fail "--account takes your Ovis account's id (ovis status on a PC already in it shows it). $USAGE" ;; esac
+        ;;
+      # the line itself is never named back, in any refusal
+      --join | --join=*)
+        [ -z "$join_given" ] || fail "give the invite one way only: --join-file <path>, OVIS_JOIN, or --join <line>. $USAGE"
+        if [ "$1" = --join ]; then join_line=${2:-}; [ $# -lt 2 ] || shift; else join_line=${1#--join=}; fi
+        case "$join_line" in "" | -*) fail "--join takes the invite's line, which starts with $JOIN_PREFIX. $USAGE" ;; esac
+        join_given=argument
+        ;;
+      --join-file | --join-file=*)
+        [ -z "$join_given" ] || fail "give the invite one way only: --join-file <path>, OVIS_JOIN, or --join <line>. $USAGE"
+        if [ "$1" = --join-file ]; then join_file=${2:-}; [ $# -lt 2 ] || shift; else join_file=${1#--join-file=}; fi
+        case "$join_file" in "" | -*) fail "--join-file takes the path of a file holding the invite's line. $USAGE" ;; esac
+        join_given=file
+        ;;
+      --no-service) no_service=1 ;;
+      --help | -h)
+        usage_help
+        exit 0
+        ;;
+      *) fail "does not know the option '$1'. $USAGE" ;;
     esac
+    shift
   done
+  if [ -z "$join_given" ] && [ -n "${OVIS_JOIN:-}" ]; then
+    join_line=$OVIS_JOIN
+    join_given=env
+  fi
+  # the line is the installer's alone from here: nothing it starts (herdr, and so every terminal in it) is given it
+  unset OVIS_JOIN
+  if [ -n "$join_given" ]; then
+    [ "$add" = 0 ] || fail "a join adds this PC with an invite, and --add (OVIS_ADD=1) with a sign-in: give one of them. $USAGE"
+    read_join
+  fi
+  # the account named is the add asked for, or with an invite, the account the invite must be for
+  [ -z "$account" ] || [ -n "$join_given" ] || add=1
   case "$(uname -s)" in
     Linux) os=linux ;;
     Darwin) os=darwin ;;
@@ -1654,6 +2158,11 @@ main() {
   platform="$os-$arch"
   terminal=0
   [ ! -t 1 ] || terminal=1
+  # a join with no account named is confirmed by the person at this terminal: where nobody can answer, it is refused now,
+  # not after the install
+  if [ -n "$join_given" ] && [ -z "$account" ] && ! join_answerable; then
+    fail "a join where nobody can answer needs the account the invite is for: add --account <id> (the id shown with the invite, or ovis status --json on a PC already in it; OVIS_ADD_ACCOUNT=<id> where arguments cannot be given). Nothing was installed. $USAGE"
+  fi
   if [ "$os" = linux ] && ldd --version 2>&1 | grep -qi musl; then
     fail "the terminal addon has no build for musl (Alpine); use a glibc distribution"
   fi
@@ -1663,6 +2172,10 @@ main() {
   original_path="$PATH"
   installed_here=""
   new_install=0
+  herdr_kept=""
+  lingering=""
+  herdr_unit_gone=""
+  herdr_doomed=0
   PATH="$BIN_DIR:$HOME/.bun/bin:$NODE_DIR/bin:$LEGACY_NODE_DIR/bin:$PATH"
   export PATH
 
@@ -1720,14 +2233,12 @@ main() {
   elif grep -q '"phone"' "$code/scripts/plugin.ts" 2>/dev/null; then
     bun "$code/scripts/plugin.ts" phone </dev/null || true
   else
-    # a release from before the phone step: the address the running app already knows, as a QR code
     origin=$(bun "$root/scripts/plugin.ts" status </dev/null | awk '$1 == "running" { print $2 }')
     url=""
     [ -z "$origin" ] || url=$(curl -fsS --max-time 5 "$origin/api/access" 2>/dev/null | bun -e 'try { console.log(JSON.parse(await Bun.stdin.text()).tailscale?.serving_url ?? "") } catch { console.log("") }')
     [ -z "$origin" ] || say "on this PC: $(link "$origin")"
     if [ -n "$url" ]; then
       say "on your phone: $(link "$url")"
-      # the app's own QR library, there since 0.3.11 for Settings → Phone
       if [ -d "$code/node_modules/qrcode-generator" ]; then
         # shellcheck disable=SC2016 # JavaScript, not shell
         (cd "$code" && bun -e 'const { default: qr } = await import("qrcode-generator"); const c = qr(0, "M"); c.addData(process.argv[1]); c.make(); console.log(c.createASCII(1, 1))' "$url") || true
@@ -1739,11 +2250,11 @@ main() {
 
   open_app
   add_pc
+  join_pc
 
   case ":$original_path:" in
     *":$BIN_DIR:"*) ;;
     *)
-      # on herdr-core the service runs with the PATH this install had, so no shell needs it
       if [ -z "$installed_here" ] || [ "$runtime" = herdr-core ]; then
         :
       elif grep -qs '\.local/bin' "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.zshrc"; then
@@ -1754,15 +2265,14 @@ main() {
         say "installed$installed_here into $BIN_DIR, which your shell does not put on its PATH. Add it, for example:"
         # shellcheck disable=SC2016 # the line to paste, $HOME and $PATH unexpanded
         printf '    echo '\''export PATH="$HOME/.local/bin:$PATH"'\'' >> ~/.profile\n'
-        say "and start herdr from a new terminal, so it and the app find them."
+        # a herdr started here has them on its PATH already
+        if [ -n "$herdr_kept" ]; then say "then open a new terminal, so your shell finds them."; else say "and start herdr from a new terminal, so it and the app find them."; fi
       fi
       ;;
   esac
 
   closing_lines
 
-  # once, on the first install, and not to someone who already starred it; a rerun for the phone
-  # address stays quiet. Last, so that leaving the question unanswered loses nothing above it.
   if [ "$new_install" = 1 ]; then
     star=$(starred)
     if [ "$star" != yes ]; then
@@ -1771,6 +2281,10 @@ main() {
       [ "$star" != no ] || offer_star
     fi
   fi
+  # --account is a script's add, or an agent's, and a join was asked for with a key: the exit status tells whether this
+  # PC was added, or joined
+  [ -z "$account" ] || [ -n "$join_given" ] || [ "$add_result" = done ] || exit 1
+  [ -z "$join_given" ] || [ "$join_result" = 0 ] || exit 1
 }
 
 # the whole script is read before anything runs: under `curl | sh`, a command that reads stdin

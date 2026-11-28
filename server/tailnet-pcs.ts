@@ -7,23 +7,20 @@
  * itself admits nobody, and no account membership comes from it.
  */
 import { HTTPS_PORTS, tailscaleBinary } from "./tailscale.ts";
+import { SERVER_ID_PATTERN } from "../shared/relay-id.ts";
+import { TargetAccountPcError } from "../shared/relay-channel.ts";
 
 const PROBE_MS = 2500;
 /** an address the list found stays addable this long */
 const FOUND_MS = 10 * 60_000;
-/** peers asked at most, so a large tailnet costs a bounded number of requests */
 const MAX_PEERS = 32;
-/** systems that never run an Ovis server */
 const PHONE_OS = new Set(["ios", "android"]);
 /** a health or code answer is a few hundred bytes; anything past this is not one */
 const MAX_BODY_BYTES = 64 * 1024;
 
 export interface TailnetPcsOptions {
-  /** `tailscale status --json`; null when Tailscale is not here */
   readStatus?: () => Promise<string | null>;
-  /** the HTTPS ports `tailscale serve` may publish Ovis on */
   ports?: readonly number[];
-  /** the address a peer's port is reached at; tests point it at a local server */
   origin?: (dnsName: string, port: number) => string;
 }
 
@@ -34,6 +31,8 @@ export interface TailnetPc {
   relay: string | null;
   /** that PC's Ovis predates typed codes (before 0.5): it is updated before one tap can add it */
   outdated: boolean;
+  /** the relay ID that PC's own health names, so the page can tell a PC it already has or that is in its account; for display only, as that PC alone says it */
+  server_id: string | null;
 }
 
 interface PeerJson { DNSName?: string; UserID?: string; Online?: boolean; OS?: string; Tags?: string[]; TailscaleIPs?: string[] }
@@ -94,8 +93,7 @@ interface Health { web_ui?: { server_id?: string }; auth?: { authenticated?: boo
 
 export class TailnetPcs {
   private found = new Map<string, { name: string; dnsName: string; at: number }>();
-  /** the list in flight: windows asking at once share one round of probes */
-  private listing: Promise<(TailnetPc & { server_id: string | null })[]> | null = null;
+  private listing: Promise<TailnetPc[]> | null = null;
   private readonly readStatus: () => Promise<string | null>;
   private readonly ports: readonly number[];
   private readonly origin: (dnsName: string, port: number) => string;
@@ -109,6 +107,12 @@ export class TailnetPcs {
   /** this PC's login drives that Ovis as its owner: what `tailscale serve` says, never an open LAN window; herdr there may be stopped */
   private static drivable(health: Health): boolean {
     return health.auth?.authenticated === true && health.auth.via === "tailscale" && health.auth.role === "drive";
+  }
+
+  /** the relay ID that PC names, only when it is shaped as one: its health is that PC's word, whatever it sends */
+  private static relayId(health: Health): string | null {
+    const id: unknown = health.web_ui?.server_id;
+    return typeof id === "string" && SERVER_ID_PATTERN.test(id) ? id : null;
   }
 
   /**
@@ -128,25 +132,20 @@ export class TailnetPcs {
     } catch { return null; }
   }
 
-  /** The PCs found now, each at the first port its Ovis answers on, leaving out those whose relay ID is in `added`. */
-  async list(added: ReadonlySet<string>): Promise<TailnetPc[]> {
+  async list(): Promise<TailnetPc[]> {
     this.listing ??= this.discover().finally(() => { this.listing = null; });
-    // filtered after the shared round: a PC added while it ran is left out for every window
-    return (await this.listing).filter((pc) => pc.server_id === null || !added.has(pc.server_id)).map(({ name, url, relay, outdated }) => ({ name, url, relay, outdated }));
+    return await this.listing;
   }
 
-  private async discover(): Promise<(TailnetPc & { server_id: string | null })[]> {
+  private async discover(): Promise<TailnetPc[]> {
     const peers = tailnetPeers(await this.readStatus());
-    const pcs = await Promise.all(peers.map(async ({ name, dnsName }): Promise<(TailnetPc & { dnsName: string; server_id: string | null }) | null> => {
+    const pcs = await Promise.all(peers.map(async ({ name, dnsName }): Promise<(TailnetPc & { dnsName: string }) | null> => {
       const answers = await Promise.all(this.ports.map(async (port) => {
         const url = this.origin(dnsName, port);
         const health = await this.probe(url);
         return health !== null && TailnetPcs.drivable(health)
-          ? { name, dnsName, url, relay: health.relay?.phase ?? null, outdated: TailnetPcs.outdated(health), server_id: health.web_ui?.server_id ?? null } : null;
+          ? { name, dnsName, url, relay: health.relay?.phase ?? null, outdated: TailnetPcs.outdated(health), server_id: TailnetPcs.relayId(health) } : null;
       }));
-      // a PC may run an older Ovis on one port and a current one on another: a current one (it names its relay ID)
-      // is the one to add, one whose relay is online first; then one whose relay is off, which may be a current one
-      // that never started its relay; an Ovis known to be older last
       const found = answers.filter((answer) => answer !== null);
       return found.find((answer) => answer.server_id !== null && answer.relay === "online") ?? found.find((answer) => answer.server_id !== null)
         ?? found.find((answer) => !answer.outdated) ?? found[0] ?? null;
@@ -179,7 +178,7 @@ export class TailnetPcs {
     if (TailnetPcs.outdated(health)) throw new TailnetPcError("outdated", OUTDATED);
     let response: Response;
     try {
-      response = await fetch(`${url}/api/relay/code`, { method: "POST", headers: { "x-herdr-update": "1" }, signal: AbortSignal.timeout(15_000), redirect: "error" });
+      response = await fetch(`${url}/api/relay/code`, { method: "POST", headers: { "x-herdr-update": "1", "x-ovis-pc-add": "1" }, signal: AbortSignal.timeout(15_000), redirect: "error" });
     } catch {
       throw new TailnetPcError("unreachable", "That PC did not answer. Check that it is on, then try again.");
     }
@@ -188,9 +187,9 @@ export class TailnetPcs {
       // that PC's own words never reach the person. Its health named its relay ID, so it is a current Ovis: a 404 or
       // 405 here comes from something in between, not from its version
       const refusal = body?.error?.code;
+      if (refusal === "pc_add_target_bound") throw new TargetAccountPcError();
       if (refusal === "relay_off") throw new TailnetPcError("relay_off", "Turn the relay on on that PC first, under Add a connection.");
       if (refusal === "relay_offline") throw new TailnetPcError("relay_offline", "That PC's relay cannot be reached right now. Try again in a moment.");
-      // that PC uses a relay of its own, where typed codes do not work: asking again never changes that
       if (refusal === "code_unavailable") throw new TailnetPcError("code_unavailable", "That PC uses its own relay, which cannot give a code. Add it with its QR code instead.");
       throw new TailnetPcError("no_code", "That PC could not give a code just now. Try again in a moment.");
     }

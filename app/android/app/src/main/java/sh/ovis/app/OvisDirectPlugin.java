@@ -18,22 +18,17 @@ import java.util.UUID;
  * The PC's direct carriers for the hosted shell (src/lib/relay/directSocket.ts; docs/relay.md, "Direct on
  * the same network"): a page on https cannot open plain `ws://`. Only the app's own origin may call it
  * (allowed), only `ws://<private or Tailscale IPv4>:<port>/v1/ws?v=1` opens (DirectSocket.carrier), at most two at once.
- * Frames go to the page in order as `{ id, kind, data }` (binary as base64); a socket whose messages the page
- * has not acknowledged pass 4 MiB or 16,384 is closed with 1009. Noise inside the channel proves the PC: the
- * address is only a hint. The iOS twin: app/ios/App/App/OvisDirectPlugin.swift.
+ * Noise inside the channel proves the PC: the address is only a hint.
  */
 @CapacitorPlugin(name = "OvisDirect")
 public class OvisDirectPlugin extends Plugin {
-    static final String APP_ORIGIN = "https://app.ovis.sh";
     static final int MAX_SOCKETS = 2;
     static final int MAX_QUEUED_BYTES = 4 * 1024 * 1024;
     static final int MAX_QUEUED_MESSAGES = 16_384;
 
     private static final class Entry {
         DirectSocket socket;
-        /** the page closed it: its closing handshake no longer takes one of the page's places */
         boolean closing;
-        /** sizes of the messages sent to the page and not acknowledged yet, oldest first */
         final ArrayDeque<Integer> unacked = new ArrayDeque<>();
         long unackedBytes;
     }
@@ -93,14 +88,18 @@ public class OvisDirectPlugin extends Plugin {
      * Without a proven listener bridge (listenerBridge) every call is refused.
      */
     private boolean allowed(PluginCall call) {
-        if (!listenerBridge() || !APP_ORIGIN.equals(bridge.getServerUrl())) {
+        if (!listenerBridge() || !BuildConfig.APP_ORIGIN.equals(bridge.getServerUrl())) {
             call.reject("OvisDirect answers only the app's own page", "not_allowed");
             return false;
         }
         return true;
     }
 
-    /** What this build opens beyond the home network: the page offers the PC's Tailscale address only when it says so. */
+    /** An https address's port, 443 when it names none. */
+    private static int httpsPort(Uri url) {
+        return url.getPort() == -1 ? 443 : url.getPort();
+    }
+
     @PluginMethod
     public void features(PluginCall call) {
         if (!allowed(call)) return;
@@ -123,7 +122,8 @@ public class OvisDirectPlugin extends Plugin {
         getActivity().runOnUiThread(() -> {
             String page = bridge.getWebView().getUrl();
             Uri url = page == null ? null : Uri.parse(page);
-            if (url == null || !"https".equals(url.getScheme()) || !"app.ovis.sh".equals(url.getHost()) || (url.getPort() != -1 && url.getPort() != 443)) {
+            Uri app = Uri.parse(BuildConfig.APP_ORIGIN);
+            if (url == null || !"https".equals(url.getScheme()) || !app.getHost().equals(url.getHost()) || httpsPort(url) != httpsPort(app)) {
                 call.reject("OvisDirect answers only the app's own page", "not_allowed");
                 return;
             }
@@ -136,7 +136,6 @@ public class OvisDirectPlugin extends Plugin {
                 }
                 int open = 0;
                 for (Entry other : sockets.values()) if (!other.closing) open++;
-                // closing ones end within DirectSocket's close wait; at most as many again may still be closing
                 if (open >= MAX_SOCKETS || sockets.size() >= 2 * MAX_SOCKETS) {
                     call.reject("Two direct sockets are open already", "too_many");
                     return;
@@ -146,7 +145,6 @@ public class OvisDirectPlugin extends Plugin {
             }
             JSObject result = new JSObject();
             result.put("id", id);
-            // answered before the socket starts, so the page knows it before any of its events
             call.resolve(result);
             entry.socket.start();
         });
@@ -166,7 +164,6 @@ public class OvisDirectPlugin extends Plugin {
 
             @Override
             public void onClose(int code, String reason, boolean failed) {
-                // under the lock deliver queues its message in, so no message of the socket follows its close
                 synchronized (OvisDirectPlugin.this) {
                     if (sockets.remove(id) == null) return;
                     if (failed) {
@@ -192,7 +189,6 @@ public class OvisDirectPlugin extends Plugin {
         bridge.executeOnMainThread(() -> notifyListeners(event, data));
     }
 
-    /** One message to the page, unless the page is that far behind: then the socket ends with 1009. */
     private void deliver(String id, String kind, String data, int size) {
         Entry entry;
         synchronized (this) {
@@ -205,12 +201,10 @@ public class OvisDirectPlugin extends Plugin {
                 event.put("id", id);
                 event.put("kind", kind);
                 event.put("data", data);
-                // queued while the socket is still listed: its close event (onClose) comes after
                 emit("message", event);
                 return;
             }
         }
-        // its close event comes through onClose, with 1009
         entry.socket.abort(1009, "receive queue full");
     }
 
@@ -226,9 +220,8 @@ public class OvisDirectPlugin extends Plugin {
             call.reject("That socket is closed", "closed");
             return;
         }
-        // too big for the send queue whatever it turns into: ends the socket as an overflow would, before converting it
         boolean text = "text".equals(kind);
-        if (data.length() > (text ? DirectSocket.MAX_MESSAGE : (DirectSocket.MAX_MESSAGE + 2) / 3 * 4)) {
+        if (data.length() > (text ? DirectSocket.MAX_MESSAGE : DirectSocket.MAX_BASE64_MESSAGE)) {
             entry.socket.abort(1009, "send queue full");
             call.resolve();
             return;
@@ -275,7 +268,6 @@ public class OvisDirectPlugin extends Plugin {
         call.resolve();
     }
 
-    /** A page left: its sockets end at once, without a closing handshake, so the next page has both places. */
     private void closeAll() {
         Entry[] open;
         synchronized (this) {

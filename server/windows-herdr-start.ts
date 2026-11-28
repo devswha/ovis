@@ -5,7 +5,6 @@ import { COMPILED, entryCommand, ROOT } from "./entries.ts";
 
 export const WAITING_FOR_WINDOWS_LOGIN = "Waiting for Windows sign-in on this PC.";
 
-/** Session-specific, separate from the bridge descriptor (which always means a usable bridge). */
 export function windowsStartupStatus(registry: string, session?: string): string {
   return join(registry, `bridge${session ? `-${session}` : ""}.startup`);
 }
@@ -55,6 +54,8 @@ try {
   $task.Principal.LogonType = 3 # TASK_LOGON_INTERACTIVE_TOKEN: no password or noninteractive fallback
   $task.Principal.RunLevel = 0 # ordinary user privileges
   $task.Settings.ExecutionTimeLimit = 'PT0S'
+  # normal: a task's default, 7, runs the launcher below normal, and herdr with every terminal under it inherits that
+  $task.Settings.Priority = 4
   $task.Settings.DisallowStartIfOnBatteries = $false
   $task.Settings.StopIfGoingOnBatteries = $false
   $action = $task.Actions.Create(0)
@@ -91,10 +92,6 @@ try {
 }
 `;
 
-/**
- * The program the scheduled task runs the private launcher file with, and what goes before that file's quoted path:
- * Bun runs it from source; the compiled binary through its `windows-launch` entry (server/entries.ts).
- */
 export function launcherAction(compiled = COMPILED): { bun: string; prefix?: string } {
   const [bun, entry] = entryCommand("windows-launch", ROOT, compiled);
   return compiled ? { bun, prefix: `${entry} ` } : { bun };

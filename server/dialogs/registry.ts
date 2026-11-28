@@ -4,11 +4,11 @@ import { claudeModelListWaits, CLAUDE_EFFORT_GUARD_RE } from "./claude.ts";
 import { codexModelListWaits } from "./codex.ts";
 import { hermesModalWaits } from "./hermes.ts";
 import { agyWriteInWaits } from "./agy.ts";
+import { kiroApprovalLeftToTerminal, kiroApprovalWaits } from "./kiro.ts";
 import type { DialogReader, OmoAsk } from "./shared.ts";
 import { agentPickerOwnsScreen } from "./fallback.ts";
 export type { DialogReader } from "./shared.ts";
 
-/** One read pass's view of the pane, built once per pass and never changed (onePerPass relies on it). */
 export interface ReaderContext {
   readonly agent: string;
   readonly omoAsk: OmoAsk | null;
@@ -18,7 +18,6 @@ export interface ReaderContext {
   readonly working: boolean;
 }
 
-/** The agents whose screens the prompt read parses (readKnownPrompt); any other agent's card is the fallback card alone. */
 export const SCREEN_READ_AGENTS: ReadonlySet<string> = new Set(["claude", "omp", "codex", "omo", "pi", "gjc", "hermes", "cmd", "opencode", "letta", ""]);
 
 /**
@@ -26,7 +25,7 @@ export const SCREEN_READ_AGENTS: ReadonlySet<string> = new Set(["claude", "omp",
  * no reader knows: a chat message would pick a row, so it is refused, and the fallback card answers the picker.
  */
 export function agentPickerWaits(agent: string, screen: string): boolean {
-  return !SCREEN_READ_AGENTS.has(agent) && agentPickerOwnsScreen(screen);
+  return !SCREEN_READ_AGENTS.has(agent) && (agentPickerOwnsScreen(screen) || (agent === "kiro" && kiroApprovalWaits(screen)));
 }
 
 export function readersFor(agent: string): readonly DialogReader[] {
@@ -40,6 +39,6 @@ export const registry = {
   },
   waits(agent: string, screen: string): boolean {
     return (agent === "pi" && isPiQuestionnaireScreen(screen)) || claudeModelListWaits(screen) || claudeModelListWaits(screen, CLAUDE_EFFORT_GUARD_RE) || (agent === "codex" && codexModelListWaits(screen))
-      || (agent === "hermes" && hermesModalWaits(screen)) || (agent === "agy" && agyWriteInWaits(screen));
+      || (agent === "hermes" && hermesModalWaits(screen)) || (agent === "agy" && agyWriteInWaits(screen)) || (agent === "kiro" && kiroApprovalLeftToTerminal(screen));
   },
 };

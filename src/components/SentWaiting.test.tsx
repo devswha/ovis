@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, jest, setSystemTime, test } from "bun:test";
-import { createElement } from "react";
+import { act, createElement, useLayoutEffect, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import type { Machine } from "../../shared/machines.ts";
+import type { ConversationTurn } from "../../shared/protocol.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { currentWaitingSends, forgetWaitingSends, rememberWaitingSend, settleWaitingSends, WAITING_HINT_MS, waitingBaseline, waitingKey, type WaitingSend } from "../lib/sentWaiting.ts";
+import { currentWaitingSends, forgetWaitingSends, observeWaitingClock, rememberWaitingSend, settleWaitingSends, WAITING_HINT_MS, WAITING_SEND_MS, waitingBaseline, waitingKey, type WaitingSend } from "../lib/sentWaiting.ts";
 import { SentWaitingList, useWaitingSends } from "./SentWaiting.tsx";
 
 const at = Date.parse("2026-10-29T03:00:00Z");
@@ -51,65 +52,132 @@ describe("SentWaitingList", () => {
     expect(markup.match(/class="chat-bubble(?: [^"]*)?"/gu)).toEqual(['class="chat-bubble is-capped"', 'class="chat-bubble"']);
   });
 
+  test("says an unanswered send is not in the conversation, where the agent's error would be, and offers the terminal", () => {
+    setSystemTime(new Date(at + WAITING_SEND_MS));
+    const markup = withEnglish(() => renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(SentWaitingList, {
+      sends: [{ ...send, unanswered: true }], paneKey: "local:p1", agent: "hermes", onOpenTerminal: () => {},
+    }) })));
+    expect(textWithoutTags(markup)).toBe(`${send.text}Not in the conversation. If Hermes showed an error, it is in the terminal.Open Terminal`);
+    expect(markup).toContain('aria-label="Dismiss"');
+    expect(markup).not.toContain("chat-sent-late");
+  });
+
   test("is no live region of its own: the chat footer's one status region stays the only one", () => {
     expect(render(at + WAITING_HINT_MS)).not.toMatch(/role="(?:status|alert|log)"|aria-live/u);
   });
 });
 
+async function within(signal: Promise<void>, ms: number, what: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not come within ${ms} ms`)), ms); });
+  try { await Promise.race([signal, late]); } finally { clearTimeout(timer); }
+}
+
 describe("mounted", () => {
-  let renderers: ReactTestRenderer[];
-  const globals = ["IS_REACT_ACT_ENVIRONMENT", "window", "document", "getComputedStyle"];
-  const saved = new Map<string, PropertyDescriptor | undefined>();
+  let page: Page;
   beforeEach(() => {
-    renderers = [];
-    for (const name of globals) saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
-    // only what SettingsProvider reads and writes: no stored settings, a root it themes, no listeners that fire
-    const style = { setProperty: () => {}, removeProperty: () => {}, getPropertyValue: () => "", backgroundColor: "" };
-    const listen = { addEventListener: () => {}, removeEventListener: () => {} };
-    const values: Record<string, unknown> = {
-      IS_REACT_ACT_ENVIRONMENT: true,
-      window: { ...listen, localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {}, key: () => null, length: 0 } },
-      document: { ...listen, documentElement: { lang: "", dataset: {}, style }, querySelector: () => null },
-      getComputedStyle: () => style,
-    };
-    for (const name of globals) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: values[name] });
+    page = openPage();
     jest.useFakeTimers();
     jest.setSystemTime(new Date(at));
   });
-  afterEach(() => {
-    act(() => { for (const renderer of renderers) renderer.unmount(); });
+  afterEach(async () => {
     jest.useRealTimers();
-    for (const [name, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-      else Reflect.deleteProperty(globalThis, name);
-    }
-    saved.clear();
+    await page.close();
   });
-  const mount = (element: ReturnType<typeof createElement>, settings = true): ReactTestRenderer => {
-    let renderer!: ReactTestRenderer;
-    withEnglish(() => act(() => { renderer = create(settings ? createElement(SettingsProvider, { children: element }) : element); }));
-    renderers.push(renderer);
-    return renderer;
-  };
-  const clocks = (renderer: ReactTestRenderer): number => renderer.root.findAll((node) => node.props.className === "chat-sent-late").length;
+  const mount = (element: ReturnType<typeof createElement>, settings = true) =>
+    page.render(settings ? createElement(SettingsProvider, { children: element }) : element);
+  const clocks = (): number => page.container.querySelectorAll('[class="chat-sent-late"]').length;
 
-  test("brings the clock in at five seconds, on its own timer", () => {
-    const renderer = mount(createElement(SentWaitingList, { sends: [send] }));
+  test("brings the clock in at five seconds, on its own timer", async () => {
+    await mount(createElement(SentWaitingList, { sends: [send] }));
     act(() => { jest.advanceTimersByTime(WAITING_HINT_MS - 1); });
-    expect(clocks(renderer)).toBe(0);
+    expect(clocks()).toBe(0);
     act(() => { jest.advanceTimersByTime(1); });
-    expect(clocks(renderer)).toBe(1);
+    expect(clocks()).toBe(1);
     expect(jest.getTimerCount()).toBe(0);
   });
 
-  test("leaves no timer behind when the bubble goes before its clock", () => {
-    const renderer = mount(createElement(SentWaitingList, { sends: [send] }));
+  test("says a send unanswered a minute on, once read at rest, never while it works, and lets it go on Dismiss", async () => {
+    const key = waitingKey("local", "unanswered-mounted");
+    function Chat({ resting }: { resting: boolean }) {
+      return createElement(SentWaitingList, { sends: useWaitingSends("local", "unanswered-mounted", true), paneKey: key, resting, agent: "letta" });
+    }
+    try {
+      settleWaitingSends(key, [], at - 1, true);
+      rememberWaitingSend(key, "the turn letta failed", at);
+      await mount(createElement(Chat, { resting: false }));
+      act(() => { jest.advanceTimersByTime(WAITING_SEND_MS); });
+      observeWaitingClock(key, new Date().toISOString(), 0, Date.now());
+      act(() => { settleWaitingSends(key, [], Date.now(), true); });
+      expect(currentWaitingSends(key).map((item) => item.unanswered)).toEqual([undefined]);
+      await page.render(createElement(SettingsProvider, { children: createElement(Chat, { resting: true }) }));
+      expect(currentWaitingSends(key).map((item) => item.unanswered)).toEqual([undefined]);
+      act(() => { jest.advanceTimersByTime(1); observeWaitingClock(key, new Date().toISOString(), 0, Date.now()); settleWaitingSends(key, [], Date.now(), true); });
+      await act(async () => { await Promise.resolve(); });
+      expect(currentWaitingSends(key).map((item) => item.unanswered)).toEqual([true]);
+      expect(page.container.querySelectorAll('[class="chat-unanswered-note"]')).toHaveLength(1);
+      await act(async () => { page.one('[aria-label="Dismiss"]').click(); });
+      expect(currentWaitingSends(key)).toEqual([]);
+    } finally { act(() => { forgetWaitingSends(key); }); }
+  });
+
+  test("judges a send in a chat opened again by a read since then, not by the one its last visit settled", async () => {
+    const key = waitingKey("local", "reopened-mounted");
+    const chat = () => createElement(SentWaitingList, { sends: currentWaitingSends(key), paneKey: key, resting: true, agent: "kiro" });
+    try {
+      settleWaitingSends(key, [], at - 1, true);
+      rememberWaitingSend(key, "do the thing", at);
+      await mount(chat());
+      act(() => { jest.advanceTimersByTime(2_000); observeWaitingClock(key, new Date().toISOString(), 0, Date.now()); settleWaitingSends(key, [], Date.now(), true); });
+      await page.render(null);
+      // back five minutes later: the agent wrote the turn meanwhile, with no time (as Kiro does)
+      jest.advanceTimersByTime(5 * 60_000);
+      await mount(chat());
+      expect(currentWaitingSends(key).map((item) => item.unanswered)).toEqual([undefined]);
+      act(() => { jest.advanceTimersByTime(1); observeWaitingClock(key, new Date().toISOString(), 0, Date.now()); settleWaitingSends(key, [{ role: "user", ts: null, parts: [{ kind: "text", text: "do the thing" }] }], Date.now(), true); });
+      await act(async () => { await Promise.resolve(); });
+      expect(currentWaitingSends(key)).toEqual([]);
+    } finally { act(() => { forgetWaitingSends(key); }); }
+  });
+
+  test("clears the rest in the commit that shows the agent at work, before the read that commit settles is judged", async () => {
+    jest.useRealTimers();
+    setSystemTime();
+    const key = waitingKey("local", "rest-order");
+    let show!: (next: readonly ConversationTurn[]) => void;
+    let settled!: () => void;
+    const read = new Promise<void>((resolve) => { settled = resolve; });
+    function Chat() {
+      const [turns, setTurns] = useState<readonly ConversationTurn[]>([]);
+      show = setTurns;
+      useLayoutEffect(() => {
+        settleWaitingSends(key, turns, Date.now(), true);
+        if (turns.length > 0) settled();
+      }, [turns]);
+      return createElement(SentWaitingList, { sends: useWaitingSends("local", "rest-order", true), paneKey: key, resting: turns.length === 0 });
+    }
+    try {
+      const sent = Date.now() - 2 * WAITING_SEND_MS;
+      settleWaitingSends(key, [], sent - 1, true);
+      rememberWaitingSend(key, "next, run the tests", sent);
+      await mount(createElement(Chat));
+      observeWaitingClock(key, new Date().toISOString(), 0, Date.now() + 1);
+      await act(async () => { show([{ role: "assistant", ts: new Date(sent - 10_000).toISOString(), parts: [{ kind: "text", text: "earlier" }] }]); });
+      await within(read, 5_000, "the chat's render of the read");
+      expect(currentWaitingSends(key).map((item) => item.unanswered)).toEqual([undefined]);
+    } finally { act(() => { forgetWaitingSends(key); }); }
+  });
+
+  test("leaves no timer behind when the bubble goes before its clock", async () => {
+    await mount(createElement(SentWaitingList, { sends: [send] }));
     expect(jest.getTimerCount()).toBe(1);
-    act(() => { renderer.update(createElement(SettingsProvider, { children: createElement(SentWaitingList, { sends: [] }) })); });
+    await page.render(createElement(SettingsProvider, { children: createElement(SentWaitingList, { sends: [] }) }));
+    // Flush the DOM commit's zero-delay work without reaching the waiting hint.
+    jest.advanceTimersByTime(0);
     expect(jest.getTimerCount()).toBe(0);
   });
 
-  test("lets a waiting send go when the connection does, and does not bring it back on reconnect", () => {
+  test("lets a waiting send go when the connection does, and does not bring it back on reconnect", async () => {
     const key = waitingKey("local", "w1:p1");
     let shown: readonly WaitingSend[] = [];
     function Probe({ connected }: { connected: boolean }) {
@@ -118,21 +186,19 @@ describe("mounted", () => {
     }
     try {
       rememberWaitingSend(key, "deploy it", at);
-      const renderer = mount(createElement(Probe, { connected: true }), false);
+      await mount(createElement(Probe, { connected: true }), false);
       expect(shown.map((item) => item.text)).toEqual(["deploy it"]);
-      act(() => { renderer.update(createElement(Probe, { connected: false })); });
+      await page.render(createElement(Probe, { connected: false }));
       expect(shown).toEqual([]);
-      act(() => { renderer.update(createElement(Probe, { connected: true })); });
+      await page.render(createElement(Probe, { connected: true }));
       expect(shown).toEqual([]);
-    } finally { forgetWaitingSends(key); }
+    } finally { act(() => { forgetWaitingSends(key); }); }
   });
 
-  test("a disconnected sibling pane preserves the baseline so a phone's send does not duplicate its transcript turn", () => {
-    // a PC whose snapshots name their herdr: a reconnect to it is the same herdr
+  test("a disconnected sibling pane preserves the baseline so a phone's send does not duplicate its transcript turn", async () => {
     paneLifetimes.observe([{ id: "skewed-PC", snapshot: { panes: [], herdr_lifetime: "skewed-herdr" } } as unknown as Machine]);
     const key = waitingKey("skewed-PC", "baseline-owner");
     const user = (text: string, ts: number) => ({ role: "user" as const, ts: new Date(ts).toISOString(), parts: [{ kind: "text" as const, text }] });
-    // The phone is two seconds ahead of the PC. Its loaded chat already accounts for that skew.
     const earlier = user("earlier", at - 10_000);
     settleWaitingSends(key, [earlier], at, true);
     function Sibling() {
@@ -140,10 +206,20 @@ describe("mounted", () => {
       return null;
     }
     try {
-      mount(createElement(Sibling), false);
+      await mount(createElement(Sibling), false);
       rememberWaitingSend(key, "follow up while working", at + 2_000, waitingBaseline(key));
       settleWaitingSends(key, [earlier, user("follow up while working", at + 100)], at + 2_100, true);
       expect(currentWaitingSends(key)).toEqual([]);
-    } finally { forgetWaitingSends(key); }
+    } finally { act(() => { forgetWaitingSends(key); }); }
+  });
+
+  test("a send with pasted tabs settles on the turn Pi records with them expanded", () => {
+    const key = waitingKey("local", "tabs");
+    try {
+      settleWaitingSends(key, [], at - 1, true);
+      rememberWaitingSend(key, "Look at the columns, \tNov 2025\tNov 2024", at);
+      settleWaitingSends(key, [{ role: "user", ts: new Date(at + 500).toISOString(), parts: [{ kind: "text", text: "Look at the columns,     Nov 2025    Nov 2024" }] }], at + 600, true, "pi-transcript");
+      expect(currentWaitingSends(key)).toEqual([]);
+    } finally { act(() => { forgetWaitingSends(key); }); }
   });
 });

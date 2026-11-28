@@ -1,12 +1,4 @@
 /**
- * The server as one compiled binary, whose first argument names the entry it runs (server/entries.ts):
- *
- *   bun scripts/build-server.ts <platform> <dir>   <dir>/ovis-server (ovis-server.exe on Windows), with the Node PTY
- *                                                 host script beside it; it serves dist/ from OVIS_ASSETS, else
- *                                                 from its own folder
- *   bun scripts/build-server.ts release <dir>      the five platforms' binaries as a release names them, and the built
- *                                                 client (dist/, from bun run build) as ovis-dist.tar.gz
- *   bun scripts/build-server.ts manifest <dir>     ovis-server.json and ovis-server.SHA256SUMS for those
  *   bun scripts/build-server.ts sign <dir> [--public-key <base64>]
  *                                                 ovis-server.json.sig, with the private key in OVIS_SERVER_SIGNING_KEY,
  *                                                 only when its public half is RELEASE_PUBLIC_KEY (scripts/server-manifest.ts)
@@ -16,17 +8,14 @@
  *                                                 another), the manifest, every file and the sums; exit 1 with one line
  *                                                 naming what does not match. A consumer passes the version it asked for:
  *                                                 the signature alone does not stop an older release being offered
- *   bun scripts/build-server.ts keygen <dir>       a new signing key pair, once, for the owner (docs/development.md)
- *
- * Platforms: linux-x64, linux-arm64, darwin-arm64, darwin-x64, windows-x64. What else a folder that runs the binary
- * holds is scripts/server-artifact.ts; how the release signs and attaches these files is .github/workflows/release.yml.
  */
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { keeperManifestText } from "./release-assets.ts";
 import { DIST_ARCHIVE, generateKeyPair, KEY_FILE, publicKeyOf, RELEASE_PUBLIC_KEY, releaseFile, SERVER_PLATFORMS, type ServerPlatform, SIGNING_KEY_VARIABLE, signManifest, sourceTrees, verifyRelease, writeManifest } from "./server-manifest.ts";
 
 const root = resolve(import.meta.dir, "..");
-const USAGE = `usage: bun scripts/build-server.ts <${SERVER_PLATFORMS.join("|")}> <dir> | release <dir> | manifest <dir> | sign <dir> [--public-key <base64>] | verify <dir> [--public-key <base64>] [--expect-version <X.Y.Z>] | keygen <dir>`;
+const USAGE = `usage: bun scripts/build-server.ts <${SERVER_PLATFORMS.join("|")}> <dir> | release <dir> | manifest <dir> | keeper-manifest <assets-dir> <ovis-server.json> <version> | sign <dir> [--public-key <base64>] | verify <dir> [--public-key <base64>] [--expect-version <X.Y.Z>] | keygen <dir>`;
 const isPlatform = (value: string | undefined): value is ServerPlatform => (SERVER_PLATFORMS as readonly string[]).includes(value ?? "");
 const fail = (message: string, code = 1): never => {
   console.error(message);
@@ -36,7 +25,6 @@ const fail = (message: string, code = 1): never => {
 // the compile and what it needs load only for a build: sign and verify run where no package is installed
 const artifact = () => import("./server-artifact.ts");
 
-/** `--flag value` pairs, each of `allowed` at most once; anything else is a usage error */
 function flags(rest: string[], allowed: string[]): Map<string, string> {
   const options = new Map<string, string>();
   for (let index = 0; index < rest.length; index += 2) {
@@ -55,7 +43,6 @@ async function main(args: string[]): Promise<void> {
     const { binaryName, buildBinary } = await artifact();
     mkdirSync(out, { recursive: true });
     await buildBinary(verb, join(out, binaryName(verb)));
-    copyFileSync(join(root, "server", "pty", "pty-host.mjs"), join(out, "pty-host.mjs"));
   } else if (verb === "release" && rest.length === 0) {
     const { binaryName, buildBinary } = await artifact();
     mkdirSync(out, { recursive: true });
@@ -68,7 +55,6 @@ async function main(args: string[]): Promise<void> {
         rmSync(staging, { recursive: true, force: true });
       }
     }
-    // the client the binaries serve, packed from this checkout's build
     if (!existsSync(join(root, "dist", "index.html"))) fail("Run bun run build first: the release carries the built client (dist/) as ovis-dist.tar.gz");
     const archive = join(out, `.${DIST_ARCHIVE}.tmp`);
     const tar = Bun.spawnSync(["tar", "-czf", archive, "-C", join(root, "dist"), "."], { stderr: "pipe" });
@@ -79,6 +65,10 @@ async function main(args: string[]): Promise<void> {
     if ("error" in sources) fail(sources.error);
     const { version } = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string };
     console.log(JSON.stringify(writeManifest(out, { version, sources: sources as { server: string; shared: string } }), null, 2));
+  } else if (verb === "keeper-manifest" && rest.length === 2) {
+    const [serverManifest, version] = rest;
+    if (!serverManifest || !version) return fail(USAGE, 2);
+    process.stdout.write(keeperManifestText(out, version, readFileSync(serverManifest)));
   } else if (verb === "sign") {
     const expected = flags(rest, ["--public-key"]).get("--public-key") ?? RELEASE_PUBLIC_KEY;
     const key = process.env[SIGNING_KEY_VARIABLE]?.trim();

@@ -35,16 +35,12 @@ export const SETTINGS_LAYOUT_KO: Record<string, string> = {
   "Folded": "접어서",
   "Expanded": "펼쳐서",
   "Both": "둘 다",
-  "Alert me when": "이럴 때 알림",
-  "Long turn finished": "1분 이상 작업 완료",
-  "Any turn finished": "작업 끝날 때마다",
   "Lock pinned agents": "에이전트 메뉴에 닫기 방지 추가",
   "OMP: side conversations chip": "OMP 별도 대화 목록 표시",
   "In use": "사용 중",
   "herdr's TUI server is not running: start herdr after the switch.": "herdr의 TUI 서버가 실행 중이 아닙니다. 전환한 뒤 herdr를 시작하세요.",
   "herdr's TUI server is not running.": "herdr의 TUI 서버가 실행 중이 아닙니다.",
 
-  // the one-line conditions Settings' bare pages show under a row's name (design pass G-095 to G-098)
   "By state applies to this device; the other orders to every browser.": "상태별만 기기별, 나머지는 공유",
   "Auto: the chat on a touch screen, the terminal elsewhere.": "자동: 터치는 채팅, 나머지는 터미널",
   "Beside the pane needs a wide window; on this screen a file opens in a popup.": "좁은 화면에서는 팝업으로 엽니다.",
@@ -52,20 +48,16 @@ export const SETTINGS_LAYOUT_KO: Record<string, string> = {
   "Separate: leaving Ovis keeps the pane attached; herdr's selection stays independent.": "따로: 떠나도 연결 유지, herdr 선택은 별개",
   "Use alongside: leaving Ovis releases an unused pane to herdr after a short delay; herdr's selection stays independent.": "같이 쓰기: Ovis를 벗어나면 쓰지 않는 패널을 잠시 뒤 herdr에 돌려주고, herdr의 선택은 따로 둡니다.",
   "Follow its focus: leaving Ovis releases an unused pane after a short delay; this view follows herdr's selection.": "포커스 따라: Ovis를 벗어나면 쓰지 않는 패널을 잠시 뒤 herdr에 돌려주고, 이 화면은 herdr의 선택을 따라갑니다.",
-  "Any turn finished takes in the long ones.": "매번 알림에는 1분 이상 작업도 포함",
   "Groups you name in the Agents list, in every browser.": "직접 만든 그룹을 모든 브라우저에서 공유",
   "Each lock is turned on from the pinned agent's own menu.": "고정한 에이전트 메뉴에서 개별 잠금",
   "A drag in a Codex pane selects through its whole history; Shift+drag still copies in Ovis.": "Codex 드래그는 전체 기록 선택, Shift+드래그는 Ovis에서 복사",
   "Opens the side conversations an OMP session saved with /btw.": "입력창에서 OMP의 /btw 대화 열기",
   "A subagent counts as running until the session that started it is told it ended.": "상위 세션의 종료 확인까지 실행으로 표시",
-  // the one line under each page's title (G-173)
   "How conversations look and what the message box offers.": "대화가 보이는 방식과 입력칸 기능.",
   "How terminal panes look and take input.": "터미널 패널의 모양과 입력.",
   "When this device alerts you, and where else alerts go.": "이 기기가 언제 알릴지, 알림을 어디로 더 보낼지.",
   "Coding agents on this PC, their accounts and plan limits.": "이 PC의 코딩 에이전트, 계정, 요금제 사용량.",
   "Keyboard shortcuts, and herdr's prefix keys.": "단축키와 herdr 프리픽스 키.",
-  "Phones, browsers and PCs that reach this Ovis.": "이 Ovis에 연결하는 폰, 브라우저, PC.",
   "Features still being shaped; they may change.": "다듬는 중인 기능입니다. 바뀔 수 있습니다.",
-  // the range under a typed font size it refused (G-179)
   "Enter {min}–{max}px": "{min}–{max}px 사이로 입력하세요.",
 };

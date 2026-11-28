@@ -1,12 +1,17 @@
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { AgentInfo } from "../shared/herdr-api.generated.ts";
+import { isCmdProcess } from "./agent-identity.ts";
 import { cmdContextWindow, cmdSlug, cmdTranscriptInStore, unwrittenSession } from "./cmd.ts";
 import { transcriptPage } from "./conversation.ts";
-import { answerKeys, parseFallbackPrompt, parseInteractivePrompt } from "./prompt.ts";
+import { answerKeys, OpenCodePromptState, parseFallbackPrompt, parseInteractivePrompt, readHeldApprovals, waitingCard } from "./prompt.ts";
+import { ApprovalHub } from "./approvals/hub.ts";
+import * as live from "./dialogs/live.ts";
+import * as herdr from "./herdr/client.ts";
+import { readProcessBirth } from "./process-owner.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-cmd-store-"));
 const project = join(root, "projects", cmdSlug(root));
@@ -32,6 +37,8 @@ describe("Command Code's session store holds the transcript a pane reads", () =>
   it("names the project directory after the cwd", () => {
     expect(cmdSlug("/home/daigou/Projects/herdr-web-ui")).toBe("home-daigou-projects-herdr-web-ui");
     expect(cmdSlug("/home/daigou/Projects/Yaba-Definitive")).toBe("home-daigou-projects-yaba-definitive");
+    expect(cmdSlug("/home/alice/.herdr/worktrees/demo")).toBe("home-alice-herdr-worktrees-demo");
+    expect(cmdSlug("/")).toBe("root");
   });
 
   it("accepts a session file inside the store", () => {
@@ -85,6 +92,13 @@ describe("Command Code session resolution", () => {
   writeFileSync(path, "{}\n");
   writeFileSync(shellPath, "{}\n");
   const fresh = join(store, "fresh.jsonl");
+  // the web UI's Command Code mod names each process's session by pid (integrations/cmd-session.ts)
+  const bindings = join(root, ".commandcode", "ovis");
+  mkdirSync(bindings, { recursive: true });
+  writeFileSync(join(bindings, "4242.json"), JSON.stringify({ pid: 4242, sessionId: "reported" }));
+  writeFileSync(join(bindings, "4243.json"), JSON.stringify({ pid: 4242, sessionId: "reported" }));
+  writeFileSync(join(bindings, "4244.json"), JSON.stringify({ pid: 4244, sessionId: "../shell-project/shell" }));
+  const cmdProcess = (pid: number) => ({ pid, name: "command-code", argv: ["command-code"] });
   const report = { agent: "cmd", source: "herdr:cmd", kind: "path", value: path };
   const agent = {
     agent: "cmd", cwd: shellCwd, foreground_cwd: agentCwd, agent_session: report,
@@ -92,7 +106,7 @@ describe("Command Code session resolution", () => {
     tab_id: "tab", terminal_id: "terminal", workspace_id: "workspace",
   } satisfies AgentInfo;
 
-  const cases: { name: string; changes: Partial<AgentInfo>; expected: unknown }[] = [
+  const cases: { name: string; changes: Partial<AgentInfo>; processes?: unknown[]; expected: unknown }[] = [
     { name: "resolves the process project when the shell is elsewhere", changes: {}, expected: { path } },
     { name: "resolves an unwritten session in the process project", changes: { agent_session: { ...report, value: fresh } }, expected: { unwritten: { id: "fresh", path: fresh } } },
     { name: "falls back when the process cwd is absent", changes: { cwd: agentCwd, foreground_cwd: null }, expected: { path } },
@@ -108,13 +122,18 @@ describe("Command Code session resolution", () => {
     { name: "rejects an id instead of a path", changes: { agent_session: { ...report, kind: "id" } }, expected: null },
     { name: "rejects a missing session report", changes: { agent_session: null }, expected: null },
     { name: "rejects a missing cwd", changes: { cwd: null, foreground_cwd: null }, expected: null },
+    { name: "resolves the session the mod names for the pane's cmd process", changes: { agent_session: null }, processes: [cmdProcess(4242)], expected: { path } },
+    { name: "resolves a mod session in the cwd store", changes: { agent_session: null, foreground_cwd: helperCwd, cwd: agentCwd }, processes: [{ pid: 1, name: "bash" }, cmdProcess(4242)], expected: { path } },
+    { name: "rejects a mod binding another pid wrote", changes: { agent_session: null }, processes: [cmdProcess(4243)], expected: null },
+    { name: "rejects a mod binding when two cmd processes share the pane", changes: { agent_session: null }, processes: [cmdProcess(4242), cmdProcess(4245)], expected: null },
+    { name: "rejects a mod binding of a process that is not Command Code", changes: { agent_session: null }, processes: [{ pid: 4242, name: "node" }], expected: null },
+    { name: "rejects a mod session id that is a path", changes: { agent_session: null }, processes: [cmdProcess(4244)], expected: null },
+    { name: "keeps herdr's report over the mod binding", changes: { agent_session: { ...report, value: shellPath } }, processes: [cmdProcess(4242)], expected: { path: shellPath } },
   ];
 
-  it.each(cases)("$name", async ({ changes, expected }) => {
-    // Given an isolated home and herdr report, without a live herdr connection.
+  it.each(cases)("$name", async ({ changes, processes = [], expected }) => {
     const script = `const { cmdTranscriptPath } = await import(${JSON.stringify(join(import.meta.dir, "cmd.ts"))});
-      console.log(JSON.stringify(await cmdTranscriptPath("cmd-pane", { agent: ${JSON.stringify({ ...agent, ...changes })} })));`;
-    // When resolving the reported session through the real filesystem validation.
+      console.log(JSON.stringify(await cmdTranscriptPath("cmd-pane", { agent: ${JSON.stringify({ ...agent, ...changes })}, processes: ${JSON.stringify(processes)} })));`;
     const child = Bun.spawn([process.execPath, "-e", script], {
       env: { ...process.env, HOME: root, USERPROFILE: root },
       stdout: "pipe", stderr: "pipe", timeout: 5_000,
@@ -122,7 +141,6 @@ describe("Command Code session resolution", () => {
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
     ]);
-    // Then the resolver returns only the session justified by the report and store.
     expect(stderr).toBe("");
     expect(exitCode).toBe(0);
     expect(JSON.parse(stdout)).toEqual(expected);
@@ -184,6 +202,18 @@ const permission = [
 ].join("\n");
 
 describe("Command Code's permission prompt is a card", () => {
+  it("shows the native dialog after the mod passes even while its process still reports this session", async () => {
+    const hub = new ApprovalHub(root, []);
+    const birth = readProcessBirth(process.pid);
+    const told = spyOn(hub, "toldSession").mockReturnValue({ session: "live", pid: process.pid, birth: birth.state === "identified" ? birth.birth.value : null });
+    const processes = spyOn(herdr, "paneProcessInfo").mockResolvedValue({ pane_id: "p", foreground_processes: [{ pid: process.pid, name: "command-code" }] });
+    const screen = spyOn(live, "liveScreen").mockResolvedValue(permission);
+    const pane = { pane_id: "p", terminal_id: "t", workspace_id: "w", tab_id: "tab", focused: true, revision: 0, agent: "cmd", agent_status: "blocked" };
+    readHeldApprovals(hub);
+    try {
+      expect(await waitingCard(pane, [pane], { openCodeState: new OpenCodePromptState(), ompLookups: new Map() })).toMatchObject({ kind: "permission" });
+    } finally { readHeldApprovals(null); screen.mockRestore(); processes.mockRestore(); told.mockRestore(); hub.stop(); }
+  });
   // command-code@1.88.0 dist/cli.mjs: Overlay, ShellPermissionPrompt,
   // PermissionFooter and getShellPermissionChoices. Static source, not an account session.
   const heading = "Execute Shell Command";
@@ -350,14 +380,11 @@ describe("Command Code's permission prompt is a card", () => {
     expect(harmless?.body).toContain("printf harmless | head -5");
     expect(replaced?.id).toBeString();
     expect(replaced?.id).not.toBe(harmless?.id);
-    // a command of several lines: the lines above its last one are no title and no body
     const multi = (first: string) => parseInteractivePrompt("cmd", run(`${first}\nrm -rf build`))?.id;
     expect(multi("cd /tmp/scratch &&")).toBeString();
     expect(multi("cd / &&")).not.toBe(multi("cd /tmp/scratch &&"));
-    // two heredocs that end alike
     const heredoc = (line: string) => parseInteractivePrompt("cmd", run(`cat > notes.txt <<EOF\n${line}\nEOF`))?.id;
     expect(heredoc("keep this")).not.toBe(heredoc("replace that"));
-    // a rule inside a heredoc is no dialog border, and a heredoc's indentation is part of the command
     const ruled = (first: string) => parseInteractivePrompt("cmd", run(`${first}\ncat <<'EOF'\n${"\u2500".repeat(16)}\nEOF\nprintf done`))?.id;
     expect(ruled("printf harmless")).not.toBe(ruled("rm -rf important-files"));
     const indented = (delimiter: string) => parseInteractivePrompt("cmd", run(`cat <<'EOF'\n${delimiter}\nrm -rf important-files\n: <<'EOF'\nEOF\nprintf done`))?.id;
@@ -384,4 +411,10 @@ it.skipIf(process.platform === "win32")("reads no window from a FIFO in the cata
   const child = Bun.spawnSync([process.execPath, "-e", script], { timeout: 5_000, stdout: "pipe", stderr: "pipe" });
   expect(child.exitCode).toBe(0);
   expect(child.stdout.toString().trim()).toBe("null");
+});
+
+it("knows a starting or running Command Code by its process, as the pickers start it", () => {
+  // its title once up, and node running the bin a picker types (`#!/usr/bin/env node`) or its entry before then
+  for (const argv of [["command-code"], ["node", "/home/u/.local/bin/cmd"], ["/usr/bin/node", "/usr/lib/node_modules/command-code/dist/index.mjs"], ["node", "/opt/bin/commandcode"]]) expect(isCmdProcess(argv)).toBe(true);
+  for (const argv of [["cmd"], ["bash"], ["node", "/srv/app/cmd.js"], ["node", "/srv/app/server.js"], []]) expect(isCmdProcess(argv)).toBe(false);
 });

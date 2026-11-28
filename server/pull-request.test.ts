@@ -13,7 +13,6 @@ type Answer = { stdout?: string; stderr?: string; code?: number; hold?: boolean 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "ovis-pull-request-")));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
-/** A `gh` stand-in: answers by its first words from scenario.json and records each call's arguments. */
 function fakeGh(scenario: Record<string, Answer>): { gh: string[]; calls: () => string[][] } {
   const dir = mkdtempSync(join(scratch, "gh-"));
   writeFileSync(join(dir, "scenario.json"), JSON.stringify(scenario));
@@ -113,6 +112,8 @@ describe("reading a branch's pull request through gh", () => {
       [[join(scratch, "no-such-gh")], "gh_missing", 409],
       [fakeGh({ "pr view": { code: 4, stderr: "To get started with GitHub CLI, please run:  gh auth login\n" } }).gh, "gh_signed_out", 409],
       [fakeGh({ "pr view": { code: 1, stderr: "no pull requests found for branch \"fix/thing\"\n" } }).gh, "no_pull_request", 404],
+      // a Gitea remote: gh's advice names gh auth login, yet gh is signed in (#4028)
+      [fakeGh({ "pr view": { code: 1, stderr: "none of the git remotes configured for this repository point to a known GitHub host. To tell gh about a new GitHub host, please use `gh auth login`\n" } }).gh, "no_github_remote", 409],
     ];
     for (const [gh, code, status] of cases) {
       const error = await pullRequestView(scratch, { gh }).catch((caught: unknown) => caught);

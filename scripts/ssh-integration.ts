@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "../server/index.ts";
 import { herdrRpc } from "../server/herdr/client.ts";
-import type { Machine, SetupJob, SetupRequest } from "../shared/machines.ts";
+import type { Machine, MachineForwardResponse, SetupJob, SetupRequest } from "../shared/machines.ts";
 import type { ServerMessage, SessionSnapshot, WorkspaceCreated } from "../shared/protocol.ts";
 import { shellQuote } from "../server/machine-security.ts";
 
@@ -29,6 +29,7 @@ process.env["OVIS_BUNDLE_MANIFEST"] = resolve(`remote-bundles/manifest-${process
 const sockets: WebSocket[] = [];
 let port = 0;
 let originalKey = "";
+let lastConnectedAt: number | undefined;
 
 function command(args: string[], input?: string): void {
   const result = Bun.spawnSync(args, { stdin: input ? new TextEncoder().encode(input) : undefined });
@@ -42,8 +43,23 @@ async function until<T>(read: () => Promise<T>, done: (value: T) => boolean, lab
 }
 async function api<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const r = await fetch(`http://127.0.0.1:${server!.port}${path}`, { method, headers: { "x-herdr-machine": "1", "x-herdr-update": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-  assert.ok(r.ok, `${path}: ${r.status} ${r.ok ? "" : await r.text()}`);
+  // a failure's own status and text are read first: the diagnostic after them is bounded and cannot hold them back
+  const failure = r.ok ? "" : `${path}: ${r.status} ${await r.text()}`;
+  assert.ok(r.ok, r.ok ? "" : failure + await pcWhenFailed(path));
   return r.json() as Promise<T>;
+}
+async function pcWhenFailed(path: string): Promise<string> {
+  const id = /^\/api\/machines\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[/?]|$)/.exec(path)?.[1];
+  if (!id) return "";
+  const since = lastConnectedAt === undefined ? "no setup job has said connected yet" : `${Math.round(performance.now() - lastConnectedAt)} ms after a setup job last said connected`;
+  try {
+    // one deadline for the answer and its body: a server in a bad way right then must not stall the failure
+    const r = await fetch(`http://127.0.0.1:${server!.port}/api/machines`, { headers: { "x-herdr-machine": "1" }, signal: AbortSignal.timeout(2000) });
+    const machine = (await r.json() as { machines: Machine[] }).machines.find((m) => m.id === id);
+    return `\n  this PC in /api/machines now: ${machine ? JSON.stringify({ state: machine.state, error: machine.error }) : "not listed"}, ${since}`;
+  } catch (error) {
+    return `\n  /api/machines could not be read (${error instanceof Error ? error.message : String(error)}), ${since}`;
+  }
 }
 async function setup(target: SetupRequest, approve = true): Promise<SetupJob> {
   let job = await api<SetupJob>("/api/machines/setup", "POST", target);
@@ -51,6 +67,7 @@ async function setup(target: SetupRequest, approve = true): Promise<SetupJob> {
   let previous = "";
   for (;;) {
     if (job.phase !== previous) { console.log("setup", job.phase, job.step); previous = job.phase; }
+    if (job.phase === "connected") lastConnectedAt = performance.now();
     if (job.phase === "connected" || job.phase === "failed" || job.phase === "cancelled") return job;
     if (Date.now() > deadline) throw new Error("Setup timed out");
     if (job.challenge) job = await api<SetupJob>(`/api/machines/setup/${job.id}`, "POST", { action: "answer", challenge_id: job.challenge.id, answer: job.challenge.kind === "host_key" ? "yes" : password });
@@ -119,6 +136,18 @@ try {
   assert.ok(remoteFile(join(remoteHome, ".ssh/authorized_keys")).includes(`ovis:${machineId}`));
   assert.ok(!readFileSync(join(state, "machines.json"), "utf8").includes(password), "password is never persisted");
   console.log("PASS first install, fingerprint, secret authentication and dedicated-key registration");
+
+  // The SSH fixture's remote and local hosts share loopback, but only the forward listens on its new port.
+  {
+    using web = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => new Response(new URL(request.url).pathname) });
+    const path = `/api/machines/${machineId}/forward`;
+    const forward = await api<MachineForwardResponse>(path, "POST", { port: web.port });
+    assert.notEqual(Number(new URL(forward.url).port), server.port);
+    assert.notEqual(Number(new URL(forward.url).port), web.port);
+    assert.equal(await (await fetch(`${forward.url}/through-ssh`, { signal: AbortSignal.timeout(5_000) })).text(), "/through-ssh");
+    assert.deepEqual(await api<MachineForwardResponse>(path, "POST", { port: web.port }), forward);
+  }
+  console.log("PASS SSH loopback forwards reach the remote HTTP service and reuse the listener");
   // A second herdr beside the first is asked for: a setup that only names another session is offered the running one
   // (choose_herdr) instead of starting its own.
   const second = await setup({ ...target, identity_file: join(state, "ssh", machineId), session: "ssh-second", name: "QA second PC", start_new_herdr: true });
@@ -133,7 +162,6 @@ try {
   ws.send(JSON.stringify({ type: "role", mode: "observe" }));
   ws.send(JSON.stringify({ type: "attach", pane_id: paneId, cols: 80, rows: 24, flow_control: "ack" }));
   await until(async () => frames, (list) => list.some((m) => m.type === "pty-data"), "remote terminal paint");
-  // a mirror paints too (pty-data), on a grid it fixes: the remote PC has Node, so this must be herdr's own attach (#265)
   assert.ok(!frames.some((m) => m.type === "pane-geometry" && m.fixed === true), "remote terminal is attached, not mirrored");
   ws.send(JSON.stringify({ type: "input", pane_id: paneId, text: "forbidden\n" }));
   await until(async () => frames, (list) => list.some((m) => m.type === "error" && m.code === "read_only"), "observe enforcement");

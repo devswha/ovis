@@ -3,7 +3,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import type { CommandForm, SlashCommand } from "../../shared/protocol.ts";
 import { hermesHome as resolveHermesHome, platformHermesHome } from "../hermes-home.ts";
 import type { AgentCommandContext, AgentCommandSource } from "./index.ts";
-import { environRecord, plainObject, readFrontmatter, readSkillText } from "./walk.ts";
+import { canonicalFile as canonical, environRecord, plainObject, readFrontmatter, readSkillText } from "./walk.ts";
 
 // Hermes 0.21.5 CommandDefs at 354724fb085162678964c116ceb4c40fc57c717c; CLI aliases are included.
 // Gateway-only commands are never CLI rows. Runtime-only plugin commands are not listed.
@@ -170,19 +170,19 @@ function skillFiles(root: string): { path: string; fields: Readonly<Record<strin
       canonical = realpathSync(directory);
       if (ancestors.has(canonical)) return;
       entries = readdirSync(directory).sort();
-    } catch { return; /* absent, unreadable or broken root */ }
+    } catch { return; }
     ancestors.add(canonical);
     const hasSkill = entries.includes("SKILL.md");
     if (hasSkill) {
       const path = join(directory, "SKILL.md");
       try {
         if (statSync(path).isFile()) result.push({ path, fields: readFrontmatter(path) ?? {} });
-      } catch { /* unreadable skill does not hide its children */ }
+      } catch {}
     }
     for (const name of entries) {
       if (SKIP_DIRS.has(name) || (hasSkill && SUPPORT_DIRS.has(name))) continue;
       const path = join(directory, name);
-      try { if (statSync(path).isDirectory()) visit(path); } catch { /* broken or unreadable child */ }
+      try { if (statSync(path).isDirectory()) visit(path); } catch {}
     }
     ancestors.delete(canonical);
   };
@@ -192,7 +192,7 @@ function skillFiles(root: string): { path: string; fields: Readonly<Record<strin
 
 function yaml(path: string): Record<string, unknown> {
   try { return plainObject(Bun.YAML.parse(readFileSync(path, "utf8"))); }
-  catch { return {}; /* optional or malformed user configuration */ }
+  catch { return {}; }
 }
 function strings(value: unknown): string[] {
   if (typeof value === "string") {
@@ -206,9 +206,6 @@ function strings(value: unknown): string[] {
 /** Matches slugify_skill_name: underscores and spaces become hyphens; punctuation is removed. */
 function slug(name: string): string {
   return name.toLowerCase().replace(/[ _]/g, "-").replace(/[^\p{L}\p{N}_-]/gu, "").replace(/-{2,}/g, "-").replace(/^-+|-+$/g, "");
-}
-function canonical(path: string): string {
-  try { return realpathSync(path); } catch { return resolve(path); }
 }
 function projectRoot(cwd: string | null | undefined, home: string): string | null {
   if (!cwd) return null;
@@ -264,7 +261,7 @@ function discover(ctx: AgentCommandContext): SlashCommand[] {
         try {
           const body = readSkillText(skill.path).replace(/^\uFEFF?---[ \t]*\r?\n[\s\S]*?\r?\n---(?:\s*\r?\n|$)/, "");
           description = body.split(/\r?\n/).find((line) => line.trim() && !line.trim().startsWith("#"))?.trim().slice(0, 80) ?? "";
-        } catch { continue; /* unreadable skill */ }
+        } catch { continue; }
       }
       const previous = entries.get(name) ?? [];
       previous.push({ tier: directory.tier, root: directoryPath, origin: directory.origin, path: skill.path, description: description || `Invoke the ${name} skill` });
@@ -277,7 +274,6 @@ function discover(ctx: AgentCommandContext): SlashCommand[] {
     const contenders = candidates.filter((entry) => entry.tier === topTier);
     const first = contenders[0];
     if (!first) continue;
-    // Same-tier duplicates are ambiguous, except identical copies in one root at different depths.
     if (contenders.length > 1) {
       if (!contenders.every((entry) => entry.root === first.root && readFileSync(entry.path, "utf8") === readFileSync(first.path, "utf8"))) continue;
       contenders.sort((left, right) => relative(left.root, left.path).split(/[\\/]/).length - relative(right.root, right.path).split(/[\\/]/).length);
@@ -317,6 +313,7 @@ function discover(ctx: AgentCommandContext): SlashCommand[] {
 
 export const source: AgentCommandSource = {
   builtins: Object.keys(BUILTINS),
+  chatPaletteHidden: ["approvals", "reasoning", "yolo"],
   descriptions: BUILTINS,
   forms: RESULT_FORMS,
   terminalBound: TERMINAL_BOUND,

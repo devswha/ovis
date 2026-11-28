@@ -24,26 +24,29 @@ async function linkToken(fake: FakeAccountService, bearer: string, provider: Acc
 describe("the sign-ins a service offers", () => {
   it("lists Google only when the service says it is set up for it, and a PC's page only the device ones", async () => {
     const fake = new FakeAccountService();
-    fake.offer(["github", "google"], ["github"]);
-    expect(await offeredProviders(SERVICE, ["github"], { fetch: fake.fetch })).toEqual({ providers: ["github", "google"], device: ["github"], page: [] });
-    fake.offer(["github"], ["github"]);
-    expect(await offeredProviders(SERVICE, ["github"], { fetch: fake.fetch })).toEqual({ providers: ["github"], device: ["github"], page: [] });
+    fake.offerSignIns(["github", "google"], ["github"]);
+    expect(await offeredProviders(SERVICE, ["github"], { fetch: fake.fetch })).toEqual({ providers: ["github", "google"], listed: ["github", "google"], device: ["github"], page: [] });
+    fake.offerSignIns(["github"], ["github"]);
+    expect(await offeredProviders(SERVICE, ["github"], { fetch: fake.fetch })).toEqual({ providers: ["github"], listed: ["github"], device: ["github"], page: [] });
   });
 
   it("names the sign-ins the Ovis link page offers, only among those set up", async () => {
     const fake = new FakeAccountService();
-    fake.offer(["github", "google"], ["github"]);
+    fake.offerSignIns(["github", "google"], ["github"]);
     fake.offerLinkPage(["github", "google", "apple"]);
     expect((await offeredProviders(SERVICE, ["github"], { fetch: fake.fetch })).page).toEqual(["github", "google"]);
   });
 
   it("keeps the build's own list when the service cannot say, so no Google button leads nowhere", async () => {
     const down = async () => new Response("", { status: 404 });
-    expect(await offeredProviders(SERVICE, ["github", "apple"], { fetch: down })).toEqual({ providers: ["github", "apple"], device: ["github"], page: [] });
+    expect(await offeredProviders(SERVICE, ["github", "apple"], { fetch: down })).toEqual({ providers: ["github", "apple"], listed: null, device: ["github"], page: [] });
     const offline = async (): Promise<Response> => { throw new TypeError("offline"); };
-    expect(await offeredProviders(SERVICE, ["github"], { fetch: offline })).toEqual({ providers: ["github"], device: ["github"], page: [] });
+    expect(await offeredProviders(SERVICE, ["github"], { fetch: offline })).toEqual({ providers: ["github"], listed: null, device: ["github"], page: [] });
     const odd = async () => Response.json({ providers: ["gitlab"], device: "google" });
-    expect(await offeredProviders(SERVICE, ["github"], { fetch: odd })).toEqual({ providers: ["github"], device: ["github"], page: [] });
+    expect(await offeredProviders(SERVICE, ["github"], { fetch: odd })).toEqual({ providers: ["github"], listed: null, device: ["github"], page: [] });
+    // an answer naming none keeps the build's buttons, and says it named none
+    const none = async () => Response.json({ providers: [], device: [] });
+    expect(await offeredProviders(SERVICE, ["github"], { fetch: none })).toEqual({ providers: ["github"], listed: [], device: ["github"], page: [] });
   });
 });
 
@@ -75,7 +78,7 @@ describe("sign-in methods", () => {
     const service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock() });
     const after = await service.addMethod("google", (linkToken, bearer) => redirectSignIn(fake, "google", store, { linkToken, bearer }));
     expect(after).toMatchObject({ account: "acct_1", provider: "google" });
-    expect((await service.identities()).map((identity) => identity.provider).sort()).toEqual(["github", "google"]);
+    expect((await service.identities()).identities.map((identity) => identity.provider).sort()).toEqual(["github", "google"]);
     expect(fake.requests).toContain("POST /v1/signout");
     // the replaced sign-in's tokens are over
     expect((await fake.fetch(new Request(`${SERVICE}/v1/pcs`, { headers: { authorization: `Bearer ${before.access_token}` } }))).status).toBe(401);
@@ -90,7 +93,7 @@ describe("sign-in methods", () => {
     await redirectSignIn(fake, "github", store);
     const service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock() });
     await expect(service.addMethod("google", (linkToken, bearer) => redirectSignIn(fake, "google", store, { linkToken, bearer }))).rejects.toMatchObject({ code: "in_use" });
-    expect((await service.identities()).map((identity) => identity.provider)).toEqual(["github"]);
+    expect((await service.identities()).identities.map((identity) => identity.provider)).toEqual(["github"]);
     expect((await store.get("session"))?.account).toBe("acct_1");
   });
 
@@ -102,7 +105,12 @@ describe("sign-in methods", () => {
     const service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock() });
     await service.addMethod("google", (linkToken, bearer) => redirectSignIn(fake, "google", store, { linkToken, bearer }));
     await service.removeIdentity("github");
-    expect((await service.identities()).map((identity) => identity.provider)).toEqual(["google"]);
+    const { identities, history } = await service.identities();
+    expect(identities.map((identity) => identity.provider)).toEqual(["google"]);
+    expect(history).toEqual([
+      { kind: "remove", provider: "github", at: expect.any(String), device_no: null },
+      { kind: "add", provider: "google", at: expect.any(String), device_no: null },
+    ]);
     await expect(service.removeIdentity("google")).rejects.toMatchObject({ status: 409, code: "last_identity" });
   });
 
@@ -117,7 +125,7 @@ describe("sign-in methods", () => {
     const victim = memoryAccountStore();
     await expect(redirectSignIn(fake, "google", victim, { linkToken: token })).rejects.toMatchObject({ code: "invalid_grant" });
     const service = new AccountService({ store: attacker, fetch: fake.fetch, lock: memoryLock() });
-    expect((await service.identities()).map((identity) => identity.provider)).toEqual(["github"]);
+    expect((await service.identities()).identities.map((identity) => identity.provider)).toEqual(["github"]);
     // the victim's own Google sign-in still lands in their own account
     expect((await redirectSignIn(fake, "google", memoryAccountStore())).account).toBe("acct_victim");
   });
@@ -156,14 +164,20 @@ describe("sign-in methods", () => {
       start: async () => "http://127.0.0.1:4567/callback",
       open: async (url: string) => new URL((await fake.fetch(url)).headers.get("location") ?? "").search.slice(1),
     };
-    // the page redeems with the browser's fetch, as the desktop app's page does
     const real = globalThis.fetch;
     globalThis.fetch = Object.assign(fake.fetch, { preconnect: real.preconnect });
     try {
-      await desktopSignIn("github", bridge, store);
+      const before = await desktopSignIn("github", bridge, store);
+      if (before.sign_in_id === undefined) throw new Error("the desktop sign-in has no id");
+      const key = await store.key();
+      const oldKey = { key, account: before.account, sign_in_id: before.sign_in_id, no: fake.registerSessionKey(before.access_token, key.public_spki, "Desktop") };
+      await store.set("signin_key", oldKey);
       const service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock() });
       const after = await service.addMethod("google", (token, bearer) => desktopSignIn("google", bridge, store, { linkToken: token, bearer }));
       expect(after).toMatchObject({ account: "acct_1", provider: "google" });
+      expect(after.sign_in_id).not.toBe(before.sign_in_id);
+      expect((await fake.fetch(`${SERVICE}/v1/pcs`, { headers: { authorization: `Bearer ${before.access_token}` } })).status).toBe(401);
+      expect(await store.get("signin_key")).toEqual(oldKey);
     } finally {
       globalThis.fetch = real;
     }
@@ -187,13 +201,13 @@ describe("sign-in methods", () => {
     await redirectSignIn(fake, "github", store);
     const service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock(), now: () => now });
     await service.addMethod("google", (token, bearer) => redirectSignIn(fake, "google", store, { linkToken: token, bearer }));
-    expect(await service.identities()).toEqual([{ provider: "github", added_at: expect.any(String) }, { provider: "google", added_at: expect.any(String) }]);
+    expect((await service.identities()).identities).toEqual([{ provider: "github", added_at: expect.any(String) }, { provider: "google", added_at: expect.any(String) }]);
     now += 11 * 60_000;
     await expect(service.removeIdentity("github")).rejects.toMatchObject({ status: 403, code: "reauth_required" });
     await expect(service.addMethod("apple", async () => { throw new Error("no sign-in should start"); })).rejects.toMatchObject({ code: "reauth_required" });
     await redirectSignIn(fake, "google", store);
     await service.removeIdentity("github");
-    expect((await service.identities()).map((identity) => identity.provider)).toEqual(["google"]);
+    expect((await service.identities()).identities.map((identity) => identity.provider)).toEqual(["google"]);
   });
 
   it("stores nothing and ends the new sign-in when the account was signed out while the link finished", async () => {
@@ -206,7 +220,6 @@ describe("sign-in methods", () => {
     let linked: Awaited<ReturnType<typeof redirectSignIn>> | undefined;
     await expect(service.addMethod("google", async (token, bearer) => {
       linked = await redirectSignIn(fake, "google", store, { linkToken: token, bearer });
-      // another tab signs out while the token answer is still on its way
       await new AccountService({ store, fetch: fake.fetch, lock }).signOut();
       return linked;
     })).rejects.toBeInstanceOf(SignedOutError);

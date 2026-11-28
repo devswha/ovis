@@ -1,9 +1,3 @@
-/**
- * The words the app's main process shows itself (the tray, the menu bar, the notification of a
- * downloaded update and its line on the connection screen), in the languages the
- * Ovis pages have (src/lib/i18n.ts), chosen from the app's locale (`app.getLocale()`, the system's
- * language or `--lang`). English is the key, as in the pages.
- */
 const ENGLISH = [
   "Open Ovis",
   "Open in Browser",
@@ -21,6 +15,9 @@ const ENGLISH = [
   "View",
   "Reload",
   "Quit",
+  "The link opened in the system browser",
+  "{name} could not open it.",
+  "The browser chosen for links is no longer on this computer.",
 ] as const;
 
 export type TextKey = (typeof ENGLISH)[number];
@@ -44,6 +41,9 @@ const TRANSLATIONS: Record<Exclude<DesktopLocale, "en">, Record<TextKey, string>
     "View": "보기",
     "Reload": "새로고침",
     "Quit": "종료",
+    "The link opened in the system browser": "링크를 시스템 기본 브라우저로 열었습니다",
+    "{name} could not open it.": "{name}에서 열지 못했습니다.",
+    "The browser chosen for links is no longer on this computer.": "링크용으로 고른 브라우저가 이 컴퓨터에 없습니다.",
   },
   ja: {
     "Open Ovis": "Ovis を開く",
@@ -62,6 +62,9 @@ const TRANSLATIONS: Record<Exclude<DesktopLocale, "en">, Record<TextKey, string>
     "View": "表示",
     "Reload": "再読み込み",
     "Quit": "終了",
+    "The link opened in the system browser": "リンクをシステムの既定のブラウザで開きました",
+    "{name} could not open it.": "{name} で開けませんでした。",
+    "The browser chosen for links is no longer on this computer.": "リンク用に選んだブラウザがこのコンピュータにありません。",
   },
   zh: {
     "Open Ovis": "打开 Ovis",
@@ -80,6 +83,9 @@ const TRANSLATIONS: Record<Exclude<DesktopLocale, "en">, Record<TextKey, string>
     "View": "视图",
     "Reload": "重新加载",
     "Quit": "退出",
+    "The link opened in the system browser": "已在系统默认浏览器中打开链接",
+    "{name} could not open it.": "{name} 无法打开它。",
+    "The browser chosen for links is no longer on this computer.": "为链接选择的浏览器已不在这台电脑上。",
   },
 };
 

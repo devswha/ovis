@@ -8,10 +8,11 @@
  * which the server lays over what it holds, so a setting nobody changed stays each device's own.
  */
 export const SHARED_SETTING_KEYS = [
-  "theme", "palette", "darkTheme", "lightTheme", "customThemes", "language", "sidebarRows", "agentOrder", "agentMarks", "agentLocks", "lockedAgents", "opencodeParentEnds", "ompHeldFiles", "restoreReplacedServer", "agentNamedGroups", "agentGroupNames", "agentGroupOf", "autoSendQueued", "autoTabNames",
+  "theme", "palette", "darkTheme", "lightTheme", "customThemes", "markdownStyle", "language", "sidebarRows", "agentOrder", "agentMarks", "agentLocks", "lockedAgents", "opencodeParentEnds", "ompHeldFiles", "restoreReplacedServer", "agentNamedGroups", "agentGroupNames", "agentGroupOf", "autoSendQueued", "autoTabNames",
   "showThinking", "quickReplies", "showQuickReplies", "showUsage", "usageCount",
   "usageGlance", "usageOrder", "usageHidden", "claudeLaunchMode", "codexLaunchMode",
-  "claudeLaunchModel", "claudeLaunchEffort", "codexLaunchModel", "codexLaunchEffort",
+  "claudeLaunchModel", "claudeLaunchEffort", "codexLaunchModel", "codexLaunchEffort", "agentBrowserTools",
+  "builtInBrowser", "browserBlockedSites", "agentHarnessTool",
 ] as const;
 export type SharedSettingKey = (typeof SHARED_SETTING_KEYS)[number];
 
@@ -52,11 +53,8 @@ const MAX_PIN_LENGTH = 300;
 export const MAX_MUTED_PANES = 500;
 const MAX_MUTED_PANE_LENGTH = 300;
 export const MAX_TAB_LABELS = 64;
-/** a pane's key (`paneStorageId`, whose remote form is percent-encoded), `|`, its terminal id */
 const TAB_LABEL_KEY = /^[A-Za-z0-9:%._~-]{1,200}\|[A-Za-z0-9:._-]{1,64}$/;
-/** a label is a few words, never the message: at most this many UTF-16 code units */
 export const MAX_TAB_LABEL_LENGTH = 64;
-/** a shared value is a few words or a short list; a change and the whole document it makes stay small */
 export const MAX_PREFERENCES_BYTES = 64 * 1024;
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -68,14 +66,25 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
  */
 export interface PreferencesChange { settings: SharedPreferences["settings"]; pins?: string[]; muted_panes?: string[]; tab_labels?: Record<string, string>; tab_labels_removed?: string[] }
 
-/** A list of keys as a body or a stored file may carry it: at most `limit` nonempty strings of at most `length` characters; null when it is anything else. */
+export interface PreferencesPut extends PreferencesChange {
+  readonly expected_revision?: number;
+}
+
+export interface PreferencesConflict {
+  readonly error: { readonly code: "revision_conflict"; readonly message: string };
+  readonly current: SharedPreferences;
+}
+
+export function preferencesConflict(current: SharedPreferences): PreferencesConflict {
+  return { error: { code: "revision_conflict", message: "Shared preferences changed since they were read" }, current };
+}
+
 function keyList(value: unknown, limit: number, length: number): string[] | null | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.length > limit || !value.every((key) => typeof key === "string" && key.length > 0 && key.length <= length)) return null;
   return [...new Set(value as string[])];
 }
 
-/** Tab labels as a body or a stored file may carry them: at most MAX_TAB_LABELS short one-line labels by pane and terminal; null when it is anything else. */
 function labelMap(value: unknown): Record<string, string> | null | undefined {
   if (value === undefined) return undefined;
   if (!isObject(value)) return null;
@@ -85,13 +94,11 @@ function labelMap(value: unknown): Record<string, string> | null | undefined {
   return Object.fromEntries(entries) as Record<string, string>;
 }
 
-/** The newest MAX_TAB_LABELS labels: past it the oldest leave. */
 export function capTabLabels(labels: Record<string, string>): Record<string, string> {
   const entries = Object.entries(labels);
   return entries.length <= MAX_TAB_LABELS ? labels : Object.fromEntries(entries.slice(-MAX_TAB_LABELS));
 }
 
-/** The labels a change leaves: the held ones, less the keys it drops, with the ones it learned for keys not held; none while the shared setting is off. */
 export function nextTabLabels(held: Record<string, string> | undefined, change: PreferencesChange, settings: SharedPreferences["settings"]): Record<string, string> | undefined {
   if (settings.autoTabNames === false) return held === undefined ? undefined : {};
   if (change.tab_labels === undefined && change.tab_labels_removed === undefined) return held;
@@ -101,12 +108,10 @@ export function nextTabLabels(held: Record<string, string> | undefined, change: 
   return capTabLabels(next);
 }
 
-/** System's legacy single palette is the dark side, independent of this browser's OS. */
 export function mirrorPalette<T>(theme: unknown, darkTheme: T, lightTheme: T): T {
   return theme === "light" ? lightTheme : darkTheme;
 }
 
-/** Only the server writer interprets legacy changes; provenance is the incoming key set. */
 export function normalizeThemeChange(stored: SharedPreferences["settings"], change: PreferencesChange): PreferencesChange {
   const settings = { ...change.settings };
   if (!("darkTheme" in settings) && !("lightTheme" in settings) && "palette" in settings) {
@@ -129,7 +134,6 @@ export function normalizeThemeChange(stored: SharedPreferences["settings"], chan
   return { ...change, settings };
 }
 
-/** The settings and pins of a body or a stored file, cut to the shared names and the limits; null when the shape is wrong. */
 export function sharedPreferencesBody(raw: unknown): PreferencesChange | null {
   if (!isObject(raw) || !isObject(raw["settings"])) return null;
   const pins = keyList(raw["pins"], MAX_PINS, MAX_PIN_LENGTH);
@@ -141,4 +145,27 @@ export function sharedPreferencesBody(raw: unknown): PreferencesChange | null {
   const settings: SharedPreferences["settings"] = {};
   for (const key of SHARED_SETTING_KEYS) if (key in given) settings[key] = given[key];
   return { settings, ...(pins === undefined ? {} : { pins }), ...(muted === undefined ? {} : { muted_panes: muted }), ...(labels === undefined ? {} : { tab_labels: labels }), ...(removed === undefined ? {} : { tab_labels_removed: removed }) };
+}
+
+export function preferencesPutBody(raw: unknown): PreferencesPut | null {
+  if (!isObject(raw)) return null;
+  const expected = raw["expected_revision"];
+  if (expected !== undefined && (typeof expected !== "number" || !Number.isSafeInteger(expected) || expected < 0)) return null;
+  const body = sharedPreferencesBody(raw);
+  return body === null || expected === undefined ? body : { ...body, expected_revision: expected };
+}
+
+export function parsePreferencesConflict(raw: unknown): PreferencesConflict | null {
+  if (!isObject(raw) || !isObject(raw["error"]) || !isObject(raw["current"])) return null;
+  const error = raw["error"];
+  const current = raw["current"];
+  const revision = current["revision"];
+  const stateId = current["state_id"];
+  if (error["code"] !== "revision_conflict" || typeof error["message"] !== "string"
+    || typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 0
+    || (stateId !== undefined && typeof stateId !== "string")) return null;
+  const body = sharedPreferencesBody(current);
+  if (body === null) return null;
+  const { tab_labels_removed: _removed, ...document } = body;
+  return { error: { code: "revision_conflict", message: error["message"] }, current: { ...document, revision, ...(stateId === undefined ? {} : { state_id: stateId }) } };
 }

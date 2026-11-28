@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import { SHORTCUTS, bindingDisplayKeys, closePaneKeyStep, isAppShortcut, shortcutEventKey, isMacPlatform, matchShortcut, type ShortcutEventLike, keepsArrowsForText, keepsKeyForText, shortcutConflict, shortcutDisplayKeys, shortcutKeys } from "./shortcuts.ts";
 import { isReservedShortcutKey, sanitizeShortcutOverrides } from "./shortcutBindings.ts";
+import { sanitizeSettings } from "./settings.ts";
 
 function keyEvent(key: string, patch: Partial<ShortcutEventLike> = {}): ShortcutEventLike {
   return { key, ctrlKey: false, metaKey: false, shiftKey: true, altKey: false, ...patch };
@@ -13,6 +14,22 @@ describe("matchShortcut", () => {
     expect(matchShortcut(keyEvent("k", { ctrlKey: true }), false)).toBe("palette");
     expect(matchShortcut(keyEvent("k", { ctrlKey: true }), true)).toBeNull();
     expect(matchShortcut(keyEvent("k", { metaKey: true }), false)).toBeNull();
+  });
+
+  it("lists the editable chat quote binding without swallowing it in the terminal", () => {
+    const mac = keyEvent("(", { metaKey: true, code: "Digit9" });
+    const other = keyEvent("(", { ctrlKey: true, code: "Digit9" });
+    expect(matchShortcut(mac, true)).toBe("quote-chat");
+    expect(matchShortcut(other, false)).toBe("quote-chat");
+    expect(shortcutConflict("quote-chat", shortcutKeys("quote-chat", {}), {})).toBe(false);
+    expect(shortcutDisplayKeys("quote-chat", {})).toEqual(["Mod", "Shift", "9"]);
+    expect(isAppShortcut(isMacPlatform() ? mac : other)).toBe(false);
+  });
+
+  it.each(["8", null])("keeps the Quote shortcut setting %s instead of the default", (value) => {
+    const { shortcutOverrides } = sanitizeSettings({ shortcutOverrides: { "quote-chat": value } });
+    expect(matchShortcut(keyEvent("(", { ctrlKey: true, code: "Digit9" }), false, shortcutOverrides)).toBeNull();
+    expect(matchShortcut(keyEvent("*", { ctrlKey: true, code: "Digit8" }), false, shortcutOverrides)).toBe(value === null ? null : "quote-chat");
   });
 
   it("matches every terminal-safe key", () => {
@@ -68,17 +85,13 @@ describe("keepsArrowsForText", () => {
   it("lets the binding go where the field has no text left that way, so a draft never stops a pane switch", () => {
     const draft = (selectionStart: number, selectionEnd: number, selectionDirection = "none") =>
       ({ tagName: "TEXTAREA", value: "draft", selectionStart, selectionEnd, selectionDirection, classList: classes("composer-text") });
-    // the caret at the end: down has nothing left to select, up still does
     expect(keepsKeyForText({ key: "ArrowDown", target: draft(5, 5) }, "next-pane")).toBe(false);
     expect(keepsKeyForText({ key: "End", target: draft(5, 5) }, "next-pane")).toBe(false);
     expect(keepsKeyForText({ key: "ArrowUp", target: draft(5, 5) }, "previous-pane")).toBe(true);
-    // up once selected to the start (its moving end): the next up switches
     expect(keepsKeyForText({ key: "ArrowUp", target: draft(0, 5, "backward") }, "previous-pane")).toBe(false);
     expect(keepsKeyForText({ key: "ArrowDown", target: draft(0, 5, "backward") }, "next-pane")).toBe(true);
-    // a selection made forward from the start still moves its end back
     expect(keepsKeyForText({ key: "ArrowUp", target: draft(0, 5, "forward") }, "previous-pane")).toBe(true);
     expect(keepsKeyForText({ key: "ArrowDown", target: draft(0, 5, "forward") }, "next-pane")).toBe(false);
-    // the caret inside the text: both ways still select
     expect(keepsKeyForText({ key: "ArrowUp", target: draft(2, 2) }, "previous-pane")).toBe(true);
     expect(keepsKeyForText({ key: "ArrowDown", target: draft(2, 2) }, "next-pane")).toBe(true);
   });
@@ -127,6 +140,21 @@ it("matches shifted digits and detects alias and default-restoration conflicts",
 });
 
 describe("shortcutDisplayKeys", () => {
+  it.each([false, true])("leaves Quote unbound when a saved Close pane shortcut takes its default (exact: %s)", (exact) => {
+    const mac = isMacPlatform();
+    const { shortcutOverrides } = sanitizeSettings({ shortcutOverrides: { "close-pane": exact ? (mac ? "shift+meta+9" : "ctrl+shift+9") : "9" } });
+    const event = keyEvent("(", { ctrlKey: !mac, metaKey: mac, code: "Digit9" });
+
+    expect(matchShortcut(event, mac, shortcutOverrides)).toBe("close-pane");
+    expect(shortcutDisplayKeys("quote-chat", shortcutOverrides)).toEqual([]);
+  });
+
+  it("keeps Off for both fixed chords after loading device settings", () => {
+    const overrides = sanitizeShortcutOverrides({ voice: null, "hold-message": null });
+    expect(shortcutDisplayKeys("voice", overrides)).toEqual([]);
+    expect(shortcutDisplayKeys("hold-message", overrides)).toEqual([]);
+  });
+
   it("shows the default chord, custom chord, disabled state, and uncustomizable voice chord", () => {
     expect(shortcutDisplayKeys("palette", {})).toEqual(["Mod", "Shift", "K"]);
     expect(shortcutDisplayKeys("toggle-view", { "toggle-view": "p" })).toEqual(["Mod", "Shift", "P"]);
@@ -134,7 +162,6 @@ describe("shortcutDisplayKeys", () => {
     expect(shortcutDisplayKeys("voice", { voice: "p" })).toEqual(["Mod", "Shift", "Space"]);
   });
 
-  // listed only, as voice: the composer's own Alt+Enter, never an app action or a binding to record
   it("lists the composer's Alt+Enter hold, never dispatched or rebound", () => {
     expect(SHORTCUTS.find((shortcut) => shortcut.id === "hold-message")?.keys).toEqual(["Alt", "Enter"]);
     expect(shortcutDisplayKeys("hold-message", { "hold-message": "p" })).toEqual(["Alt", "Enter"]);
@@ -330,7 +357,6 @@ describe("exact-modifier bindings", () => {
     const overrides = sanitizeShortcutOverrides({ palette: "ctrl+k", "scroll-up": "meta+PageUp" }, true);
     expect(matchShortcut(ctrlK(), false, overrides)).toBe("palette");
     expect(matchShortcut(ctrlK({ altKey: true }), false, overrides)).toBeNull();
-    // the moved palette no longer answers its default Mod+Shift+K
     expect(matchShortcut(ctrlK({ shiftKey: true }), false, overrides)).toBeNull();
     expect(matchShortcut(keyEvent("PageUp", { metaKey: true, shiftKey: false }), true, overrides)).toBe("scroll-up");
     expect(matchShortcut(keyEvent("PageUp", { metaKey: true, shiftKey: true }), true, overrides)).toBeNull();

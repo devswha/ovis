@@ -1,9 +1,6 @@
-/**
- * The panes whose prompt a connection follows without attaching them (`prompt-watch`): one PromptMonitor for the
- * server reads each pane while any connection watches it, and tells those connections `prompt-changed`.
- */
 import type { ClientMessage } from "../../shared/protocol.ts";
 import { sessionSnapshot } from "../herdr/client.ts";
+import { onOpenCodePromptChange } from "../opencode-native.ts";
 import { PromptMonitor, type PromptReader } from "../prompt-monitor.ts";
 import { type Client, connectionOf, send } from "./connections.ts";
 
@@ -23,6 +20,8 @@ export function createPromptWatch({ clients, read }: { clients: Set<Client>; rea
       }
     }
   });
+  // the polling stays: a pane that holds no verified OpenCode stream, or an event the stream missed, is read on the tick
+  const stopOpenCodeWakes = onOpenCodePromptChange((paneId) => monitor.wake(paneId));
 
   function release(paneId: string): void {
     for (const client of clients) if (open(client) && client.data.promptWatches.has(paneId)) return;
@@ -47,7 +46,6 @@ export function createPromptWatch({ clients, read }: { clients: Set<Client>; rea
           return;
         }
         watches.add(message.pane_id);
-        // a pane others already watch was read before: this watcher is told what they were, as its first read
         const current = monitor.current(message.pane_id);
         if (current !== undefined) send(client, { type: "prompt-changed", pane_id: message.pane_id, signature: current });
         else monitor.watch(message.pane_id);
@@ -58,6 +56,6 @@ export function createPromptWatch({ clients, read }: { clients: Set<Client>; rea
       client.data.promptWatches.clear();
       for (const paneId of watched) release(paneId);
     },
-    stop(): void { monitor.stop(); },
+    stop(): void { stopOpenCodeWakes(); monitor.stop(); },
   };
 }

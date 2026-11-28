@@ -1,39 +1,30 @@
 /**
- * One failed health read is not an outage, and no health read changes what a PC can do. The
- * unmodified client runs over the demo's fixture transport with every `/api/health` read held at
- * a gate: the script decides each one's answer (the PC's identity, a 503 or a lost connection),
- * and moves the app's own poll with the browser's virtual clock. A PC known to have no terminal
- * attach (a Windows herdr) keeps its chat lens and its "soon" mark through failed reads, and no
- * failed read opens an attach. All files and HTTP traffic stay in this disposable, loopback-only
- * app; no herdr session is opened. HEALTH_FLAP_RESULTS=<dir> keeps each scenario's record there.
+ * A PC known to have no terminal attach (a Windows herdr) keeps its chat lens and its "soon" mark
+ * through failed reads, and no failed read opens an attach. All files and HTTP traffic stay in this
+ * disposable, loopback-only app; no herdr session is opened. HEALTH_FLAP_RESULTS=<dir> keeps each
+ * scenario's record there.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
+import type { Browser, Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import { appContext, installClock } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
 type Outcome = "ok" | "error" | "network";
 interface Frame { type: string; mode?: string; pane_id?: string }
 interface HealthFlap {
-  /** health reads asked for so far; each read's id is its place in that count */
   seen: number;
   pending: Array<{ id: number; resolve(outcome: Outcome): void }>;
   released: Array<{ id: number; outcome: Outcome }>;
-  /** the herdr each released success says this PC has (the demo's own when null) */
   identity: Record<string, unknown> | null;
   sockets: number;
-  /** what the page sent over its terminal sockets that claims or watches a pane, or sets its role */
   sent: Frame[];
-  /** header pills as they appeared, transient ones included */
   pills: string[];
 }
 declare global { interface Window { healthFlap: HealthFlap; releaseHealth(id: number, outcome: Outcome, identity?: Record<string, unknown>): void; setRemoteGone(gone: boolean): void } }
 
-/** Runs in the page, after the demo's transport: the gate, the roster's extra PCs and the socket record. */
 export function installHealthFlap(): void {
   const query = new URLSearchParams(location.search);
   const flap: HealthFlap = { seen: 0, pending: [], released: [], identity: JSON.parse(query.get("herdr") ?? "null") as Record<string, unknown> | null, sockets: 0, sent: [], pills: [] };
@@ -55,7 +46,6 @@ export function installHealthFlap(): void {
   let last: Roster | null = null;
   let remoteGone = false;
   const sources = new Set<{ onmessage: ((event: MessageEvent) => void) | null }>();
-  // the remote PC's bridge reports it gone, as the roster's own event stream would
   window.setRemoteGone = (gone) => {
     remoteGone = gone;
     for (const source of sources) source.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ type: "machines", machines: roster(last!) }) }));
@@ -130,9 +120,7 @@ export function installHealthFlap(): void {
   }).observe(document, { subtree: true, childList: true, characterData: true });
 }
 
-// The demo's event stream is open and its pushed local PC is connected.
 const POLL_MS = 30_000;
-/** What the header says and what the pane can do, read in one frame. */
 export const readHeader = (page: Page) => page.evaluate(() => {
   const pill = (selector: string) => {
     const node = document.querySelector(`.header-meta ${selector}`);
@@ -152,7 +140,6 @@ export const readHeader = (page: Page) => page.evaluate(() => {
 });
 export type Header = Awaited<ReturnType<typeof readHeader>>;
 
-/** Moves the app's poll on and returns the id of the health read that tick asked for. */
 export async function nextRead(page: Page): Promise<number> {
   const before = await page.evaluate(() => window.healthFlap.seen);
   await page.clock.fastForward(POLL_MS);
@@ -162,7 +149,6 @@ export async function nextRead(page: Page): Promise<number> {
 export const release = (page: Page, id: number, outcome: Outcome, identity?: Record<string, unknown>) =>
   page.evaluate(({ id, outcome, identity }) => window.releaseHealth(id, outcome, identity), { id, outcome, identity });
 const settled = (page: Page) => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-/** Waits for the header to hold the pill a read leaves, then reads it with what the pane can do. */
 export async function headerAfter(page: Page, pill: "stale" | "offline" | "none", step: string): Promise<Header> {
   try {
     await page.waitForFunction((pill) => {
@@ -183,49 +169,26 @@ const MIRROR = { version: "0.9.5", protocol: 22, terminal_attach: false, termina
 const OLDER = { version: "0.8.2", protocol: 21 };
 const SETTINGS = { language: "en", alertsOn: false };
 
-export async function serveDemo(): Promise<{ url: string; stop(): Promise<void>; dir: string }> {
-  const app = mkdtempSync(join(tmpdir(), "herdr-health-flap-demo-"));
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n<script>(${installHealthFlap.toString()})()</script>\n<script type="module"`));
-  const prefix = "/herdr-web-ui/demo/app/";
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
-  return { url: `http://127.0.0.1:${server.port}${prefix}`, dir: app, async stop() { await server.stop(true); rmSync(app, { recursive: true, force: true }); } };
-}
-
-/** A fresh page on the demo with the gate in front of its health reads; the clock is the browser's virtual one. */
 export async function openDemo(browser: Browser, url: string, query: Record<string, string>, options: { width?: number; settings?: Record<string, unknown>; mobile?: boolean } = {}) {
   const width = options.width ?? 1440;
   const mobile = options.mobile ?? width < 500;
-  const context = await browser.newContext({ viewport: { width, height: mobile ? 844 : 900 }, deviceScaleFactor: mobile ? 3 : 1, isMobile: mobile, hasTouch: mobile, locale: "en-US" });
+  const context = await appContext(browser, { viewport: { width, height: mobile ? 844 : 900 }, deviceScaleFactor: mobile ? 3 : 1, isMobile: mobile, hasTouch: mobile });
   await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ ...SETTINGS, ...options.settings }));
   const page = await context.newPage();
   page.setDefaultTimeout(10_000);
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.clock.install();
+  await installClock(page);
   await page.goto(`${url}?${new URLSearchParams(query)}`);
   await page.locator(".conn-live").waitFor({ state: "attached" });
   return { context, page, errors };
 }
 
-/** The health read the app asks for as it opens. */
 const firstRead = async (page: Page): Promise<number> => {
   await page.waitForFunction(() => window.healthFlap.pending.length > 0);
   return await page.evaluate(() => Math.min(...window.healthFlap.pending.map((read) => read.id)));
 };
 const established = async (page: Page, step: string): Promise<Header> => {
-  // a known non-attach PC: its terminal lens says "soon", and a shell pane opens in the chat
   try { await page.locator(".view-switch .pill-soon").waitFor(); }
   catch (error) { throw new Error(`${step}: the PC's capabilities never arrived: ${JSON.stringify(await readHeader(page))}`, { cause: error }); }
   await settled(page);
@@ -262,7 +225,6 @@ async function transientRecovery(browser: Browser, url: string): Promise<Record<
     sameCapabilities(healthy, recovered, "recovery");
     steps.push({ state: "recovered", ...recovered });
 
-    // the run of failures was reset: the next lone failure gets the same grace
     await release(page, await nextRead(page), "network");
     const again = await headerAfter(page, "stale", "isolated failure after recovery");
     assert.equal(again.offline, null, "a later lone failure is unknown again");
@@ -290,7 +252,6 @@ async function transientRecovery(browser: Browser, url: string): Promise<Record<
 
 async function scopeAndCapability(browser: Browser, url: string): Promise<Record<string, unknown>> {
   const cases: Record<string, unknown>[] = [];
-  // overlapping reads: the newer success lands first, the older failure after it
   {
     const { context, page, errors } = await openDemo(browser, url, { pane: panes.shell, herdr: JSON.stringify(WINDOWS) });
     try {
@@ -301,7 +262,6 @@ async function scopeAndCapability(browser: Browser, url: string): Promise<Record
       assert.ok(newer > older);
       await release(page, newer, "ok");
       await release(page, older, "error");
-      // a read after both: its new version says both before it were taken in
       const marker = await nextRead(page);
       await release(page, marker, "ok", { ...WINDOWS, version: "0.9.6" });
       await page.waitForFunction(() => document.querySelector(".header-meta .conn")?.getAttribute("title")?.includes("herdr 0.9.6") === true);
@@ -309,7 +269,6 @@ async function scopeAndCapability(browser: Browser, url: string): Promise<Record
       const after = await readHeader(page);
       assert.deepEqual(after.pills, [], "the older failure never reached the header");
       sameCapabilities(healthy, after, "overlap");
-      // and the failure run is still empty: one more failure is the first
       await release(page, await nextRead(page), "error");
       const lone = await headerAfter(page, "stale", "failure after overlap");
       assert.equal(lone.offline, null, "the dropped failure did not count toward unavailable");
@@ -317,8 +276,6 @@ async function scopeAndCapability(browser: Browser, url: string): Promise<Record
       assert.deepEqual(errors, []);
     } finally { await context.close(); }
   }
-  // reverse order on a cold start: the first read is held while a newer one fails, and its late answer
-  // still brings what the PC can do (a Windows herdr's chat lens) while the newer failure still stands
   {
     const { context, page, errors } = await openDemo(browser, url, { pane: panes.shell, herdr: JSON.stringify(WINDOWS) });
     try {
@@ -338,7 +295,6 @@ async function scopeAndCapability(browser: Browser, url: string): Promise<Record
       assert.deepEqual(errors, []);
     } finally { await context.close(); }
   }
-  // two failed reads after an answer, the newer completing first: both count, so the header says unavailable
   {
     const { context, page, errors } = await openDemo(browser, url, { pane: panes.shell, herdr: JSON.stringify(WINDOWS) });
     try {
@@ -358,7 +314,6 @@ async function scopeAndCapability(browser: Browser, url: string): Promise<Record
       assert.deepEqual(errors, []);
     } finally { await context.close(); }
   }
-  // an answer that lands late ends the failures before it and keeps only the ones after it
   {
     const { context, page, errors } = await openDemo(browser, url, { pane: panes.shell, herdr: JSON.stringify(WINDOWS) });
     try {
@@ -386,7 +341,6 @@ async function scopeAndCapability(browser: Browser, url: string): Promise<Record
       assert.deepEqual(errors, []);
     } finally { await context.close(); }
   }
-  // cold start: no answer yet, so no identity to borrow, and two failures are unavailable
   {
     const { context, page, errors } = await openDemo(browser, url, { pane: panes.shell, herdr: JSON.stringify(WINDOWS) });
     try {
@@ -412,7 +366,6 @@ async function scopeAndCapability(browser: Browser, url: string): Promise<Record
       assert.deepEqual(errors, []);
     } finally { await context.close(); }
   }
-  // capability fields: a Windows herdr with a mirror, and an older bridge with no attach field
   for (const [name, identity, soon] of [["mirror", MIRROR, false], ["older-fields", OLDER, false], ["windows-no-mirror", WINDOWS, true]] as const) {
     for (const observe of [false, true]) {
       const { context, page, errors } = await openDemo(browser, url, { pane: panes.shell, herdr: JSON.stringify(identity), ...(observe ? { observe: "1" } : {}) });
@@ -434,7 +387,6 @@ async function scopeAndCapability(browser: Browser, url: string): Promise<Record
       } finally { await context.close(); }
     }
   }
-  // PC scopes: the local PC's failed reads never reach a remote PC's header, nor an offline one's
   {
     const { context, page, errors } = await openDemo(browser, url, { machine: "remote", pane: panes.api, remotes: "1", herdr: JSON.stringify(WINDOWS) });
     try {
@@ -447,7 +399,6 @@ async function scopeAndCapability(browser: Browser, url: string): Promise<Record
         await palette.locator(`.palette-pane[data-machine="${machine}"]`).first().click();
         await palette.waitFor({ state: "detached" });
       };
-      // the local failure was taken in: the local PC says so
       await pick("local");
       const local = await headerAfter(page, "stale", "local PC after its failure");
       assert.equal(local.offline, null);
@@ -458,7 +409,6 @@ async function scopeAndCapability(browser: Browser, url: string): Promise<Record
       assert.equal(remote.offline, null, "the remote PC's herdr is connected");
       assert.match(remote.chip ?? "", /herdr 0\.9\.4/, "the remote PC's own herdr");
       assert.equal(remote.soon, false, "the remote PC keeps its own attach");
-      // the selected remote PC goes offline while this PC's own herdr is still unknown
       await page.evaluate(() => window.setRemoteGone(true));
       const offline = await headerAfter(page, "offline", "offline PC");
       assert.equal(offline.offline?.text, "herdr offline", "a PC its bridge reports disconnected keeps the offline pill");
@@ -473,15 +423,11 @@ async function scopeAndCapability(browser: Browser, url: string): Promise<Record
 if (import.meta.main) {
   const results = process.env["HEALTH_FLAP_RESULTS"];
   if (results) mkdirSync(results, { recursive: true });
-  const demo = await serveDemo();
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      for (const scenario of [transientRecovery, scopeAndCapability]) {
-        const result = await scenario(browser, demo.url);
-        if (results) writeFileSync(join(results, `${result["scenario"] as string}.json`), JSON.stringify(result, null, 2));
-        console.log(`PASS ${result["scenario"] as string}`);
-      }
-    } finally { await browser.close(); }
-  } finally { await demo.stop(); }
+  await withDemoBrowser({ tempPrefix: "herdr-health-flap-demo-", afterTransport: `\n<script>(${installHealthFlap.toString()})()</script>` }, async ({ browser, baseUrl }) => {
+    for (const scenario of [transientRecovery, scopeAndCapability]) {
+      const result = await scenario(browser, baseUrl);
+      if (results) writeFileSync(join(results, `${result["scenario"] as string}.json`), JSON.stringify(result, null, 2));
+      console.log(`PASS ${result["scenario"] as string}`);
+    }
+  });
 }

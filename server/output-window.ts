@@ -1,13 +1,11 @@
-// Count UTF-8 payload bytes, not JSON framing or UTF-16 string length. A fresh
-// subscription id keeps delayed callbacks from acknowledging a later attach.
+// A fresh subscription id keeps delayed callbacks from acknowledging a later attach.
 export const OUTPUT_HIGH_BYTES = 256 * 1024;
 export const OUTPUT_LOW_BYTES = 64 * 1024;
 export const OUTPUT_HARD_BYTES = 1024 * 1024;
-/** how long a blocked client may go without its ACKs moving before it is closed with 4008 */
 export const OUTPUT_STALL_MS = 2000;
+const ALT_SCREEN_MODE = "1049";
 /** the slowest link a joiner's replay is given time for: 32 KiB/s, about 256 kbit/s */
 export const OUTPUT_JOIN_BYTES_PER_SECOND = 32 * 1024;
-/** the longest a joiner may take to acknowledge its replay */
 export const OUTPUT_JOIN_MAX_MS = 15_000;
 /**
  * The longest one client may hold the shared pty paused, however it acknowledges: a client
@@ -15,6 +13,12 @@ export const OUTPUT_JOIN_MAX_MS = 15_000;
  * Draining 192 KiB from the high to the low watermark takes 6 s at the join rate above.
  */
 export const OUTPUT_PAUSE_MAX_MS = 10_000;
+/**
+ * The same bound for a client that is the pane's only viewer: holding the pty paused then slows
+ * no one but itself, and a slow phone parsing a burst of wide text (Korean, emoji) still ACKs
+ * well past 10 s. It stays a fixed bound, so a client acknowledging a byte at a time still ends.
+ */
+export const OUTPUT_PAUSE_ALONE_MAX_MS = 60_000;
 
 /**
  * What a frame carrying `text` costs on the wire: JSON escapes every control byte, so an ESC
@@ -24,7 +28,6 @@ export function wireBytes(text: string): number {
   return Buffer.byteLength(JSON.stringify(text));
 }
 
-/** What the server does about one client: keep sending, pause the shared pty for it, or close it (4008). */
 export type OutputVerdict = "flow" | "pause" | "stop";
 
 export class OutputWindow {
@@ -32,22 +35,14 @@ export class OutputWindow {
   sent = 0;
   acknowledged = 0;
   blocked = false;
-  /** when the client last became blocked without its ACKs moving since */
   private stalledSince: number | undefined;
-  /** when the client last started holding the shared pty paused, ACKs or not */
   private pausingSince: number | undefined;
-  /** a joiner's replay is in flight and nothing is acknowledged yet: its budget ends here */
   joinUntil: number | undefined;
-  /** frames sent and not yet acknowledged, oldest first from `head`: where each ends and its size on the wire */
   private readonly inFlight: { end: number; wire: number }[] = [];
   private head = 0;
 
   get pending(): number { return this.sent - this.acknowledged; }
 
-  /**
-   * `wire` is the frame's serialized size (`wireBytes`): the oldest unacknowledged frame must
-   * cross the link before its ACK can come, so the stall deadline grows by its crossing time.
-   */
   write(bytes: number, wire = 0): number {
     this.sent += bytes;
     if (wire > 0) this.inFlight.push({ end: this.sent, wire });
@@ -71,7 +66,6 @@ export class OutputWindow {
 
   acknowledge(id: string, offset: number): boolean {
     if (id !== this.id || !Number.isSafeInteger(offset) || offset < 0 || offset > this.sent) return false;
-    // Duplicate and out-of-order ACKs cannot release credit twice, nor restart the stall clock.
     if (offset > this.acknowledged) {
       this.acknowledged = offset;
       this.stalledSince = undefined;
@@ -94,9 +88,10 @@ export class OutputWindow {
    * nothing to acknowledge can make no ACK progress, so another pane's backlog must not pause
    * or stop it (that pane's own window answers for it). The deadline is OUTPUT_STALL_MS plus
    * the time the oldest unacknowledged frame needs to cross a slow link: its ACK cannot come
-   * before then.
+   * before then. `alone`: no other client shares the pty, so a pause holds back no peer.
    */
-  check(buffered: number, now = Date.now(), large = 0): OutputVerdict {
+  check(buffered: number, now = Date.now(), large = 0, alone = false): OutputVerdict {
+    const pauseMax = alone ? OUTPUT_PAUSE_ALONE_MAX_MS : OUTPUT_PAUSE_MAX_MS;
     if (buffered >= OUTPUT_HARD_BYTES) return "stop";
     if (!this.blocked && (buffered < OUTPUT_HIGH_BYTES || this.pending <= OUTPUT_LOW_BYTES)) {
       this.stalledSince = undefined;
@@ -105,28 +100,20 @@ export class OutputWindow {
     }
     this.stalledSince ??= now;
     if (this.joinUntil !== undefined) {
-      // within its budget a joiner holds only its own window up (bounded by OUTPUT_HARD_BYTES)
       if (now < this.joinUntil) return "flow";
-      // past it the joiner is an ordinary client: one blocked through its budget with nothing
-      // acknowledged is out of time, one that only now became blocked gets the usual deadline
       this.joinUntil = undefined;
     }
     this.pausingSince ??= now;
-    // `large`: frames past the budget still queued on the socket, a session's snapshot (#2573). Output behind
-    // one cannot be acknowledged before it has crossed, whenever it was queued, so the stall clock starts once
-    // it is gone; the frame's own deadline (connections.ts `expire`) answers for a client that stops reading.
-    // The pane is still paused, and for no longer than any client may hold the shared pty paused.
     if (large > 0) {
       this.stalledSince = undefined;
-      return now - this.pausingSince >= OUTPUT_PAUSE_MAX_MS ? "stop" : "pause";
+      return now - this.pausingSince >= pauseMax ? "stop" : "pause";
     }
     const oldest = this.inFlight[this.head];
     const deadline = OUTPUT_STALL_MS + (oldest ? Math.min(OUTPUT_JOIN_MAX_MS - OUTPUT_STALL_MS, crossingMs(oldest.wire)) : 0);
-    return now - this.stalledSince >= deadline || now - this.pausingSince >= OUTPUT_PAUSE_MAX_MS ? "stop" : "pause";
+    return now - this.stalledSince >= deadline || now - this.pausingSince >= pauseMax ? "stop" : "pause";
   }
 }
 
-/** how long `wire` bytes take on the slowest link a budget allows for */
 export function crossingMs(wire: number): number {
   return Math.ceil(wire * 1000 / OUTPUT_JOIN_BYTES_PER_SECOND);
 }
@@ -135,13 +122,9 @@ export function crossingMs(wire: number): number {
 const PRIVATE_MODES = /\x1b\[\?([\d;]+)([hl])/g;
 /** xterm's modifyOtherKeys: CSI > 4 ; level m, off with CSI > 4 m, CSI > 4 n, or a bare CSI > m / CSI > n (every resource reset) */
 const MODIFY_OTHER_KEYS = /\x1b\[>(4(?:;(\d*))?)?([mn])/g;
-/** An ESC, or a CSI still missing its final byte. */
 const INCOMPLETE_CSI = /^\x1b(\[[\x30-\x3f]*[\x20-\x2f]*)?$/;
 
 /**
- * What a client joining a live attachment is sent: the bounded tail of the stream,
- * led by the private modes set by output that has already fallen out of it.
- *
  * `herdr terminal attach` switches the alternate screen and mouse reporting on once,
  * at the start of the stream. A busy pane pushes that start out of the tail, and a
  * late joiner (a phone opening a pane a desktop tab holds) then got a terminal with
@@ -150,13 +133,17 @@ const INCOMPLETE_CSI = /^\x1b(\[[\x30-\x3f]*[\x20-\x2f]*)?$/;
  * request is passed on the same way, once: without it the joiner sends Ctrl+Enter as Enter.
  */
 export class ReplayBuffer {
-  private tail = "";
   /**
-   * Each mode's last switch in the output before the tail, in the order of those last
-   * switches: order matters (1016l after 1006h leaves xterm's mouse encoding at the default).
+   * The tail as UTF-8 at `bytes[start, end)`: an append encodes only its own output and a cut
+   * decodes only what falls out: re-encoding a whole string tail on every append was the server's
+   * largest CPU cost under busy agents. The output arrives from a streaming TextDecoder, so the
+   * round trip loses nothing.
    */
+  private bytes = Buffer.alloc(0);
+  private start = 0;
+  private end = 0;
+  /** order matters: 1016l after 1006h leaves xterm's mouse encoding at the default */
   private readonly modes = new Map<string, "h" | "l">();
-  /** the modifyOtherKeys level the output before the tail left, 0 when off */
   private modifyOtherKeys = 0;
   /**
    * Output has fallen out of the tail. Until then the tail is the whole stream, herdr's first
@@ -166,44 +153,62 @@ export class ReplayBuffer {
 
   constructor(private readonly limit: number) {}
 
-  /** Keeps a bounded UTF-8 tail, never starting in the middle of a code point. */
   append(data: string): void {
-    const bytes = Buffer.from(this.tail + data);
-    let start = Math.max(0, bytes.length - this.limit);
-    while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start++;
-    // never cut a control sequence in two: its switch would be lost to both halves
-    const escape = start > 0 ? bytes.lastIndexOf(0x1b, start - 1) : -1;
-    if (escape >= 0 && INCOMPLETE_CSI.test(bytes.subarray(escape, start).toString("latin1"))) start = escape;
-    if (start === 0) {
-      this.tail += data;
-      return;
+    const size = Buffer.byteLength(data);
+    if (this.end + size > this.bytes.length) {
+      // twice what is held: the next copy comes only after about as much output again
+      this.move(2 * (this.end - this.start + size));
     }
+    this.end += this.bytes.write(data, this.end);
+    const bytes = this.bytes;
+    let start = Math.max(this.start, this.end - this.limit);
+    while (start < this.end && (bytes[start]! & 0xc0) === 0x80) start++;
+    // never cut a control sequence in two: its switch would be lost to both halves
+    const escape = start > this.start ? bytes.subarray(this.start, start).lastIndexOf(0x1b) : -1;
+    if (escape >= 0 && INCOMPLETE_CSI.test(bytes.toString("latin1", this.start + escape, start))) start = this.start + escape;
+    if (start === this.start) return;
     this.truncated = true;
-    const cut = bytes.subarray(0, start).toString("utf8");
+    const cut = bytes.toString("utf8", this.start, start);
     for (const [, params, state] of cut.matchAll(PRIVATE_MODES)) {
       for (const mode of params!.split(";").filter(Boolean)) {
+        // Never restore ?2026h across a cut (it would pair with a retained ?2026l to settle a partial screen),
+        // and never record an unmatched ?2026l (herdr-core's attach reset) on a stream that never used ?2026h.
+        if (mode === "2026") {
+          if (state === "h") {
+            this.modes.delete(mode);
+            this.modes.set(mode, "l");
+          }
+          continue;
+        }
         this.modes.delete(mode);
         this.modes.set(mode, state as "h" | "l");
       }
     }
     for (const [, resource, level, final] of cut.matchAll(MODIFY_OTHER_KEYS)) this.modifyOtherKeys = resource && final === "m" ? Number(level || 0) : 0;
-    this.tail = bytes.subarray(start).toString("utf8");
+    this.start = start;
+    // a burst far past the limit grew the buffer for itself: keep only room for what is left
+    const kept = Math.max(this.limit, this.end - this.start);
+    if (this.bytes.length > 4 * kept) this.move(2 * kept);
   }
 
-  /** The stream as seen by a client joining now. Empty until the pane has written anything. */
+  private move(capacity: number): void {
+    const next = Buffer.allocUnsafe(capacity);
+    this.end = this.bytes.copy(next, 0, this.start, this.end);
+    this.start = 0;
+    this.bytes = next;
+  }
+
   text(): string {
-    if (!this.tail) return "";
+    if (this.start === this.end) return "";
     const keys = this.modifyOtherKeys > 0 ? `\x1b[>4;${this.modifyOtherKeys}m` : "";
-    return [...this.modes].map(([mode, state]) => `\x1b[?${mode}${state}`).join("") + keys + this.tail;
+    return [...this.modes].map(([mode, state]) => `\x1b[?${mode}${state}`).join("") + keys + this.recent;
   }
 
-  /** whether the output before the tail left the alternate screen on: the tail starts on it */
   get alternateScreen(): boolean {
-    return this.modes.get("1049") === "h";
+    return this.modes.get(ALT_SCREEN_MODE) === "h";
   }
 
-  /** The raw tail, for matching herdr's own error text. */
   get recent(): string {
-    return this.tail;
+    return this.bytes.toString("utf8", this.start, this.end);
   }
 }

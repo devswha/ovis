@@ -1,11 +1,10 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DIST_ARCHIVE, generateKeyPair, MANIFEST, RELEASE_PUBLIC_KEY, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, SIGNATURE, signManifest, SUMS, verifyRelease, writeManifest } from "./server-manifest.ts";
+import { DIST_ARCHIVE, generateKeyPair, MANIFEST, RELEASE_PUBLIC_KEY, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, SIGNATURE, signManifest, sourceTrees, SUMS, verifyRelease, writeManifest } from "./server-manifest.ts";
 
-/** a signed release folder and the key that signs it, for attacks that change something and sign again */
 function signedRelease(): { dir: string; privateKeyPem: string; publicKey: string } {
   const dir = releaseDir();
   const pair = generateKeyPair();
@@ -13,7 +12,6 @@ function signedRelease(): { dir: string; privateKeyPem: string; publicKey: strin
   signManifest(dir, pair.privateKeyPem);
   return { dir, ...pair };
 }
-/** the manifest rewritten as `edit` makes it, then signed again by the release's own key: only the key holder could */
 function resigned(dir: string, privateKeyPem: string, edit: (text: string) => string): void {
   writeFileSync(join(dir, MANIFEST), edit(readFileSync(join(dir, MANIFEST), "utf8")));
   signManifest(dir, privateKeyPem);
@@ -30,7 +28,6 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** a release folder: one stand-in binary per platform, each with other bytes */
 function releaseDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "ovis-server-release-"));
   dirs.push(dir);
@@ -147,7 +144,6 @@ describe("bun scripts/build-server.ts", () => {
     const printed = result.out.trim();
     expect(printed).toMatch(/^[A-Za-z0-9+/]{43}=$/);
     expect(result.out + result.err).not.toContain(pem.split("\n")[1]!);
-    // a second run never overwrites a key
     expect(cli(["keygen", dir]).code).not.toBe(0);
     expect(readFileSync(key, "utf8")).toBe(pem);
   });
@@ -161,7 +157,6 @@ describe("bun scripts/build-server.ts", () => {
     expect(other.err).toContain(RELEASE_PUBLIC_KEY);
     expect(() => statSync(join(dir, SIGNATURE))).toThrow();
     expect(cli(["sign", dir, "--public-key", publicKey], { OVIS_SERVER_SIGNING_KEY: privateKeyPem }).code).toBe(0);
-    // verify checks against the committed key unless told another: this release is not signed by it
     const committed = cli(["verify", dir]);
     expect(committed.code).toBe(1);
     expect(committed.err).toContain(RELEASE_PUBLIC_KEY);
@@ -343,5 +338,22 @@ describe("the Rust PTY hosts in the signed manifest", () => {
     const extra = signedRelease();
     resigned(extra.dir, extra.privateKeyPem, (text) => { const parsed = JSON.parse(text); parsed.pty["windows-x64"] = parsed.pty["linux-x64"]; return `${JSON.stringify(parsed, null, 2)}\n`; });
     rejects(extra.dir, extra.publicKey, "must name exactly the Rust PTY hosts");
+  });
+});
+
+describe("the git trees a checkout's release binary is tied to", () => {
+  it("are the folder's own server/ and shared/, also inside another repository with its own", () => {
+    const repo = mkdtempSync(join(tmpdir(), "ovis-source-trees-"));
+    dirs.push(repo);
+    const plugin = join(repo, "plugin");
+    for (const [dir, text] of [["server", "outer"], ["shared", "outer"], ["plugin/server", "inner"], ["plugin/shared", "inner shared"]] as const) {
+      mkdirSync(join(repo, dir), { recursive: true });
+      writeFileSync(join(repo, dir, "index.ts"), `${text}\n`);
+    }
+    const git = (...args: string[]) => Bun.spawnSync(["git", "-C", repo, ...args], { stdout: "pipe", stderr: "pipe" });
+    for (const args of [["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "x"]]) expect(git(...args).exitCode).toBe(0);
+    const tree = (path: string) => git("rev-parse", `HEAD:${path}`).stdout.toString().trim();
+    expect(sourceTrees(plugin)).toEqual({ server: tree("plugin/server"), shared: tree("plugin/shared") });
+    expect(sourceTrees(repo)).toEqual({ server: tree("server"), shared: tree("shared") });
   });
 });

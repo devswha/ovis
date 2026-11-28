@@ -1,27 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser } from "playwright-core";
+import type { Browser } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { searchPattern, searchTurns } from "../shared/conversation-search.ts";
 import type { ConversationTurn } from "../shared/protocol.ts";
 import { appFaces } from "./app-faces.ts";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { openMoreGroup } from "./header-more.ts";
 
-// Compaction and failed requests (#901), always on, on the unmodified app over the demo's fixture
-// transport, at a phone's and a desktop's width, light and dark, also on a device that stored the
-// old switch off (its choice is ignored). The turn's three failed requests are one folded row that says another request
-// followed, opens to their three errors and fits the transcript's width, the answer after them
-// stays outside it, a search's pick of words in one of the errors opens the row again (#3082),
-// and the compaction card names the token counts its record stated. The omp
-// pane's conversation answers TURNS; all files and HTTP traffic stay in this disposable,
-// loopback-only app and no herdr session is opened. Screenshots go to UI_EVIDENCE_DIR when set.
-const app = mkdtempSync(join(tmpdir(), "herdr-chat-request-details-demo-"));
+// All files and HTTP traffic stay in this disposable, loopback-only app and no herdr session is opened.
 const evidence = process.env["UI_EVIDENCE_DIR"] || null;
-if (evidence !== null) mkdirSync(evidence, { recursive: true });
 
 const PANE = panes.omp;
 const ERRORS = [
@@ -38,45 +27,35 @@ const TURNS = [
     { kind: "text", text: "The test waits on a fixed sleep; the fix awaits the payment event instead.", phase: "final_answer" },
   ] },
 ] satisfies ConversationTurn[];
-// what the PC's search answers for words of the second error
 const QUERY = "connection error";
 const SEARCH = { history_id: "request-details", cursor: null, matches: searchTurns(TURNS, searchPattern(QUERY)!) };
 
-async function prepareDemo(): Promise<void> {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  const html = readFileSync(index, "utf8");
-  assert.match(html, /<script type="module"/);
-  // over the demo's own fetch: only this pane's conversation read is answered here
-  const override = `<script>(() => {
-    const demo = window.fetch;
-    const turns = ${JSON.stringify(TURNS)};
-    window.fetch = (input, init) => {
-      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
-      if (url.pathname === "/api/pane/conversation/search" && url.searchParams.get("pane_id") === ${JSON.stringify(PANE)}) {
-        return Promise.resolve(new Response(${JSON.stringify(JSON.stringify(SEARCH))}, { headers: { "content-type": "application/json" } }));
-      }
-      if (url.pathname === "/api/pane/conversation" && url.searchParams.get("pane_id") === ${JSON.stringify(PANE)}) {
-        const body = { source: "omp-transcript", history_id: "request-details", cursor: null, turns: url.searchParams.has("before") ? [] : turns };
-        return Promise.resolve(new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } }));
-      }
-      return demo(input, init);
-    };
-  })();</script>`;
-  writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${override}\n    <script type="module"`));
-}
+const override = `<script>(() => {
+  const demo = window.fetch;
+  const turns = ${JSON.stringify(TURNS)};
+  window.fetch = (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
+    if (url.pathname === "/api/pane/conversation/search" && url.searchParams.get("pane_id") === ${JSON.stringify(PANE)}) {
+      return Promise.resolve(new Response(${JSON.stringify(JSON.stringify(SEARCH))}, { headers: { "content-type": "application/json" } }));
+    }
+    if (url.pathname === "/api/pane/conversation" && url.searchParams.get("pane_id") === ${JSON.stringify(PANE)}) {
+      const body = { source: "omp-transcript", history_id: "request-details", cursor: null, turns: url.searchParams.has("before") ? [] : turns };
+      return Promise.resolve(new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } }));
+    }
+    return demo(input, init);
+  };
+})();</script>`;
 
 async function check(browser: Browser, origin: string, width: number, theme: "light" | "dark", storedOff: boolean): Promise<void> {
   const phone = width <= 480;
-  const context = await browser.newContext(phone
-    ? { viewport: { width, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en-US", colorScheme: theme }
-    : { viewport: { width, height: 900 }, locale: "en-US", colorScheme: theme });
+  const context = await appContext(browser, phone
+    ? { viewport: { width, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, colorScheme: theme }
+    : { viewport: { width, height: 900 }, colorScheme: theme });
   const name = `${width}px ${theme}${storedOff ? " with the old switch stored off" : ""}`;
   try {
     // the demo's other agents finish turns now and then: their in-app alerts stay off over the transcript
     await context.addInitScript(([settings, pane, stored]) => {
       localStorage.setItem("ovis:settings", settings!);
-      // a phone's More folds the pane's Find items where its tabs are in the header (Settings -> Tabs on a phone)
       localStorage.setItem("ovis:phone-tabs", JSON.stringify("header"));
       localStorage.setItem(`ovis:view:${pane}`, "chat");
       if (stored === "true") localStorage.setItem("ovis:chat-request-details", "false");
@@ -108,10 +87,8 @@ async function check(browser: Browser, origin: string, width: number, theme: "li
       });
       assert.ok(fits, `${name}: the opened row fits the turn's width`);
 
-      // folded again, a search's pick of words in an error opens the row it is in
       await row.locator("summary").click();
       await page.waitForFunction((element) => !(element as HTMLDetailsElement).open, await row.elementHandle());
-      // a phone's header lists the tabs, so its More carries the pane's actions, the find ones under Find… (G-143)
       if (phone) { await page.locator(".header-more-button").click(); await page.locator(".row-sheet").waitFor(); await openMoreGroup(page, "find"); }
       else await scope.locator(".chat-view").click({ button: "right", position: { x: 300, y: 200 } });
       await page.getByText("Search conversation", { exact: true }).click();
@@ -124,7 +101,6 @@ async function check(browser: Browser, origin: string, width: number, theme: "li
       await page.waitForFunction((element) => (element as HTMLDetailsElement).open, await row.elementHandle(), { timeout: 5_000 });
       assert.ok(await row.getByText("Connection error.", { exact: true }).isVisible(), `${name}: the pick opens the folded row to the error it found`);
       if (evidence !== null) {
-        // the sheet that closed is painted away first
         await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
         await page.screenshot({ path: join(evidence, `chat-request-details-search-${width}-${theme}.png`) });
       }
@@ -140,29 +116,10 @@ async function check(browser: Browser, origin: string, width: number, theme: "li
   } finally { await context.close(); }
 }
 
-try {
-  await prepareDemo();
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      for (const width of [390, 1280]) {
-        for (const theme of ["light", "dark"] as const) {
-          for (const storedOff of [false, true]) await check(browser, `http://127.0.0.1:${server.port}`, width, theme, storedOff);
-        }
-      }
-    } finally { await browser.close(); }
-  } finally { await server.stop(true); }
-} finally {
-  rmSync(app, { recursive: true, force: true });
-}
+await withDemoBrowser({ tempPrefix: "herdr-chat-request-details-demo-", afterTransport: `\n    ${override}` }, async ({ browser, origin }) => {
+  for (const width of [390, 1280]) {
+    for (const theme of ["light", "dark"] as const) {
+      for (const storedOff of [false, true]) await check(browser, origin, width, theme, storedOff);
+    }
+  }
+});

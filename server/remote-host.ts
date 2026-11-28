@@ -33,13 +33,12 @@ export const HERDR_INSTALL_CMD = "https://herdr.dev/install.cmd";
 /** the upload is cut off after this long on the PC, as a dead SSH link may never deliver EOF */
 export const INSTALL_UPLOAD_TIMEOUT_S = 25 * 60;
 const INSTALL_EXTRACT_TIMEOUT_MS = 10 * 60_000;
-// Allow time for staging, progress probes and cleanup beyond the bounded upload and extraction.
 const INSTALL_LOCK_MAX_AGE_MINUTES = Math.ceil((INSTALL_UPLOAD_TIMEOUT_S * 1000 + INSTALL_EXTRACT_TIMEOUT_MS) / 60_000) + 5;
 /**
- * Takes `$base/install.lock` (a directory holding the owner's PID). A lock whose owner is
+ * A lock whose owner is
  * gone, or that outlived the longest possible install (the local SSH timeout is 30 minutes),
  * was left by an install that never reached its trap; it is reclaimed rather than blocking
- * every retry until someone deletes it by hand. Expects `$base`; sets `$lock`.
+ * every retry until someone deletes it by hand.
  *
  * Reclaiming happens under `install.lock.reclaim`, a second mkdir mutex, with the owner and
  * age read again inside it: two installers that both judged the lock stale cannot then
@@ -79,27 +78,17 @@ export const WINDOWS_INSTALL_RELEASE = `$target = Join-Path $base 'install.lock'
 export interface HostInspection {
   platform: "linux-x64" | "linux-arm64" | "darwin-x64" | "darwin-arm64" | "win32-x64";
   home: string;
-  /** an installed herdr, empty when the bundle's (or, on Windows, herdr's installer) is needed */
   herdrPath: string;
-  /** the socket the bridge will register, exactly as its own bridgeIdentity() spells it */
   expectedSocket: string;
-  /** the socket of the session itself, spelled the same way: tells a chosen socket that is no choice (POSIX only) */
   defaultSocket?: string;
   bundleReady: boolean;
   bundleOlder: boolean;
   descriptors: BridgeDescriptor[];
-  /** this bundle version's runtime directory and the bridge registry, as absolute paths on the PC */
   runtimeDir: string;
   registryDir: string;
-  /** A unique POSIX startup attempt's result, never shared with an earlier attempt. */
   startupResult?: string;
 }
 export interface StartOptions { session?: string; herdrPath: string; inspection: HostInspection; headless?: boolean; herdr_socket?: string; start_new_herdr?: boolean }
-/**
- * The Windows lock's stable reclaim prefix. It is ASCII-safe even when the state directory,
- * destination or account is not. The state directory and target outlive a restart (a PID does
- * not), so this server can reclaim its stopped predecessor while another target or server waits.
- */
 export function installLockOwner(stateDir: string, target: Pick<SshTarget, "destination" | "port"> = { destination: "" }): string {
   return createHash("sha256").update(`${hostname()}\0${stateDir}\0${target.destination}\0${target.port ?? ""}`).digest("hex");
 }
@@ -107,7 +96,6 @@ export function installLockOwner(stateDir: string, target: Pick<SshTarget, "dest
 const activeWindowsInstalls = new Set<string>();
 const INSTALL_BUSY = "Another installation is in progress; retry shortly";
 
-/** One unique attempt per stable server/target owner; a stopped attempt remains reclaimable. */
 export async function withWindowsInstallAttempt<T>(reclaim: string, run: (owner: string) => Promise<T>): Promise<T> {
   if (activeWindowsInstalls.has(reclaim)) throw new Error(INSTALL_BUSY);
   activeWindowsInstalls.add(reclaim);
@@ -117,14 +105,12 @@ export async function withWindowsInstallAttempt<T>(reclaim: string, run: (owner:
 
 export interface InstallOptions {
   cacheDir?: string;
-  /** who holds the Windows install lock; {@link installLockOwner} unless a caller says otherwise */
   owner?: string;
   onProgress?(stage: InstallStage, done: number, total: number | null): void;
 }
 
 export interface RemoteHost {
   readonly kind: "posix" | "windows";
-  /** the words the approval list uses for the runtime bundle */
   readonly bundleDescription: string;
   readonly logHint: string;
   inspect(ssh: SshConnection, session?: string, socket?: string): Promise<HostInspection>;
@@ -138,16 +124,13 @@ export interface RemoteHost {
   start(ssh: SshConnection, options: StartOptions): Promise<void>;
   /** A cold start needing desktop sign-in or consent after an interactive-launch failure. */
   startupNotice?(ssh: SshConnection, session?: string): Promise<string | null>;
-  /** what the bridge asked the owner to choose: herdr sessions running there, or (`gone`) that the chosen one stopped */
   foundSessions?(ssh: SshConnection, inspection: HostInspection): Promise<{ gone: boolean; sessions: FoundHerdrSession[] } | null>;
   /** a chosen socket checked on the PC by the rule its bridge applies (server/herdr-discovery.ts); null when it cannot be */
   chosenSocketStatus?(ssh: SshConnection, inspection: HostInspection, socket: string): Promise<"usable" | "gone" | "refused" | null>;
-  /** Read-only discovery, including when the chosen Ovis server is stopped. */
   discoverSessions?(ssh: SshConnection, inspection: HostInspection): Promise<FoundHerdrSession[]>;
   descriptors(ssh: SshConnection): Promise<BridgeDescriptor[]>;
 }
 
-/** the most a PC's herdr discovery answer (or its error) may send */
 const DISCOVERY_OUTPUT_BYTES = 256 * 1024;
 
 function parseDescriptors(lines: string[]): BridgeDescriptor[] {
@@ -164,7 +147,7 @@ async function fetchBundle(platform: string, signal: AbortSignal, options: Insta
 
 export const posixHost: RemoteHost = {
   kind: "posix",
-  bundleDescription: "Private web bridge bundle (the Ovis server, Node and node-pty; no build tools needed)",
+  bundleDescription: "Private web bridge bundle (the Ovis server and its PTY host; no build tools needed)",
   logHint: "~/.config/herdr-web-ui/bridges/bridge.log",
   async inspect(ssh, session, socket) {
     const inspection = await ssh.run(REMOTE_PATH + `printf '%s\\n' "$(uname -s)" "$(uname -m)" "$(cd -P "$HOME" && pwd -P)" "\${XDG_CONFIG_HOME:-$HOME/.config}" "$(command -v herdr || true)"; test -x "$HOME/${BUNDLE_DIR}/ovis-server" && printf 'bundle-ready\\n' || true; for d in "$HOME/.local/share/herdr-web-ui/remote-v"*; do if test -x "$d/ovis-server" || test -x "$d/bin/bun"; then printf 'bundle-older\\n'; break; fi; done; for f in "$HOME/.config/herdr-web-ui/bridges/"*.json; do test ! -f "$f" || cat "$f"; printf '\\n'; done`);
@@ -194,8 +177,8 @@ export const posixHost: RemoteHost = {
   async installBundle(ssh, platform, signal, options = {}) {
     const { asset, input } = await fetchBundle(platform, signal, options);
     // Verify on BOTH hosts, extract into staging and atomically rename. No user-wide
-    // Bun/Node/herdr installation is changed; the complete runtime lives in this dir.
-    await ssh.run(`set -eu; umask 077; base="$HOME/.local/share/herdr-web-ui"; mkdir -p "$base"; ${POSIX_INSTALL_LOCK} tmp=$(mktemp -d "$base/install.XXXXXX"); trap 'rm -rf "$tmp"; ${POSIX_INSTALL_RELEASE}' EXIT HUP INT TERM; if command -v timeout >/dev/null; then timeout ${INSTALL_UPLOAD_TIMEOUT_S} cat > "$tmp/bundle.tgz"; else cat > "$tmp/bundle.tgz"; fi; if command -v sha256sum >/dev/null; then actual=$(sha256sum "$tmp/bundle.tgz" | cut -d ' ' -f 1); else actual=$(shasum -a 256 "$tmp/bundle.tgz" | cut -d ' ' -f 1); fi; test "$actual" = ${shellQuote(asset.sha256)}; mkdir "$tmp/runtime"; tar xzf "$tmp/bundle.tgz" -C "$tmp/runtime"; test -x "$tmp/runtime/ovis-server"; test -x "$tmp/runtime/bin/node"; test -x "$tmp/runtime/bin/herdr"; "$tmp/runtime/ovis-server" remote --help >/dev/null; "$tmp/runtime/bin/herdr" --version; "$tmp/runtime/bin/node" "$tmp/runtime/pty-smoke.mjs"; release="$HOME/${BUNDLE_DIR}-${asset.sha256.slice(0, 16)}"; if test ! -d "$release"; then mv "$tmp/runtime" "$release"; fi; ln -s "$release" "$tmp/current"; if test -d "$HOME/${BUNDLE_DIR}" && test ! -L "$HOME/${BUNDLE_DIR}"; then mv "$HOME/${BUNDLE_DIR}" "$HOME/${BUNDLE_DIR}-legacy-$(date +%s)"; fi; BUN_BE_BUN=1 "$release/ovis-server" -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' "$tmp/current" "$HOME/${BUNDLE_DIR}"`, input, 30 * 60_000);
+    // Bun/herdr installation is changed; the complete runtime lives in this dir.
+    await ssh.run(`set -eu; umask 077; base="$HOME/.local/share/herdr-web-ui"; mkdir -p "$base"; ${POSIX_INSTALL_LOCK} tmp=$(mktemp -d "$base/install.XXXXXX"); trap 'rm -rf "$tmp"; ${POSIX_INSTALL_RELEASE}' EXIT HUP INT TERM; if command -v timeout >/dev/null; then timeout ${INSTALL_UPLOAD_TIMEOUT_S} cat > "$tmp/bundle.tgz"; else cat > "$tmp/bundle.tgz"; fi; if command -v sha256sum >/dev/null; then actual=$(sha256sum "$tmp/bundle.tgz" | cut -d ' ' -f 1); else actual=$(shasum -a 256 "$tmp/bundle.tgz" | cut -d ' ' -f 1); fi; test "$actual" = ${shellQuote(asset.sha256)}; mkdir "$tmp/runtime"; tar xzf "$tmp/bundle.tgz" -C "$tmp/runtime"; test -x "$tmp/runtime/ovis-server"; h="$tmp/runtime/bin/ovis-pty-sidecar"; test -x "$h"; { "$h" 2>&1 >/dev/null || true; } | grep -q "^pty-sidecar: usage:"; test -x "$tmp/runtime/bin/herdr"; "$tmp/runtime/ovis-server" remote --help >/dev/null; "$tmp/runtime/bin/herdr" --version; "$h" 1 1 /bin/sh -c : </dev/null >/dev/null; release="$HOME/${BUNDLE_DIR}-${asset.sha256.slice(0, 16)}"; if test ! -d "$release"; then mv "$tmp/runtime" "$release"; fi; ln -s "$release" "$tmp/current"; if test -d "$HOME/${BUNDLE_DIR}" && test ! -L "$HOME/${BUNDLE_DIR}"; then mv "$HOME/${BUNDLE_DIR}" "$HOME/${BUNDLE_DIR}-legacy-$(date +%s)"; fi; BUN_BE_BUN=1 "$release/ovis-server" -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' "$tmp/current" "$HOME/${BUNDLE_DIR}"`, input, 30 * 60_000);
   },
   stop: async (ssh, pid) => { await ssh.run(`kill -TERM ${pid}`); },
   async start(ssh, { session, herdrPath, inspection, herdr_socket, start_new_herdr }) {
@@ -213,15 +196,14 @@ export const posixHost: RemoteHost = {
     const result: unknown = JSON.parse(text);
     if (typeof result !== "object" || result === null || !("code" in result) || (result.code !== "herdr_sessions_found" && result.code !== "herdr_session_gone") || !("sessions" in result)) throw new Error("The PC returned an invalid startup result");
     const gone = result.code === "herdr_session_gone";
-    // a stopped chosen session may leave no other one running
-    return { gone, sessions: gone && Array.isArray(result.sessions) && result.sessions.length === 0 ? [] : parseFoundHerdrSessions(result.sessions) };
+    return { gone, sessions: gone && Array.isArray(result.sessions) && result.sessions.length === 0 ? [] : parseFoundHerdrSessions(result.sessions, inspection.home) };
   },
   async discoverSessions(ssh, inspection) {
     const server = shellQuote(inspection.runtimeDir + "/ovis-server");
     // at most 256 sessions of a few hundred bytes each: an answer past the cap is stopped and refused, never parsed
     const text = await ssh.run(`if test -x ${server}; then ${server} remote --discover; else printf '[]'; fi`, undefined, undefined, DISCOVERY_OUTPUT_BYTES);
     const sessions: unknown = JSON.parse(text);
-    return Array.isArray(sessions) && sessions.length === 0 ? [] : parseFoundHerdrSessions(sessions);
+    return Array.isArray(sessions) && sessions.length === 0 ? [] : parseFoundHerdrSessions(sessions, inspection.home);
   },
   async chosenSocketStatus(ssh, inspection, socket) {
     // the installed bundle holds the rule; an older or missing one cannot say
@@ -261,7 +243,9 @@ const WINDOWS_REGISTRY = `$(
 )`;
 // a script's exit code follows its last statement: a listing of a registry not there yet must
 // not count as a failure, so the directory is checked first
-const WINDOWS_DESCRIPTORS = `if (Test-Path -LiteralPath "${WINDOWS_REGISTRY}") { Get-ChildItem -LiteralPath "${WINDOWS_REGISTRY}" -Filter *.json | ForEach-Object { Write-Output (Get-Content -LiteralPath $_.FullName -Raw) } }; Write-Output ''`;
+// -Encoding UTF8: the bridge writes these files as UTF-8 without a BOM, which Windows PowerShell 5.1
+// reads in the ANSI code page, so a profile such as C:\Users\홍길동 broke its socket_path (#3852)
+const WINDOWS_DESCRIPTORS = `if (Test-Path -LiteralPath "${WINDOWS_REGISTRY}") { Get-ChildItem -LiteralPath "${WINDOWS_REGISTRY}" -Filter *.json | ForEach-Object { Write-Output (Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8) } }; Write-Output ''`;
 
 export const windowsHost: RemoteHost = {
   kind: "windows",
@@ -388,7 +372,7 @@ export const windowsHost: RemoteHost = {
   stop: async (ssh, pid) => {
     await ssh.runPowerShell([
       `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue`,
-      `if (Test-Path -LiteralPath "${WINDOWS_REGISTRY}") { Get-ChildItem -LiteralPath "${WINDOWS_REGISTRY}" -Filter *.json | ForEach-Object { try { if ((Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json).pid -eq ${pid}) { Remove-Item -LiteralPath $_.FullName -Force } } catch {} } }`,
+      `if (Test-Path -LiteralPath "${WINDOWS_REGISTRY}") { Get-ChildItem -LiteralPath "${WINDOWS_REGISTRY}" -Filter *.json | ForEach-Object { try { if ((Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json).pid -eq ${pid}) { Remove-Item -LiteralPath $_.FullName -Force } } catch {} } }`,
       "Write-Output ''",
     ].join("\n"));
   },
@@ -439,7 +423,7 @@ export const windowsHost: RemoteHost = {
 };
 
 /**
- * Which shell the PC answers to. sh first (every Linux and macOS host); a host that
+ * sh first (every Linux and macOS host); a host that
  * cannot run it is asked in PowerShell, and one that answers neither gets sh's own error,
  * which names the real problem (a refused connection, a wrong key).
  */

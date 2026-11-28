@@ -1,21 +1,10 @@
-/**
- * The demo build that scripts/ideal-state-behaviour-qa.ts probes: the app and its fixture transport
- * (scripts/demo-build.ts) served on 127.0.0.1 at a free port, with three page hooks laid over the demo:
- *
- * - `__probe.finishTurn()` runs the demo's held 4500 ms timer, which lands the Claude pane's last tool
- *   row and answer and ends its turn (site/demo/transport.ts): an output event the probe triggers when
- *   it is ready to measure, not when the demo's clock says.
- * - `__probe.status(paneId, status)` tells the page a pane's agent status changed, on the two streams
- *   the bridge tells it on (the machines event stream and the terminal socket), as herdr reports one.
- * - `window.__probeStage` (set by each visit's init script) answers GET /api/pane/conversation and
- *   GET /api/pane/prompt for the panes it names instead of the demo.
- */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { chromePath } from "./chrome-path.ts";
+import { appContext, installClock } from "./app-context.ts";
 import { buildDemoApp } from "./demo-build.ts";
 
 export { panes };
@@ -59,12 +48,10 @@ const STAGE = `<script>(() => {
 })();</script>`;
 
 export interface Stage { turns?: Record<string, unknown[]>; prompts?: Record<string, unknown> }
-/** `ready`: what the page draws once it is up (the connection line by default) */
 export interface OpenOptions { pane: string; phone?: boolean; stage?: Stage; query?: string; clock?: boolean; ready?: string }
 export interface Visit { context: BrowserContext; page: Page }
 export interface Demo { open(options: OpenOptions): Promise<Visit>; close(): Promise<void> }
 
-/** Builds (or copies HERDR_DEMO_BUILD), serves and launches the browser; `close` undoes all three. */
 export async function startDemo(): Promise<Demo> {
   const app = mkdtempSync(join(tmpdir(), "ovis-is-probes-"));
   let server: ReturnType<typeof Bun.serve> | null = null;
@@ -90,14 +77,14 @@ export async function startDemo(): Promise<Demo> {
     const own = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     browser = own;
     const open = async ({ pane, phone = false, stage = {}, query = "", clock = false, ready = ".conn-live" }: OpenOptions): Promise<Visit> => {
-      const context = await own.newContext({ viewport: phone ? { width: 390, height: 844 } : { width: 1440, height: 900 }, locale: "ko-KR", serviceWorkers: "block", ...(phone ? { isMobile: true, hasTouch: true } : {}) });
+      const context = await appContext(own, { viewport: phone ? { width: 390, height: 844 } : { width: 1440, height: 900 }, locale: "ko-KR", ...(phone ? { isMobile: true, hasTouch: true } : {}) });
       await context.addInitScript((staged) => {
         if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "ko", theme: "light" }));
         (window as unknown as { __probeStage: unknown }).__probeStage = staged;
       }, stage);
       const page = await context.newPage();
       page.setDefaultTimeout(15_000);
-      if (clock) await page.clock.install();
+      if (clock) await installClock(page);
       await page.goto(`${origin}${PREFIX}?pane=${encodeURIComponent(pane)}&view=chat${query}`);
       await page.locator(ready).first().waitFor({ state: "attached", timeout: 20_000 });
       return { context, page };

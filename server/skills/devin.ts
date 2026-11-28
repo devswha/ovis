@@ -95,11 +95,12 @@ function config(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
   try {
     return plainObject(parseJsonc(readFileSync(path, "utf8")));
-  } catch { return {}; /* optional malformed configuration */ }
+  } catch { return {}; }
 }
 
 export const source: AgentCommandSource = {
   builtins: Object.keys(descriptions),
+  chatPaletteHidden: ["accept-edits", "ask", "autonomous", "bypass", "bypass-permissions", "code", "dangerous", "fast", "normal", "plan", "smart", "yolo"],
   descriptions,
   pin: "3000.11.92",
   terminalBound,
@@ -186,7 +187,7 @@ export const source: AgentCommandSource = {
       for (const entry of readdirSync(directory)) {
         const path = join(directory, entry);
         try { if (statSync(path).isDirectory()) plugins(path); }
-        catch { continue; /* broken plugin link */ }
+        catch { continue; }
       }
     };
     plugins(pluginRoot);

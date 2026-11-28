@@ -20,32 +20,27 @@ import { imageType } from "./codex-images.ts";
 import { paneGet } from "./herdr/client.ts";
 import { MAX_ATTACHMENT_BYTES } from "../shared/attachments.ts";
 
-/** Decode ceiling: the limit the browser checks a file against before it uploads. */
 export const MAX_IMAGE_BYTES = MAX_ATTACHMENT_BYTES;
 
-/** The base64 text of a file at the ceiling, with the one padding group a decoder may add. */
-const MAX_ENCODED_BYTES = Math.ceil(MAX_IMAGE_BYTES / 3) * 4 + 4;
+const encodedBytes = (bytes: number): number => Math.ceil(bytes / 3) * 4 + 4;
 
-/** What the JSON around the data may add: pane_id, content_type and a file name. */
+const MAX_ENCODED_BYTES = encodedBytes(MAX_IMAGE_BYTES);
+
 const ENVELOPE_ALLOWANCE = 1024 * 1024;
 
-/** The largest request body the image route reads; Bun.serve's `maxRequestBodySize` sits well above it. */
 export const MAX_IMAGE_BODY_BYTES = MAX_ENCODED_BYTES + ENVELOPE_ALLOWANCE;
 
-function tooLarge(): PasteImageError {
-  return new PasteImageError("image_too_large", `file exceeds ${MAX_IMAGE_BYTES} bytes`, 413);
+function tooLarge(maxBytes = MAX_IMAGE_BYTES): PasteImageError {
+  return new PasteImageError("image_too_large", `file exceeds ${maxBytes} bytes`, 413);
 }
 
-/**
- * The request body as text, refused past `MAX_IMAGE_BODY_BYTES`: by its announced length before any
- * of it is read, and by a running byte count for a body that announces none (chunked). Bun's own
- * limit answers an empty 413 the browser cannot explain, so this one answers first with the reason.
- */
-export async function readImageBody(request: Request): Promise<string> {
+/** Bun's own limit answers an empty 413 the browser cannot explain, so this one answers first with the reason; `maxBytes`: the file's own limit, which bounds the body. */
+export async function readImageBody(request: Request, maxBytes = MAX_IMAGE_BYTES): Promise<string> {
+  const most = encodedBytes(maxBytes) + ENVELOPE_ALLOWANCE;
   const announced = Number(request.headers.get("content-length"));
-  if (Number.isFinite(announced) && announced > MAX_IMAGE_BODY_BYTES) {
+  if (Number.isFinite(announced) && announced > most) {
     void request.body?.cancel().catch(() => undefined);
-    throw tooLarge();
+    throw tooLarge(maxBytes);
   }
   if (request.body === null) return "";
   const reader = request.body.getReader();
@@ -55,19 +50,15 @@ export async function readImageBody(request: Request): Promise<string> {
     const { done, value } = await reader.read();
     if (done) break;
     total += value.byteLength;
-    if (total > MAX_IMAGE_BODY_BYTES) {
+    if (total > most) {
       void reader.cancel().catch(() => undefined);
-      throw tooLarge();
+      throw tooLarge(maxBytes);
     }
     chunks.push(value);
   }
   return Buffer.concat(chunks).toString("utf8");
 }
 
-/**
- * A file that is not one of the image types keeps its own name (sanitised), so the agent
- * reading the path sees what it is: an icon.svg, a notes.pdf, a data.csv.
- */
 function storedName(name: string | undefined): { base: string; extension: string } {
   const clean = (name ?? "").normalize("NFC").replace(/[^\p{L}\p{N}._-]+/gu, "_").replace(/^[._]+/, "").slice(-80);
   const dot = clean.lastIndexOf(".");
@@ -78,7 +69,6 @@ function storedName(name: string | undefined): { base: string; extension: string
   };
 }
 
-/** Where a pane's attachments go: `OVIS_PASTE_DIR` when set, else `<cwd>/.ovis`. */
 export function pasteDirectory(cwd: string | null | undefined): string {
   const override = pasteDirectoryOverride();
   if (override) {
@@ -90,7 +80,6 @@ export function pasteDirectory(cwd: string | null | undefined): string {
   return join(cwd ?? join(tmpdir(), "ovis"), ".ovis");
 }
 
-/** The folder `OVIS_PASTE_DIR` sends every pane's attachments to, absolute; undefined when each pane's `.ovis` takes them. */
 export function pasteDirectoryForAll(): string | undefined {
   return pasteDirectoryOverride() === "" ? undefined : pasteDirectory(null);
 }
@@ -125,7 +114,6 @@ const EXTENSIONS: Record<string, string> = {
   "image/webp": "webp",
 };
 
-/** A validation failure the /api/pane/image route answers with this status + code. */
 export class PasteImageError extends Error {
   constructor(
     readonly code: string,
@@ -151,32 +139,37 @@ export async function savePaneImage(options: {
   paneId: string;
   contentType: string;
   dataBase64: string;
-  /** the file's own name: any type is accepted, and one that is not a pasted image keeps it */
   name?: string;
 }): Promise<string> {
+  const image = pastedImage(options);
+  const pane = await paneGet(options.paneId);
+  const path = join(preparePasteDirectory(pane.cwd), image.name);
+  writeFileSync(path, image.data, { mode: 0o600 });
+  return path;
+}
+
+/**
+ * One pasted file's bytes, checked as `savePaneImage` checks them (at most `maxBytes`), and the unique name it is
+ * stored under, wherever that is: beside a pane on this disk, or beside a terminal of another machine of herdr-core.
+ */
+export function pastedImage(options: { contentType: string; dataBase64: string; name?: string | undefined }, maxBytes = MAX_IMAGE_BYTES): { data: Buffer; name: string } {
   const rasterClaim = EXTENSIONS[options.contentType] !== undefined;
   const named = rasterClaim ? null : storedName(options.name);
   // cheap pre-check: reject the ENCODED length before allocating the decode buffer,
   // so an oversized body never costs a second copy of itself in memory
-  if (options.dataBase64.length > MAX_ENCODED_BYTES) throw tooLarge();
+  if (options.dataBase64.length > encodedBytes(maxBytes)) throw tooLarge(maxBytes);
   const data = Buffer.from(options.dataBase64, "base64");
   if (data.byteLength === 0) {
     throw new PasteImageError("empty_image", "file is empty", 400);
   }
-  if (data.byteLength > MAX_IMAGE_BYTES) throw tooLarge();
+  if (data.byteLength > maxBytes) throw tooLarge(maxBytes);
   const detected = rasterClaim ? imageType(data) : null;
   const imageExtension = detected === null ? undefined : EXTENSIONS[detected];
   if (rasterClaim && imageExtension === undefined) {
     throw new PasteImageError("invalid_image", "file does not contain a supported raster image", 400);
   }
 
-  const pane = await paneGet(options.paneId);
-
-  const directory = preparePasteDirectory(pane.cwd);
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
   const unique = `${stamp}-${crypto.randomUUID().slice(0, 8)}`;
-  const name = named === null ? `paste-${unique}.${imageExtension}` : `${named.base}-${unique}.${named.extension}`;
-  const path = join(directory, name);
-  writeFileSync(path, data, { mode: 0o600 });
-  return path;
+  return { data, name: named === null ? `paste-${unique}.${imageExtension}` : `${named.base}-${unique}.${named.extension}` };
 }

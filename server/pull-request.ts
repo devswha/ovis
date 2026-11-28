@@ -7,7 +7,6 @@ import { PULL_REQUEST_LOG_CHARS, PULL_REQUEST_LOG_LINES, PULL_REQUEST_MAX_COMMEN
   type PullRequestCheck, type PullRequestCheckLog, type PullRequestCheckState, type PullRequestMergeMethod, type PullRequestThread, type PullRequestView } from "../shared/pull-request.ts";
 
 export interface PullRequestOptions {
-  /** the gh command; the one on PATH when absent */
   gh?: readonly string[];
   deadlineMs?: number;
 }
@@ -21,12 +20,10 @@ export class PullRequestError extends Error {
 const DEADLINE_MS = 20_000;
 /** a pull request's JSON with its checks is a few hundred kilobytes at most */
 const MAX_JSON_BYTES = 4 * 1024 * 1024;
-/** a job's log is read in full and only its tail kept */
 const LOG_KEEP_BYTES = 256 * 1024;
 const MAX_STDERR_BYTES = 16 * 1024;
 const OID = /^[0-9a-f]{40}$/;
 const JOB_ID = /^[0-9]{1,20}$/;
-/** a host name as a pull request's address carries it, with an optional port */
 const HOST = /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(?::[0-9]{1,5})?$/;
 const MERGEABLE_STATES = new Set(["clean", "unstable", "has_hooks"]);
 const MERGE_QUEUE_QUERY = "query($owner:String!,$name:String!,$base:String!){repository(owner:$owner,name:$name){mergeQueue(branch:$base){id}}}";
@@ -35,7 +32,6 @@ const PR_FIELDS = "number,title,url,state,isDraft,headRefName,baseRefName,headRe
 const THREAD_PAGES = 10;
 const THREADS_QUERY = `query($owner:String!,$name:String!,$number:Int!,$base:String!,$after:String){repository(owner:$owner,name:$name){viewerDefaultMergeMethod mergeQueue(branch:$base){id} pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{isResolved isOutdated path line comments(first:1){totalCount nodes{author{login} body url}}}}}}}`;
 
-/** gh never prompts, pages, colours or checks for updates here */
 function ghEnvironment(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) if (value !== undefined) env[name] = value;
@@ -77,8 +73,9 @@ async function runGh(cwd: string, args: string[], options: PullRequestOptions, k
   try {
     const [out, err, code] = await Promise.race([Promise.all([readCapped(proc.stdout, keepTail ? LOG_KEEP_BYTES : MAX_JSON_BYTES, keepTail).then((read) => { if (read.overflow && !keepTail) proc.kill(); return read; }), readCapped(proc.stderr, MAX_STDERR_BYTES, true), proc.exited]), deadline]);
     if (out.overflow && !keepTail) throw new PullRequestError("gh_failed", "gh answered more than this view reads", 502);
-    // gh exits 4 when it needs a sign-in; older releases only say so
-    if (code === 4 || /gh auth login/.test(err.text)) throw new PullRequestError("gh_signed_out", "gh on this PC is not signed in to GitHub", 409);
+    // gh exits 4 when it needs a sign-in; older releases only say so. Its advice for a remote on no
+    // GitHub host (a Gitea one) names gh auth login too, though gh is signed in: failure() says that one
+    if (code === 4 || (/gh auth login/.test(err.text) && !NO_GITHUB_REMOTE.test(err.text))) throw new PullRequestError("gh_signed_out", "gh on this PC is not signed in to GitHub", 409);
     return { code, stdout: out.text, stderr: err.text, overflow: out.overflow };
   } finally {
     clearTimeout(timer);
@@ -90,10 +87,12 @@ function firstLine(stderr: string): string {
   return (stderr.split("\n").find((line) => line.trim() !== "") ?? "").replace(/[\u0000-\u001f\u007f]/g, "").replace(/^X\s+/, "").trim().slice(0, 300);
 }
 
+const NO_GITHUB_REMOTE = /none of the git remotes|no git remotes/i;
+
 function failure(stderr: string, fallback: string): PullRequestError {
   if (/no pull requests found/i.test(stderr)) return new PullRequestError("no_pull_request", "This branch has no pull request", 404);
   if (/not a git repository/i.test(stderr)) return new PullRequestError("not_a_repository", "This folder is not inside a git repository", 409);
-  if (/none of the git remotes|no git remotes/i.test(stderr)) return new PullRequestError("no_github_remote", "This repository has no GitHub remote", 409);
+  if (NO_GITHUB_REMOTE.test(stderr)) return new PullRequestError("no_github_remote", "No remote of this repository is on a GitHub host gh knows", 409);
   return new PullRequestError("gh_failed", firstLine(stderr) || fallback, 502);
 }
 
@@ -152,7 +151,6 @@ function threadsOf(connection: Record<string, unknown>): PullRequestThread[] {
 /** `-f`, not `-F`: gh would send a repository named `2048` or `true` as a number or a boolean */
 const repositoryVariables = (owner: string, name: string): string[] => ["-f", `owner=${owner}`, "-f", `name=${name}`];
 
-/** host, owner and name of a pull request's address; null when it is not one */
 function placeOf(url: string | null): { host: string; owner: string; name: string } | null {
   const match = url?.match(/^https?:\/\/([^/]+)\/([^/]+)\/([^/]+)\/pull\/\d+/);
   return match ? { host: match[1]!, owner: match[2]!, name: match[3]! } : null;
@@ -228,7 +226,6 @@ export async function pullRequestLog(cwd: string, jobId: string, host: string, o
   const run = await runGh(cwd, ["api", ...(host === "github.com" ? [] : ["--hostname", host]), `repos/{owner}/{repo}/actions/jobs/${jobId}/logs`], options, true);
   if (run.code !== 0) throw failure(run.stderr, "gh could not read that job's log");
   const lines = run.stdout.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").split("\n").map((line) => line.replace(TIMESTAMP, "").replace(ESCAPES, "").replace(CONTROLS, ""));
-  // the first line of a tail that was cut is a part of one
   if (run.overflow) lines.shift();
   while (lines.length > 0 && lines.at(-1)!.trim() === "") lines.pop();
   let kept = lines.slice(-PULL_REQUEST_LOG_LINES);

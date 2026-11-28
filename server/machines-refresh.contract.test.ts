@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, jest } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +10,7 @@ import { handleMachineRequest } from "./machine-api.ts";
 import { createServer } from "./index.ts";
 import { MachineManager } from "./machines.ts";
 import { createPushService } from "./push.ts";
+import { startFakePushService } from "./push.fake.ts";
 
 describe("slow structural roster refreshes", () => {
   for (const remote of [false, true]) {
@@ -19,7 +20,6 @@ describe("slow structural roster refreshes", () => {
       let manager: MachineManager | undefined;
       let bridge: ReturnType<typeof Bun.serve> | undefined;
       let pending: { snapshot: SessionSnapshot; resolve: (snapshot: SessionSnapshot) => void } | undefined;
-      // each held read from the moment it begins (the request's arrival, or the local read's call), and each held response's publication
       const order: string[] = [];
       let entered = Promise.withResolvers<void>();
       let parked = Promise.withResolvers<void>();
@@ -55,7 +55,6 @@ describe("slow structural roster refreshes", () => {
             async fetch(request, server) {
               const { pathname } = new URL(request.url);
               if (pathname === "/ws" && server.upgrade(request, { data: undefined })) return;
-              // only the roster read is held: the move badge's read (watchMove) would otherwise take its place
               if (pathname !== "/api/session") return new Response(null, { status: 404 });
               return Response.json({ snapshot: await read() });
             },
@@ -79,7 +78,6 @@ describe("slow structural roster refreshes", () => {
           pending = undefined;
           parked = Promise.withResolvers<void>();
           entered = Promise.withResolvers<void>();
-          // only this response names the workspace so: the cached roster, or another read's, does not
           const marker = `ovis-test-slow-roster-held-${pass}`;
           const marked = { ...response.snapshot, workspaces: response.snapshot.workspaces.map((item) => item.workspace_id === workspace.workspace.workspace_id ? { ...item, label: marker } : item) };
           let published = false;
@@ -89,7 +87,6 @@ describe("slow structural roster refreshes", () => {
             if (snapshot?.workspaces.some((item) => item.label === marker)) { published = true; order.push(marker); }
           });
           const since = order.length;
-          // Structural invalidations only queue another read; they must not obsolete this one.
           if (remote) {
             const invalidated = Promise.withResolvers<void>();
             const stopWaiting = manager.subscribe((event) => {
@@ -104,7 +101,6 @@ describe("slow structural roster refreshes", () => {
           response.resolve(marked);
           await nextRead;
           stopListening();
-          // the held response was published before the next read began
           expect(order.slice(since)).toEqual([marker, "read"]);
         }
         held = false;
@@ -120,6 +116,52 @@ describe("slow structural roster refreshes", () => {
         rmSync(root, { recursive: true, force: true });
       }
     });
+  }
+});
+
+it("cancels a deferred remote question when a refresh sees it answered without a status frame", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ovis-test-remote-alert-"));
+  const workspace = await workspaceCreate({ cwd: root, label: "ovis-test-remote-alert" });
+  const source = await sessionSnapshot();
+  const paneId = workspace.root_pane.pane_id;
+  const device = await startFakePushService();
+  const push = createPushService({ stateDir: root, loopbackHttp: true, inUse: () => true });
+  push.subscribe(device.subscription);
+  let answered = false;
+  const bridge = Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    fetch: () => Response.json({ snapshot: {
+      ...source, order_epoch: undefined, read_seq: undefined,
+      panes: source.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: answered ? "working" : "idle" } : pane),
+    } }),
+  });
+  const manager = new MachineManager(root, push, new CompletionTracker(null), sessionSnapshot);
+  try {
+    type TestRuntime = { machine: Machine; endpoint?: { url: string; token: string } };
+    const drive = manager as unknown as { runtime(machine: Machine): TestRuntime; refresh(runtime: TestRuntime): Promise<void> };
+    const runtime = drive.runtime({ id: "remote", name: "Fixture", kind: "ssh", enabled: true, state: "connected", error: null, snapshot: null });
+    runtime.endpoint = { url: `http://127.0.0.1:${bridge.port}`, token: "fixture" };
+    await drive.refresh(runtime);
+    expect(runtime.machine.snapshot?.panes.find((pane) => pane.pane_id === paneId)?.agent_status).toBe("idle");
+    jest.useFakeTimers();
+    try {
+      await push.onStatus(paneId, "blocked", "remote");
+      jest.advanceTimersByTime(10_000);
+      answered = true;
+      await drive.refresh(runtime);
+      expect(runtime.machine.snapshot?.panes.find((pane) => pane.pane_id === paneId)?.agent_status).toBe("working");
+      jest.advanceTimersByTime(5 * 60_000);
+    } finally {
+      jest.useRealTimers();
+    }
+    await push.settled();
+    expect(device.received).toHaveLength(0);
+  } finally {
+    manager.stop();
+    bridge.stop(true);
+    device.stop();
+    await workspaceClose(workspace.workspace.workspace_id);
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -163,7 +205,6 @@ describe("workspace order evidence across a real bridge", () => {
       expect((await after).snapshot).toMatchObject({ order_epoch: sourceBoot, read_seq: 1 });
       const local = manager.list()[0]!;
       expect(local.source_boot_id).toBe("manager-boot");
-      // a fresh query asks the bridge again, past the start interval
       clock = 10_000;
       const verified = await handleMachineRequest(new Request("http://127.0.0.1/api/machines?verify_source_boot=remote"), manager);
       expect(verified.status).toBe(200);

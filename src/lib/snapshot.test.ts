@@ -20,6 +20,16 @@ function snapshotFixture(): SessionSnapshot {
 }
 
 describe("applyPaneStatus", () => {
+  it("takes the server's change time from a frame that has one, and keeps it through frames that do not", () => {
+    const current = snapshotFixture();
+    const changed = applyPaneStatus(current, "w1:p1", "done", undefined, false, undefined, undefined, undefined, undefined, 2_000);
+    expect(changed.panes[0]?.changed_at).toBe(2_000);
+    // a frame that only carries a context names no time: the pane keeps the one it has
+    const context = applyPaneStatus(changed, "w1:p1", "done", undefined, false, undefined, undefined, undefined, { used: 5, window: 10 });
+    expect(context.panes[0]?.changed_at).toBe(2_000);
+    expect(applyPaneStatus(context, "w1:p1", "working", undefined, false, undefined, undefined, undefined, undefined, 3_000).panes[0]?.changed_at).toBe(3_000);
+  });
+
   it("carries new finish IDs even when status is unchanged and invalidates other panes on epoch change", () => {
     const current = snapshotFixture();
     current.finish_epoch = "old";
@@ -41,7 +51,6 @@ describe("applyPaneStatus", () => {
     const next = applyPaneStatus(current, "w1:p1", "blocked" as AgentStatus);
     expect(next.panes.find((pane) => pane.pane_id === "w1:p1")?.agent_status).toBe("blocked");
     expect(next.agents.find((agent) => agent.pane_id === "w1:p1")?.agent_status).toBe("blocked");
-    // untouched panes keep their object identity: React re-renders only what changed
     expect(next.panes.find((pane) => pane.pane_id === "w1:p2")).toBe(current.panes[1]);
   });
 
@@ -53,7 +62,6 @@ describe("applyPaneStatus", () => {
     const done = applyPaneStatus(counted, "w1:p1", "done" as AgentStatus);
     expect(done.panes.find((pane) => pane.pane_id === "w1:p1")).toMatchObject({ agent_status: "done", background_tasks: 2 });
     expect(applyPaneStatus(done, "w1:p1", "done" as AgentStatus, 2)).toBe(done);
-    // none left: the field goes, so the badge does
     const none = applyPaneStatus(done, "w1:p1", "done" as AgentStatus, 0);
     expect("background_tasks" in none.panes.find((pane) => pane.pane_id === "w1:p1")!).toBe(false);
   });

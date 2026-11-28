@@ -1,6 +1,6 @@
 import { describe, expect, it, spyOn } from "bun:test";
 import { decideAccess, type AccessInput } from "./access.ts";
-import { HTTPS_PORTS, httpsPorts, parseSoleTailnetLogin, parseTailscale, parseTailscaleIp, TailnetIdentitySource, type TailnetIdentity } from "./tailscale.ts";
+import { HTTPS_PORTS, httpsPorts, parseSoleTailnetLogin, parseTailscale, parseTailscaleIp, TailnetIdentitySource, tailscaleWhois, type TailnetIdentity } from "./tailscale.ts";
 
 const status = (state = "Running", dns = "pc.example.ts.net.") => JSON.stringify({ BackendState: state, Self: { DNSName: dns } });
 /** a `tailscale serve status --json` document: listeners by port, and one "/" proxy per host:port */
@@ -22,7 +22,6 @@ const bigIds = (peer: string) => `{"BackendState":"Running","Self":{"UserID":${B
 
 describe("parseSoleTailnetLogin", () => {
   it("names the login a tailnet one login owns, phones and offline peers included", () => {
-    // the shape of the reported tailnet: this Mac plus six of the owner's own untagged devices
     expect(parseSoleTailnetLogin(tailnet([7511875822626835, undefined], Array.from({ length: 6 }, () => [7511875822626835, undefined] as [number, undefined])))).toBe("user7511875822626835@example.com");
     expect(parseSoleTailnetLogin(tailnet([42, undefined]))).toBe("user42@example.com");
     // an id past 2^53 names its login by the digits written, not by the double they round to
@@ -57,7 +56,6 @@ const serveRequest = (identity: TailnetIdentity, host: string | null = HOST) => 
   return access.level === "full" ? access.via : `refused:${access.reason}`;
 };
 
-/** a source whose cache holds `status` (none, when undefined) as read `minutesAgo` minutes ago, and whose reads from then on answer `read` */
 async function withCachedStatus(status: string | null | undefined, minutesAgo: number, read: () => Promise<string | null>, body: (source: TailnetIdentitySource) => Promise<void>): Promise<void> {
   let warm = status !== undefined ? status : null;
   const source = new TailnetIdentitySource(async () => {
@@ -155,7 +153,6 @@ describe("the owner's grant read, by Host and by outcome", () => {
 });
 
 describe("loginIdentity", () => {
-  /** a source whose reads answer `reads` in turn (the last one from then on), on a clock the test moves */
   function source(reads: (string | null)[]) {
     let now = 1_000_000;
     let count = 0;
@@ -177,7 +174,6 @@ describe("loginIdentity", () => {
       s.later(2_000);
       expect((await s.identities.loginIdentity()).owner).toBe("user42@example.com");
       expect(s.reads()).toBe(3);
-      // known, it stands for the cache's life
       s.later(2_000);
       await s.identities.loginIdentity();
       expect(s.reads()).toBe(3);
@@ -313,5 +309,31 @@ describe("httpsPorts", () => {
     expect(httpsPorts(" 9443 ")).toEqual([9443]);
     expect(httpsPorts("65535")).toEqual([65535]);
     for (const value of ["0", "65536", "abc", "94.43", "-443", "443x"]) expect(httpsPorts(value)).toEqual([]);
+  });
+});
+
+describe("tailscale whois", () => {
+  it("is never the real CLI under bun test: a source with only a status reader spawns nothing for a node", async () => {
+    const spawn = spyOn(Bun, "spawn");
+    try {
+      expect(await tailscaleWhois.read("100.64.0.9")).toBeNull();
+      expect(await new TailnetIdentitySource(async () => null).node("100.64.0.9")).toBeNull();
+      expect(spawn).not.toHaveBeenCalled();
+    } finally { spawn.mockRestore(); }
+  });
+
+  it("asks a WhoIs that named nothing again only after five seconds", async () => {
+    let reads = 0;
+    const source = new TailnetIdentitySource(async () => null, async () => { reads++; return null; });
+    const start = Date.now();
+    const clock = spyOn(Date, "now").mockImplementation(() => start);
+    try {
+      await source.node("100.64.0.9");
+      await source.node("100.64.0.9");
+      expect(reads).toBe(1);
+      clock.mockImplementation(() => start + 5_000);
+      await source.node("100.64.0.9");
+      expect(reads).toBe(2);
+    } finally { clock.mockRestore(); }
   });
 });

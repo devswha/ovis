@@ -7,7 +7,6 @@ import { inboxOrder } from "./agentInbox.ts";
 import type { SidebarActivity } from "./sidebarActivity.tsx";
 import { SUMMARY_RETRIES, SUMMARY_RETRY_MS, SummaryReads, summaryTargets, type SummaryTarget } from "./useInboxSummaries.ts";
 
-/** A read whose answers the test hands out one by one, in the order the reads started. */
 function harness(now: number | (() => number) = 0, subscribed = true) {
   const calls: { machineId: string; paneIds: readonly string[]; resolve(answer: PaneSummaries | null): void; reject(error: Error): void }[] = [];
   const waits: { ms: number; run(): void; cancelled: boolean }[] = [];
@@ -29,8 +28,15 @@ const target = (key: string, stamp = "1", machineId = "local", lifetime = ""): S
 const said = (text: string, at: string | null = null): PaneSummary => ({ role: "assistant", text, at, asked_at: null });
 const answer = (summaries: Record<string, PaneSummary | null>, server_time = "1970-01-01T00:00:00.000Z"): PaneSummaries => ({ server_time, summaries });
 const settled = () => new Promise<void>((resolve) => queueMicrotask(resolve)).then(() => undefined);
-/** past every microtask, so an unhandled rejection has been reported */
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+async function omitThrough({ calls, waits }: ReturnType<typeof harness>, retries = SUMMARY_RETRIES) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) waits.at(-1)?.run();
+    calls.at(-1)?.resolve(answer({}));
+    await settled();
+  }
+}
 
 describe("summaryTargets", () => {
   it("stamps a row with its PC's herdr lifetime, so a replaced herdr reusing the pane reads it again", () => {
@@ -46,6 +52,59 @@ describe("summaryTargets", () => {
 });
 
 describe("SummaryReads", () => {
+  it("retries a timed-out row without shrinking the fresh batches queued ahead of it", async () => {
+    const { reads, calls, waits } = harness();
+    const missed = target("missed");
+    const fresh = Array.from({ length: 59 }, (_, index) => target(`fresh${index}`));
+    reads.sync([missed]);
+    calls[0]?.resolve(answer({}));
+    await settled();
+
+    reads.sync([missed, ...fresh]);
+    waits[0]?.run();
+    const first = calls[1];
+    first?.resolve(answer(Object.fromEntries((first?.paneIds ?? []).map((id) => [id, said(id)]))));
+    await settled();
+
+    expect(calls[2]?.paneIds).toEqual([missed.paneId]);
+    calls[2]?.resolve(answer({ [missed.paneId]: said("Recovered") }));
+    await settled();
+    expect(reads.summaries().get(missed.key)?.text).toBe("Recovered");
+    expect(calls[3]?.paneIds).toEqual(fresh.slice(24, 48).map((row) => row.paneId));
+  });
+
+  it("fills every row when a large batch runs out of time after making progress", async () => {
+    const { reads, calls, waits } = harness();
+    const rows = Array.from({ length: 24 }, (_, index) => target(`slow${index}`));
+    reads.sync(rows);
+    for (let turn = 0, next = 0; turn < rows.length && (next < calls.length || waits.length > 0); turn++) {
+      for (const wait of waits.splice(0)) if (!wait.cancelled) wait.run();
+      const call = calls[next++];
+      if (!call) break;
+      call.resolve(answer(Object.fromEntries(call.paneIds.slice(0, 5).map((id) => [id, said(id)]))));
+      await settled();
+    }
+    expect(reads.summaries().size).toBe(rows.length);
+  });
+
+  it("still fills a row after other reads repeatedly use up the batch deadline", async () => {
+    const { reads, calls, waits } = harness();
+    const last = target("tail");
+    const rows = [...Array.from({ length: 6 }, (_, index) => target(`slow-${index}`)), last];
+    reads.sync(rows);
+    for (let turn = 0; turn < rows.length * (SUMMARY_RETRIES + 1); turn++) {
+      const call = calls[turn];
+      if (!call) break;
+      const [first, ...skipped] = call.paneIds;
+      // Each slow read takes the whole deadline; the tail answers as soon as it is reached.
+      const reply = { ...answer(first === last.paneId ? { [last.paneId]: said("Reached the tail") } : {}), skipped };
+      call.resolve(reply);
+      await settled();
+      if (reads.summaries().has(last.key)) break;
+      for (const wait of waits.splice(0)) if (!wait.cancelled) wait.run();
+    }
+    expect(reads.summaries().get(last.key)?.text).toBe("Reached the tail");
+  });
   it("asks each PC in batches of at most 24, one request in flight per PC", async () => {
     const { reads, calls } = harness();
     const many = Array.from({ length: 30 }, (_, index) => target(`a${index}`));
@@ -137,7 +196,6 @@ describe("SummaryReads", () => {
 
   it("asks a row once more after the wait when its new stamp answers with the words and time it had, whatever its state", async () => {
     const { reads, calls, waits } = harness();
-    // a stamp's state is in the stamp alone: working, then done
     reads.sync([target("a", "1:4:working")]);
     calls[0]!.resolve(answer({ "pane-a": said("Last turn", "1970-01-01T00:00:01.000Z") }));
     await settled();
@@ -161,7 +219,6 @@ describe("SummaryReads", () => {
     reads.sync([target("a", "1")]);
     calls[0]!.resolve(answer({ "pane-a": { ...said("Last turn", "2026-11-12T09:59:00.000Z"), asked_at: "2026-11-12T09:58:00.000Z" } }, "2026-11-12T10:00:00.000Z"));
     await settled();
-    // the next answer's server clock is 50 ms further from this device's: the same source times correct 50 ms apart
     deviceNow += 1000;
     reads.sync([target("a", "2")]);
     calls[1]!.resolve(answer({ "pane-a": { ...said("Last turn", "2026-11-12T09:59:00.000Z"), asked_at: "2026-11-12T09:58:00.000Z" } }, "2026-11-12T10:00:01.050Z"));
@@ -172,7 +229,6 @@ describe("SummaryReads", () => {
   it("counts a corrected time a Date cannot hold as no time", async () => {
     const { reads, calls } = harness(Date.parse("2026-11-12T10:00:00.000Z"));
     reads.sync([target("a")]);
-    // the server's clock is behind this device's: the latest time a Date holds, corrected, passes it
     calls[0]!.resolve(answer({ "pane-a": { ...said("far", "+275760-09-13T00:00:00.000Z"), asked_at: "+275760-09-13T00:00:00.000Z" } }, "2026-11-12T09:00:00.000Z"));
     await settled();
     expect(reads.summaries().get("a")).toMatchObject({ text: "far", at: null, askedAt: null });
@@ -202,7 +258,6 @@ describe("SummaryReads", () => {
     calls[0]!.resolve(answer({ "pane-b": said("Old") }));
     await settled();
     reads.sync([target("b", "2")]);
-    // the first answer under the new stamp may come from a read begun before the change
     calls[1]!.resolve(answer({ "pane-b": said("Let me run the tests") }));
     await settled();
     expect(reads.summaries().get("b")?.text).toBe("Let me run the tests");
@@ -213,7 +268,6 @@ describe("SummaryReads", () => {
     calls[2]!.resolve(answer({ "pane-b": said("All tests pass.") }));
     await settled();
     expect(reads.summaries().get("b")?.text).toBe("All tests pass.");
-    // once per key and stamp
     expect(waits).toHaveLength(1);
     expect(calls).toHaveLength(3);
   });
@@ -258,7 +312,6 @@ describe("SummaryReads", () => {
     reads.sync([target("a", ":f1:3:done")]);
     calls[0]!.resolve(answer({ "pane-a": said("Words before the proof") }));
     await settled();
-    // the snapshot proves its herdr now: the same pane, read again
     reads.sync([target("a", "life-1:f1:3:done", "local", "life-1")]);
     expect(reads.summaries().get("a")?.text).toBe("Words before the proof");
     expect(calls).toHaveLength(2);
@@ -278,7 +331,6 @@ describe("SummaryReads", () => {
     calls[1]!.resolve(answer({ "pane-a": said("New pane's words") }));
     await settled();
     expect(reads.summaries().get("a")?.text).toBe("New pane's words");
-    // within one lifetime the words are carried across a stamp change as before
     reads.sync([target("a", "life-2:f2:4:done", "local", "life-2")]);
     expect(reads.summaries().get("a")?.text).toBe("New pane's words");
   });
@@ -387,7 +439,6 @@ describe("SummaryReads", () => {
     await settled();
     expect(notified()).toBe(2);
     expect(reads.summaries().get("a")?.failed).toBe(true);
-    // the words carried to the new stamp lose their failed mark at once, and the answer gives it back with its askedAt
     reads.sync([target("a", "4")]);
     expect(notified()).toBe(3);
     expect(reads.summaries().get("a")?.failed).toBe(false);
@@ -446,6 +497,69 @@ describe("SummaryReads", () => {
     expect(calls).toHaveLength(SUMMARY_RETRIES + 1);
     reads.sync([target("a")]);
     expect(calls).toHaveLength(SUMMARY_RETRIES + 1);
+  });
+
+  it("does not recheck a returned row whose exhausted stamp departed during reopening", async () => {
+    const h = harness();
+    const working = target("a", ":0:working");
+    const blocked = target("a", ":0:blocked");
+    h.reads.sync([working]);
+    h.calls.at(-1)?.resolve(answer({ "pane-a": said("Working") }));
+    await settled();
+    h.reads.sync([blocked]);
+    await omitThrough(h);
+
+    h.reads.sync([], true);
+    h.reads.sync([blocked]);
+    const requests = h.calls.length;
+    const waits = h.waits.length;
+    h.calls.at(-1)?.resolve(answer({ "pane-a": said("Returned") }));
+    await settled();
+    for (const wait of h.waits.slice(waits)) wait.run();
+
+    expect(h.reads.summaries().get("a")?.text).toBe("Returned");
+    expect(h.calls).toHaveLength(requests);
+  });
+
+  it.each([false, true])("reopening during the final retry recovers the row without a duplicate request (final retry answers: %s)", async (answers) => {
+    const h = harness();
+    const row = target("a");
+    h.reads.sync([row]);
+    await omitThrough(h, SUMMARY_RETRIES - 1);
+    h.waits.at(-1)?.run();
+    const requests = h.calls.length;
+    const waits = h.waits.length;
+
+    h.reads.sync([row], true);
+    h.calls.at(-1)?.resolve(answer(answers ? { "pane-a": said("Recovered") } : {}));
+    await settled();
+    for (const wait of h.waits.slice(waits)) wait.run();
+    if (!answers && h.calls.length > requests) {
+      h.calls.at(-1)?.resolve(answer({ "pane-a": said("Recovered") }));
+      await settled();
+    }
+
+    expect(h.reads.summaries().get("a")?.text).toBe("Recovered");
+    expect(h.calls).toHaveLength(requests + (answers ? 0 : 1));
+  });
+
+  it("retries on reopening when working returns with the same stamp after blocked", async () => {
+    const h = harness();
+    const working = target("a", ":0:working");
+    h.reads.sync([working]);
+    h.calls.at(-1)?.resolve(answer({ "pane-a": said("Previous working state") }));
+    await settled();
+    h.reads.sync([target("a", ":0:blocked")]);
+    await omitThrough(h);
+    expect(h.reads.summaries().has("a")).toBe(false);
+    h.reads.sync([working]);
+    await omitThrough(h);
+
+    h.reads.sync([working], true);
+    h.calls.at(-1)?.resolve(answer({ "pane-a": said("Current working state") }));
+    await settled();
+
+    expect(h.reads.summaries().get("a")?.text).toBe("Current working state");
   });
 
   it("removes the words of an earlier stamp once the new read has used its retries", async () => {

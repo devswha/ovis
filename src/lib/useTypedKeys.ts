@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
-import type { Terminal } from "@xterm/xterm";
+import type { GhosttyTerminal } from "./ghostty/terminal.ts";
 import { hasModifiers, navigationSequence, stepModifier, terminalChord, type ModifierLatch, type StickyModifiers } from "./keys.ts";
 import { keyBarInputSequence, type KeyBarKeyItem } from "./keyBar.ts";
 import { DOUBLE_ESCAPE_GAP_MS, hermesCtrlCTooSoon, stopKey } from "./hermesStop.ts";
+import { frameRows } from "./terminalScreen.ts";
 import type { Translate } from "./i18n.ts";
-import type { HerdrSocket } from "./ws.ts";
+import { markTyped, type HerdrSocket } from "./ws.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
 
 export interface TypedKeysDeps {
@@ -18,31 +19,25 @@ export interface TypedKeysDeps {
   composingRef: RefObject<boolean>;
   inputLineRef: RefObject<boolean>;
   modifiersRef: RefObject<StickyModifiers>;
-  /** the held modifiers that stay after a key (lib/keys.ts ModifierLatch) */
   lockedRef: RefObject<StickyModifiers>;
   setLatch: (latch: ModifierLatch) => void;
-  /** after a key that carried the held modifiers: lets go of those held for one key */
   consumeModifiers: () => void;
   paneId: string | null;
   reassertIfStaleRef: RefObject<() => void>;
   setInputError: Dispatch<SetStateAction<string | null>>;
   socketRef: RefObject<HerdrSocket | null>;
-  stopKeyRef: RefObject<boolean>;
+  stopKeyRef: RefObject<number | null>;
   tRef: RefObject<Translate>;
-  termRef: RefObject<Terminal | null>;
+  termRef: RefObject<GhosttyTerminal | null>;
 }
 
 export function useTypedKeys(deps: TypedKeysDeps) {
   const { agent, agentStatus, barKeyRef, coarseRef, commitPendingText, compositionCommitPendingRef, composingRef, inputLineRef, modifiersRef, lockedRef, setLatch, consumeModifiers, paneId, reassertIfStaleRef, setInputError, socketRef, stopKeyRef, tRef, termRef } = deps;
-  // key-bar taps go through xterm so the onData -> socket path above is reused. A held key's repeats
-  // (`repeat`) keep a modifier held for one key until the finger lifts (KeyBar's onKeyHoldEnd)
   const pressKey = useCallback((item: KeyBarKeyItem, repeat = false) => {
     const term = termRef.current;
     if (!term) return;
     if (composingRef.current || compositionCommitPendingRef.current) return;
     const active = item.modifiers ?? modifiersRef.current;
-    // A saved combination is exact; an ordinary key inherits the held modifiers.
-    // The built-in interrupt remains its dedicated Ctrl+C action.
     const modified = (item.key !== "ctrl-c" || item.modifiers !== undefined) && (hasModifiers(active) || item.modifiers !== undefined);
     const chord = modified ? terminalChord(item.key, active) : null;
     const input = (modified ? navigationSequence(item.key, active) : null)
@@ -53,10 +48,6 @@ export function useTypedKeys(deps: TypedKeysDeps) {
     barKeyRef.current = { key: item.key, chord };
     try { term.input(input); } finally { barKeyRef.current = null; }
     if (item.modifiers === undefined && !repeat) consumeModifiers();
-    // with the input line, the keyboard belongs to it: a key tap must not move it to the grid. On a
-    // touch screen a key tap never takes the focus at all: focusing the grid raises the soft
-    // keyboard, and a key pressed with the keyboard put away (after dictating, say) must leave it
-    // away. Only the keyboard key, or a tap on the line or the grid, brings it up.
     if (!inputLineRef.current && !coarseRef.current) term.focus();
   }, [commitPendingText]);
 
@@ -74,7 +65,6 @@ export function useTypedKeys(deps: TypedKeysDeps) {
   // when this pane last sent Hermes a Ctrl+C: status flicker or a quick new turn resets the
   // guard above, so a second Ctrl+C inside Hermes' 2 s force-quit window is refused by time
   const hermesCtrlCAtRef = useRef<number | null>(null);
-  // a turn waiting on an approval (blocked) is still the same turn
   useEffect(() => { if (agentStatus !== "working" && agentStatus !== "blocked") hermesStopSentRef.current = false; }, [agentStatus]);
   useEffect(() => { hermesStopSentRef.current = false; hermesCtrlCAtRef.current = null; }, [paneId, agent]);
   // the second Escape of a two-Escape Stop, still to be sent: it belongs to the pane and connection of the first
@@ -85,13 +75,16 @@ export function useTypedKeys(deps: TypedKeysDeps) {
   }, []);
   // one terminal serves the pane it is switched to: a pending Escape must not follow it there
   useEffect(() => dropSecondEscape, [paneId, agent, dropSecondEscape]);
+  useEffect(() => {
+    if (agentStatus !== "working" && agentStatus !== "blocked") dropSecondEscape();
+  }, [agentStatus, dropSecondEscape]);
   const abortTurn = useCallback(() => {
     const term = termRef.current;
     const socket = socketRef.current;
     if (!term || !socket || !socket.connected) return;
     const now = Date.now();
     const key = stopKey(agent, () => {
-      const buffer = term.buffer.active;
+      const buffer = frameRows(term);
       return Array.from({ length: term.rows }, (_, row) => buffer.getLine(buffer.baseY + row)?.translateToString(true) ?? "");
     }, hermesStopSentRef.current, hermesCtrlCAtRef.current, now);
     if (key === null) {
@@ -110,9 +103,11 @@ export function useTypedKeys(deps: TypedKeysDeps) {
       hermesStopSentRef.current = true;
       hermesCtrlCAtRef.current = now;
     }
+    // both Escapes of a Stop carry its mark: the second, sent after a gap, is refused if the link was lost since
+    const pressedAt = markTyped();
     const press = (sent: string): void => {
-      stopKeyRef.current = true;
-      try { term.input(sent); } finally { stopKeyRef.current = false; }
+      stopKeyRef.current = pressedAt;
+      try { term.input(sent); } finally { stopKeyRef.current = null; }
     };
     if (key !== "\u001b\u001b") return press(key);
     // two Escapes as two key presses: written together they read as one Alt+Escape
@@ -130,5 +125,5 @@ export function useTypedKeys(deps: TypedKeysDeps) {
     }, DOUBLE_ESCAPE_GAP_MS);
   }, [agent, paneId, dropSecondEscape]);
 
-  return { pressKey, toggleModifier, abortTurn };
+  return { pressKey, toggleModifier, abortTurn, dropSecondEscape };
 }

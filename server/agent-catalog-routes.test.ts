@@ -21,6 +21,7 @@ describe("GET /api/agent-catalog", () => {
   let server: ReturnType<typeof createServer>;
   let root: string;
   let bin: string;
+  let profileChecks = 0;
   const savedPath = process.env["PATH"];
   const url = (path: string) => `http://127.0.0.1:${server.port}${path}`;
   const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
@@ -31,12 +32,15 @@ describe("GET /api/agent-catalog", () => {
     mkdirSync(bin);
     const state = join(root, "state");
     mkdirSync(state);
-    // one paired device that may only watch
     writeFileSync(join(state, "devices.json"), JSON.stringify({ gate_closed_at: new Date().toISOString(), devices: [{ id: "0123456789abcdef", label: "Watch fixture", role: "watch", token_hash: createHash("sha256").update(WATCH_TOKEN).digest("hex"), created_at: new Date().toISOString(), last_seen_at: null }] }), { mode: 0o600 });
-    // installer folders are looked for in an empty home, never this PC's own
     const home = join(root, "home");
-    mkdirSync(home);
-    const agentDetector = new AgentDetector({ locate: catalogLocator({ probe: null }), home, env: {} });
+    const agyData = join(home, ".gemini", "antigravity-cli");
+    mkdirSync(agyData, { recursive: true });
+    writeFileSync(join(agyData, "settings.json"), '{"modelProvider":"gemini"}');
+    const probe: LoginPathProbe = Object.assign(async () => ({ path: "/nonexistent" }), {
+      profileRevision: async () => { profileChecks++; return 0; },
+    });
+    const agentDetector = new AgentDetector({ locate: catalogLocator({ probe }), home, env: {} });
     server = createServer({ port: 0, hostname: "127.0.0.1", stateDir: state, token: BROWSER_TOKEN, bridgeToken: BRIDGE_TOKEN, machines: false, sidecar: false, tailscaleOwner: null, agentDetector });
   });
   afterEach(() => { process.env["PATH"] = savedPath; });
@@ -48,6 +52,8 @@ describe("GET /api/agent-catalog", () => {
   it.skipIf(process.platform === "win32")("lists every catalog agent with this platform's commands and what is installed here", async () => {
     writeFileSync(join(bin, "claude"), "#!/bin/sh\necho '2.1.311 (Claude Code)'\n");
     chmodSync(join(bin, "claude"), 0o755);
+    writeFileSync(join(bin, "agy"), "#!/bin/sh\necho '1.5.14'\n");
+    chmodSync(join(bin, "agy"), 0o755);
     process.env["PATH"] = bin;
     const response = await fetch(url("/api/agent-catalog"), { headers: bearer(BROWSER_TOKEN) });
     expect(response.status).toBe(200);
@@ -59,6 +65,7 @@ describe("GET /api/agent-catalog", () => {
     const claude = body.agents.find((agent) => agent.id === "claude")!;
     expect(claude.install).toEqual(AGENT_CATALOG.find((entry) => entry.id === "claude")!.install[platform]);
     expect(claude.state).toEqual({ installed: true, binary: "claude", on_path: true, version: "2.1.311", version_error: null, meets_min_version: true });
+    expect(body.agents.filter((agent) => Object.hasOwn(agent.state, "auth_mode")).map((agent) => [agent.id, agent.state.auth_mode])).toEqual([["agy", "gemini-api-key"]]);
     expect(body.agents.find((agent) => agent.id === "grok")!.state.installed).toBe(false);
     const muse = body.agents.find((agent) => agent.id === "muse")!;
     expect([muse.install, typeof muse.no_install]).toEqual([null, "string"]);
@@ -66,10 +73,16 @@ describe("GET /api/agent-catalog", () => {
 
   it("answers a watch device and the connection server's bridge token, and refuses no credential and a write", async () => {
     process.env["PATH"] = bin;
+    const checks = profileChecks;
     expect((await fetch(url("/api/agent-catalog"))).status).toBe(401);
     const watched = await fetch(url("/api/agent-catalog"), { headers: { cookie: `ovis_device=${WATCH_TOKEN}`, "x-forwarded-for": "100.64.0.9" } });
     expect(watched.status).toBe(200);
+    expect((await fetch(url("/api/agent-catalog?profile-recheck=0"), { headers: bearer(BRIDGE_TOKEN) })).status).toBe(200);
+    expect(profileChecks).toBe(checks);
     expect((await fetch(url("/api/agent-catalog"), { headers: bearer(BRIDGE_TOKEN) })).status).toBe(200);
+    expect(profileChecks).toBeGreaterThan(checks);
+    expect((await fetch(url("/api/agent-catalog"), { headers: bearer(BROWSER_TOKEN) })).status).toBe(200);
+    expect(profileChecks).toBeGreaterThan(checks);
     const watchPost = await fetch(url("/api/agent-catalog"), { method: "POST", headers: { cookie: `ovis_device=${WATCH_TOKEN}`, "x-forwarded-for": "100.64.0.9", origin: url("") } });
     expect([watchPost.status, ((await watchPost.json()) as { error: { code: string } }).error.code]).toEqual([403, "read_only"]);
     const post = await fetch(url("/api/agent-catalog"), { method: "POST", headers: { ...bearer(BROWSER_TOKEN), origin: url("") } });
@@ -105,6 +118,13 @@ describe("GET /api/agent-catalog", () => {
     expect(response.status).toBe(200);
     const direct = await (await fetch(url("/api/agent-catalog"), { headers: bearer(BROWSER_TOKEN) })).json();
     expect(await response.json()).toEqual(direct);
+  });
+
+  it.each([["", null], ["?providers=devin", "devin"]] as const)("only advertises Devin usage to catalog clients that know it (%s)", async (query, provider) => {
+    const response = await fetch(url(`/api/agent-catalog${query}`), { headers: bearer(BROWSER_TOKEN) });
+    expect(response.status).toBe(200);
+    const catalog: AgentCatalogResponse = await response.json();
+    expect(catalog.agents.find(({ id }) => id === "devin")?.sign_in?.provider).toBe(provider);
   });
 });
 
@@ -167,7 +187,6 @@ it("serves the first agent catalog GET from the startup warm cache without anoth
   try {
     server.warmAgentCatalog();
     await Promise.race([started.promise, deadline]);
-    // Startup and unrelated requests do not wait for the held version probe.
     expect((await fetch(`http://127.0.0.1:${server.port}/api/health?scope=bridge`)).status).toBe(200);
     const duringWarmup = fetch(`http://127.0.0.1:${server.port}/api/agent-catalog`);
     await Promise.race([overlapping.promise, deadline]);
@@ -193,14 +212,12 @@ it("serves the first agent catalog GET from the startup warm cache without anoth
 
 it("a GET during the warm-up joins its version reads: no agent's --version runs twice, queued ones included", async () => {
   const root = mkdtempSync(join(tmpdir(), "ovis-catalog-warm-join-"));
-  // more agents than run at once, so some of the warm-up's reads still wait in its queue when the GET comes
   const ids = ["claude", "codex", "copilot", "opencode", "grok", "pi"];
   const executables = new Map(ids.map((id) => [id, join(root, id)]));
   for (const path of executables.values()) writeFileSync(path, "fixture executable");
   const runs = new Map<string, number>();
   const release = Promise.withResolvers<void>();
   const first = Promise.withResolvers<void>();
-  // every agent asked twice (the warm-up, then the GET) while no read has finished
   const asked = new Map<string, number>();
   const bothAsked = Promise.withResolvers<void>();
   class Detector extends AgentDetector {
@@ -231,7 +248,6 @@ it("a GET during the warm-up joins its version reads: no agent's --version runs 
     server.warmAgentCatalog();
     await Promise.race([first.promise, deadline]);
     const during = fetch(`http://127.0.0.1:${server.port}/api/agent-catalog`);
-    // the GET has asked for every agent before any read of the warm-up finished
     await Promise.race([bothAsked.promise, deadline]);
     release.resolve();
     const response = await Promise.race([during, deadline]);
@@ -294,7 +310,6 @@ it.skipIf(process.platform === "win32")("kills held warm-up processes on stop wi
   let launches = 0;
   let versionRuns = 0;
   let exits = 0;
-  // Each real version process holds a connection; its close is the process-death signal.
   const listener = Bun.listen({
     hostname: "127.0.0.1", port: 0,
     socket: {

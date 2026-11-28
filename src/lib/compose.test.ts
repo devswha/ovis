@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 
 import { skillSyntax } from "../../shared/skill-syntax.ts";
-import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE } from "../../shared/submit-outcome.ts";
-import { agentDisplayLabel, claudeMainAtRest, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, formatTokens, imageMention, insertLeadingMention, insertNote, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain, draftSendNote, endsWithTurn, stoppedTurn } from "./compose.ts";
+import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, GROK_SEND_UNCONFIRMED_MESSAGE } from "../../shared/submit-outcome.ts";
+import { agentDisplayLabel, claudeMainAtRest, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, editBetween, followPlace, formatTokens, imageMention, insertMentionAt, insertNote, placedMention, removeMention, followMention, mentionWhole, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain, draftSendNote, endsWithTurn, stoppedTurn } from "./compose.ts";
 import { briefDescription, COMMAND_GROUPS, commandGroup, commandsForTrigger, namesHiddenCommand, sendsBarePick, slashCommandReplacement, terminalCommand, typedTerminalCommand } from "./compose.ts";
 import type { ConversationTurn, SlashCommand } from "../../shared/protocol.ts";
 import { activeTrigger, applyCompletion, type ActiveTrigger } from "./mentions.ts";
@@ -19,7 +19,6 @@ describe("menu rows", () => {
     expect(briefDescription("Explains any senpi tip in depth, including Tip: lines in the TUI. Use when the user asks about a tip.")).toBe("Explains any senpi tip in depth, including Tip: lines in the TUI");
     expect(briefDescription("Set thinking level")).toBe("Set thinking level");
     expect(briefDescription("Show changelog entries.")).toBe("Show changelog entries");
-    // a stop before a lowercase word, inside a version or in an ellipsis ends no sentence
     expect(briefDescription("Fetch docs, e.g. for react. Then stop.")).toBe("Fetch docs, e.g. for react");
     expect(briefDescription("Upgrade to v1.2 now")).toBe("Upgrade to v1.2 now");
     expect(briefDescription("Loading...")).toBe("Loading...");
@@ -34,7 +33,6 @@ describe("menu rows", () => {
     expect(commandGroup({ name: "hud:setup", description: "", source: "skill", origin: "plugin" })).toBe("skill-plugin");
     expect(commandGroup({ name: "review", description: "", source: "skill" })).toBe("skill");
     expect(commandGroup({ name: "model", description: "", source: "builtin" })).toBe("builtin");
-    // a plugin's command file is not a skill: it keeps its own group
     expect(commandGroup({ name: "hud:configure", description: "", source: "plugin" })).toBe("plugin");
   });
 });
@@ -80,11 +78,9 @@ describe("omo command completion", () => {
     expect(sendsBarePick(row("compact"), "opencode")).toBeTrue();
     // OpenCode's own menu only types these, with their space, for Enter to send
     for (const name of ["rename", "cd", "btw"]) expect(sendsBarePick(row(name), "opencode")).toBeFalse();
-    // the server's own commands, which Ovis lists as builtins (server/skills/opencode.ts), and any name OpenCode's TUI lacks
     for (const name of ["init", "review", "hello"]) expect(sendsBarePick(row(name), "opencode")).toBeFalse();
     for (const source of ["user", "project", "plugin", "skill"] as const) expect(sendsBarePick(row("hello", source), "opencode")).toBeFalse();
     expect(sendsBarePick({ ...row("customize-opencode", "skill"), trigger: "@" }, "opencode")).toBeFalse();
-    // any other agent's pick keeps its space
     for (const agent of ["claude", "codex", "omo", "pi", null]) expect(sendsBarePick(row("new"), agent)).toBeFalse();
   });
 
@@ -112,7 +108,6 @@ describe("omo command completion", () => {
     expect(activeTrigger("/prompts:rev", 12, options("codex"))).toEqual({ kind: "slash", query: "prompts:rev", start: 0, end: 12 });
     expect(activeTrigger("/skill:pd", 9, options("pi"))).toEqual({ kind: "slash", query: "skill:pd", start: 0, end: 9 });
     expect(activeTrigger("x $", 3, options("pi"))).toBeNull();
-    // the whole namespaced name is what Enter writes, for a pi skill as for an omo one
     expect(applyCompletion("/skill:pd", activeTrigger("/skill:pd", 9, options("pi"))!, slashCommandReplacement(skill, "pi", slash))).toEqual({ text: "/skill:mass-ulw ", caret: 16 });
   });
 
@@ -160,10 +155,8 @@ describe("composerMessage and submitNote", () => {
     expect(submitNote("submit_timeout", "x")).toMatch(/^Not sent: .*nothing was typed/);
     expect(submitNote("disconnected", "x")).toMatch(/^Not confirmed: .*Check the terminal/);
     expect(submitNote("pane_not_found", "pane w1:p9 not found")).toBe("Not sent: pane w1:p9 not found");
-    // #511: the no-agent sentence is for the bridge's no-agent refusal alone; an unknown input state keeps its own words
     expect(submitNote("agent_not_ready", NO_AGENT_MESSAGE)).toBe("Not sent: no agent is running in this pane. Your message stayed here.");
     expect(submitNote("agent_not_ready", "The agent's current input state is not known")).toBe("Not sent: The agent's current input state is not known");
-    // a paste left in the input line says so, and is never taken for a refusal that typed nothing
     expect(submitNote("pasted_not_sent", PASTED_NOT_SENT_MESSAGE)).toBe("Not sent: the message is in the terminal's input line. Clear it there, or press Enter there to send it.");
     expect(submitNotTyped("pasted_not_sent")).toBe(false);
   });
@@ -173,20 +166,14 @@ describe("composerMessage and submitNote", () => {
     expect(["disconnected", "timeout", "submit_failed"].map(submitNotTyped)).toEqual([false, false, false]);
     expect(["pending_input_unsupported", "invalid_delivery", "invalid_submit_text", "agent_not_ready", "pending_limit"].map(submitNotTyped)).toEqual([true, true, true, true, true]);
     expect(["pane_not_found", "retired_submit_id"].map(submitNotTyped)).toEqual([true, true]);
-    // refused before the paste because Claude's input box held a draft (#609)
     expect(submitNotTyped("input_draft")).toBe(true);
-    // refused by the view while the terminal holds input, before anything reached the socket
     expect(submitNotTyped("held_input")).toBe(true);
-    // regression #541: a send dropped before its frame left the browser typed nothing
     expect(submitNotTyped("not_transmitted")).toBe(true);
     expect(submitNote("not_transmitted", "the connection dropped before this message was sent")).toBe("Not sent: the connection dropped before this message left. Send it again.");
-    // a send whose wait ended before the PC said what it supports typed nothing, and the note names that, not a drop (#1806)
     expect(submitNotTyped("capabilities_unknown")).toBe(true);
     expect(submitNote("capabilities_unknown", "this PC has not said yet what it supports; nothing was sent")).toBe("Not sent: this PC has not said yet what it supports. Send it again.");
-    // an Insert refused for a control character says so, not that the terminal is not ready: a retry would be refused the same
     expect(insertNote("invalid_insert_text", "the text holds a control character")).toBe("Not inserted: the line holds a control character. Remove it, then insert again.");
     expect(insertNote("capabilities_unknown", "this PC has not said yet what it supports; nothing was sent")).toBe("Not inserted: this PC has not said yet what it supports. Insert it again.");
-    // a Send now that never left proves a held row unsent, not a queued one its turn's end may still type
     expect(pendingActionUncertain("not_transmitted", "held")).toBe(false);
     expect(pendingActionUncertain("not_transmitted", "queued")).toBe(true);
     expect(pendingActionUncertain("pending_not_found", "held")).toBe(true);
@@ -194,17 +181,14 @@ describe("composerMessage and submitNote", () => {
     expect(pendingActionUncertain("disconnected", "held")).toBe(true);
     expect(submitNote("held_input", "x")).toBe("Not sent: send or discard the held input first.");
     expect(submitNote("pending_input_unsupported", "x")).toBe("Update this PC to send messages in the next turn. Your draft stayed here.");
-    // Alt+Enter's hold on a PC that cannot hold one: refused by the socket before anything left
     expect(submitNotTyped("pending_hold_unsupported")).toBe(true);
     expect(submitNote("pending_hold_unsupported", "x")).toBe("Update this PC to hold messages. Your draft stayed here.");
-    // a first message held because its launched agent ended typed nothing, and says so apart from a changed terminal or session, in the client's words (#1547)
     expect(submitNotTyped("first_message_launch_ended")).toBe(true);
     const ended = "The agent started for this message has ended; review the message before sending it";
     const changed = "The pane's terminal or agent session changed; review the message before sending it again";
     expect(submitNote("first_message_launch_ended", ended)).not.toContain(ended);
     expect(submitNote("pending_target_changed", changed)).not.toContain(changed);
     expect(submitNote("first_message_launch_ended", "x")).not.toBe(submitNote("pending_target_changed", "x"));
-    // held because the terminal was typed into while it waited for a starting omp: where to look, not the bridge's words
     expect(submitNote("typed_while_waiting", "x")).toBe("Not sent: something was typed in the terminal while omp was starting. Check its input line there, then send this message.");
     expect(submitNotTyped("submit_changed")).toBe(false);
     expect(submitNotTyped("pending_uncertain")).toBe(false);
@@ -213,15 +197,17 @@ describe("composerMessage and submitNote", () => {
 
   it("offers to clear a terminal draft only when the server named one", () => {
     expect(submitRefusal("input_draft", "x", "ㅔ")).toEqual({ note: "Not sent: Claude Code's input box in the terminal already holds “ㅔ”.", draft: "ㅔ" });
-    // bash mode, a clipped box or an older bridge name none: the note alone
     expect(submitRefusal("input_draft", "x")).toBe(submitNote("input_draft", "x"));
     expect(submitRefusal("agent_blocked", "x", "ㅔ")).toBe(submitNote("agent_blocked", "x"));
+  });
+
+  it("reports an unconfirmed Grok delivery without claiming it was never sent", () => {
+    expect(submitRefusal("submit_changed", GROK_SEND_UNCONFIRMED_MESSAGE)).toStartWith("Not confirmed:");
   });
 
   it("names the draft after a Send it that did not go, and offers another draft's buttons", () => {
     const other = submitRefusal("input_draft", "x", "other draft");
     expect(draftSendNote(other, "fix the tests")).toBe(other);
-    // cleared and not confirmed, refused, or a box shown with no draft named: the reason, then the draft
     for (const result of [submitNote("submit_partial", "x"), submitNote("agent_not_ready", "x"), submitRefusal("input_draft", "x", undefined, "! ls")]) {
       const note = draftSendNote(result, "fix the tests");
       expect(typeof note).toBe("string");
@@ -237,9 +223,7 @@ describe("composerMessage and submitNote", () => {
     // Claude Code's box holding a folded paste has a note of its own, saying why nothing can be sent over it
     expect(submitNote("input_draft", CLAUDE_FOLDED_DRAFT_MESSAGE, "claude")).not.toBe(submitNote("input_draft", "x", "claude"));
     expect(submitRefusal("input_draft", "x", undefined, "! ls")).toEqual({ note: "Not sent: Claude Code's input box in the terminal may not be empty. It shows “! ls”.", anyway: true });
-    // a box the server could not read whole is shown nothing to send over: the plain note
     expect(submitRefusal("input_draft", "x", undefined, "")).toBe(submitNote("input_draft", "x"));
-    // a named draft is cleared, not sent over
     expect(submitRefusal("input_draft", "x", "ㅔ", "❯ ㅔ")).toEqual({ note: "Not sent: Claude Code's input box in the terminal already holds “ㅔ”.", draft: "ㅔ" });
     expect(submitRefusal("agent_blocked", "x", undefined, "! ls")).toBe(submitNote("agent_blocked", "x"));
   });
@@ -261,16 +245,13 @@ describe("a stopped send's turn", () => {
   it("is the same turn in a later read whose earlier turns changed, until a newer turn", () => {
     const stopped = stoppedTurn(page, "Rename the backup job and rerun it");
     expect(stopped).not.toBeNull();
-    // a new turns array: an earlier turn edited, the stopped turn a new object with the same time and words
     expect(endsWithTurn([turn("assistant", "earlier answer, edited", "2026-11-01T00:00:01Z"), { ...page[1]! }], stopped)).toBe(true);
     expect(endsWithTurn([...page, turn("assistant", "answer", "2026-11-01T00:00:03Z")], stopped)).toBe(false);
-    // the same words sent again are a newer turn
     expect(endsWithTurn([page[0]!, turn("user", words, "2026-11-01T00:00:04Z")], stopped)).toBe(false);
     expect(stoppedTurn(page, "other words")).toBeNull();
   });
 
   it("taken while the copy was in the box, still names it after a read that answers no copy", () => {
-    // the send empties the box: a read before the send's receipt answers no restored copy
     const taken = stoppedTurn(page, words);
     expect(stoppedTurn(page, null)).toBeNull();
     expect(endsWithTurn(page, taken)).toBe(true);
@@ -337,9 +318,7 @@ describe("composerPayload", () => {
     expect(composerMessage(pasted)).toBe("run this\ntouch /tmp/x\nnext");
     expect(composerPayload(pasted, true)).toBe("\u001b[200~run this\rtouch /tmp/x\rnext\u001b[201~");
     expect(composerPayload(pasted, false)).toBe("run this\rtouch /tmp/x\rnext");
-    // dropping one marker cannot leave another made of the bytes around it
     expect(composerMessage("a\u001b[20\u001b[201~0~b")).toBe("ab");
-    // a marker at the end goes before the trailing newlines it hid
     expect(composerMessage("ls\n\u001b[201~")).toBe("ls");
   });
 
@@ -363,35 +342,137 @@ describe("imageMention", () => {
   });
 });
 
-describe("insertLeadingMention", () => {
-  const first = imageMention("/tmp/1.png");
-  const second = imageMention("/tmp/2.png");
+describe("insertMentionAt (#3216)", () => {
+  const mention = imageMention("/tmp/1.png");
 
-  it("puts an attachment's mention at the start, whatever is being typed further on", () => {
-    expect(insertLeadingMention("", first, [])).toEqual({ text: "@/tmp/1.png ", at: 0, length: 12 });
-    expect(insertLeadingMention("look at this", first, [])).toEqual({ text: "@/tmp/1.png look at this", at: 0, length: 12 });
+  it("goes where the paste was made, with one space on each side", () => {
+    expect(insertMentionAt("before after", mention, 7)).toEqual({ text: "before @/tmp/1.png after", at: 7, length: 12 });
+    expect(insertMentionAt("before after", mention, 6)).toEqual({ text: "before @/tmp/1.png after", at: 6, length: 12 });
+    expect(insertMentionAt("before after", mention, 12)).toEqual({ text: "before after @/tmp/1.png ", at: 12, length: 13 });
+    expect(insertMentionAt("", mention, 0)).toEqual({ text: "@/tmp/1.png ", at: 0, length: 12 });
   });
 
-  it("keeps a leading slash command first", () => {
-    expect(insertLeadingMention("/review the menu", first, [])).toEqual({ text: "/review @/tmp/1.png the menu", at: 8, length: 12 });
-    expect(insertLeadingMention("/review", first, [])).toEqual({ text: "/review @/tmp/1.png ", at: 7, length: 13 });
+  it("never goes inside a character", () => {
+    expect(insertMentionAt("\u{1F603}b", mention, 1).text).toBe("@/tmp/1.png \u{1F603}b");
+    expect(insertMentionAt("ae\u0301y", mention, 2).text).toBe("a @/tmp/1.png e\u0301y");
   });
 
-  it("goes after the mentions of files picked before it, so a batch reads in pick order however its uploads finish", () => {
-    expect(insertLeadingMention(`${first}notes`, second, [first])).toEqual({ text: `${first}${second}notes`, at: 12, length: 12 });
-    expect(insertLeadingMention(`${second}notes`, first, [])).toEqual({ text: `${first}${second}notes`, at: 0, length: 12 });
-    // an earlier mention the user deleted no longer anchors anything
-    expect(insertLeadingMention("notes", second, [first])).toEqual({ text: `${second}notes`, at: 0, length: 12 });
+  it("keeps a leading slash command whole and first", () => {
+    expect(insertMentionAt("/review the menu", mention, 3)).toEqual({ text: "/review @/tmp/1.png the menu", at: 7, length: 12 });
+    expect(insertMentionAt("/review", mention, 0)).toEqual({ text: "/review @/tmp/1.png ", at: 7, length: 13 });
   });
 
   it("goes in whole or not at all: a cut path would name a file that does not exist", () => {
     const full = "x".repeat(MAX_COMPOSER_CHARS - 2);
-    expect(insertLeadingMention(full, first, [])).toEqual({ text: full, at: 0, length: 0, missing: 10 });
-    const room = "x".repeat(MAX_COMPOSER_CHARS - first.length);
-    expect(insertLeadingMention(room, first, [])).toEqual({ text: `${first}${room}`, at: 0, length: first.length });
-    // the separating space counts: after a command with no room for it, nothing goes in
-    const command = `/review${"x".repeat(MAX_COMPOSER_CHARS - 7 - first.length)}`;
-    expect(insertLeadingMention(command, first, [])).toEqual({ text: command, at: command.length, length: 0, missing: 1 });
+    expect(insertMentionAt(full, mention, 4)).toEqual({ text: full, at: 4, length: 0, missing: 11 });
+    const room = "x".repeat(MAX_COMPOSER_CHARS - mention.length);
+    expect(insertMentionAt(room, mention, 0)).toEqual({ text: `${mention}${room}`, at: 0, length: mention.length });
+  });
+});
+
+describe("followPlace (#3216)", () => {
+  it("stays before text typed at it and moves with text typed or removed before it", () => {
+    expect(followPlace(7, { start: 12, removed: 0, inserted: 5 }, "before after more")).toBe(7);
+    expect(followPlace(7, { start: 7, removed: 0, inserted: 1 }, "before xafter")).toBe(7);
+    expect(followPlace(7, { start: 0, removed: 0, inserted: 3 }, "so before after")).toBe(10);
+    expect(followPlace(7, { start: 5, removed: 1, inserted: 0 }, "befor after")).toBe(6);
+  });
+
+  it("goes to the start of a word typed on straight from it, never into it", () => {
+    // "scree|" pasted at, then "n" typed: the path goes before the word, not inside "screen"
+    expect(followPlace(5, { start: 5, removed: 0, inserted: 1 }, "screen")).toBe(0);
+    expect(followPlace(12, { start: 12, removed: 0, inserted: 1 }, "look at this,")).toBe(8);
+    // after a space, the typed word goes after the place
+    expect(followPlace(8, { start: 8, removed: 0, inserted: 1 }, "look at nthis")).toBe(8);
+  });
+
+  it("goes to where an edit across it began, also when it ends where text was typed over", () => {
+    expect(followPlace(7, { start: 3, removed: 6, inserted: 0 }, "befter")).toBe(3);
+    // "this" (4..8) typed over by "t": the place after it goes before the new word
+    expect(followPlace(8, { start: 4, removed: 4, inserted: 1 }, "fix t bug")).toBe(4);
+    // only removed before it: it moves back with the text
+    expect(followPlace(8, { start: 4, removed: 4, inserted: 0 }, "fix  bug")).toBe(4);
+    expect(followPlace(12, { start: 0, removed: 13, inserted: 1 }, "n")).toBe(0);
+  });
+});
+
+describe("removeMention (#3216)", () => {
+  const mention = imageMention("/tmp/1.png");
+  const removed = (text: string, place: number) => {
+    const next = insertMentionAt(text, mention, place);
+    return removeMention(next.text, placedMention(next, mention)).text;
+  };
+
+  it("takes out the path where it was put, with the spaces the upload added", () => {
+    expect(removed("before after", 7)).toBe("before after");
+    expect(removed("ab", 1)).toBe("ab");
+    expect(removed("before\nafter", 6)).toBe("before\nafter");
+    expect(removed("before\tafter", 6)).toBe("before\tafter");
+  });
+
+  it("keeps a space the user typed before the mention, and a copy of the path the user typed elsewhere", () => {
+    expect(removed("before \nafter", 7)).toBe("before \nafter");
+    expect(removed("see @/tmp/1.png x", 17)).toBe("see @/tmp/1.png x");
+  });
+
+  it("keeps one space when taking both of its own would glue another placed path to a word", () => {
+    const second = imageMention("/tmp/2.png");
+    const first = insertMentionAt("see", mention, 3);
+    const both = insertMentionAt(first.text, second, first.text.length);
+    expect(both.text).toBe("see @/tmp/1.png @/tmp/2.png ");
+    const kept = placedMention(both, second);
+    expect(removeMention(both.text, placedMention(first, mention), [kept]).text).toBe("see @/tmp/2.png ");
+    // with no other path beside it, the word split by the paste comes back as it was
+    expect(removeMention(first.text, placedMention(first, mention), [kept]).text).toBe("see");
+  });
+});
+
+describe("followMention (#3216)", () => {
+  const mention = imageMention("/tmp/1.png");
+  const next = insertMentionAt("look at this", mention, 8);
+  const placed = placedMention(next, mention);
+
+  it("moves with text typed before it, stays for text typed after it, and stays whole", () => {
+    const moved = followMention(placed, { start: 0, removed: 0, inserted: 3 })!;
+    expect(moved.start).toBe(placed.start + 3);
+    expect(mentionWhole(`so ${next.text}`, moved)).toBe(true);
+    expect(followMention(placed, { start: next.text.length, removed: 0, inserted: 3 })).toEqual(placed);
+  });
+
+  it("keeps what is left of it once an edit takes a character of it, and is whole again once it is put back", () => {
+    const cut = followMention(placed, { start: placed.start + 3, removed: 1, inserted: 0 })!;
+    const damaged = next.text.slice(0, placed.start + 3) + next.text.slice(placed.start + 4);
+    expect([cut.end - cut.start, mentionWhole(damaged, cut)]).toEqual([placed.bare.length - 1, false]);
+    const undone = followMention(cut, { start: placed.start + 3, removed: 0, inserted: 1 })!;
+    expect(mentionWhole(next.text, undone)).toBe(true);
+  });
+
+  it("is gone once an edit takes all of it, and is not whole with a character glued to it", () => {
+    expect(followMention(placed, { start: 0, removed: next.text.length, inserted: 3 })).toBeNull();
+    const glued = next.text.slice(0, placed.end) + "x" + next.text.slice(placed.end);
+    expect(mentionWhole(glued, followMention(placed, { start: placed.end, removed: 0, inserted: 1 })!)).toBe(false);
+  });
+});
+
+describe("editBetween (#3216)", () => {
+  it("reads the edit from the selection it replaced and the caret it left", () => {
+    // select all and type: the edit is the whole text, though the new one begins with the old one's letter
+    expect(editBetween("please look", "p", { caret: 1, selected: { start: 0, end: 11 } })).toEqual({ start: 0, removed: 11, inserted: 1 });
+    // typed at the start of repeated words: the caret says which copy grew
+    expect(editBetween("go go now", "go go go now", { caret: 3, selected: { start: 0, end: 0 } })).toEqual({ start: 0, removed: 0, inserted: 3 });
+    expect(editBetween("before after", "befor after", { caret: 5, selected: { start: 6, end: 6 } })).toEqual({ start: 5, removed: 1, inserted: 0 });
+  });
+
+  it("compares the texts around the caret where the selection does not describe the edit", () => {
+    expect(editBetween("go go now", "go go go now", { caret: 3, selected: { start: 6, end: 6 } })).toEqual({ start: 0, removed: 0, inserted: 3 });
+    expect(editBetween("before \u314Eafter", "before \uD558after", { caret: 8 })).toEqual({ start: 7, removed: 1, inserted: 1 });
+  });
+
+  it("never begins inside a character or a word", () => {
+    expect(editBetween("\u{1F600}a", "\u{1F603}", { caret: 2 })).toEqual({ start: 0, removed: 3, inserted: 2 });
+    expect(editBetween("x ae\u0301x", "x ae\u0300y", { caret: 6 })).toEqual({ start: 2, removed: 4, inserted: 4 });
+    // an autocorrect: the word, not its first letter on
+    expect(editBetween("fix teh bug", "fix the bug", { caret: 7 })).toEqual({ start: 4, removed: 3, inserted: 3 });
   });
 });
 
@@ -413,15 +494,12 @@ describe("composer presentation helpers", () => {
   });
 
   it("makes the status row compact by the card's width, not the window's", () => {
-    // a phone's card, and a laptop's with the sidebar open in a 940px window
     expect(composerStatusCompact(374)).toBe(true);
     expect(composerStatusCompact(588)).toBe(true);
     expect(composerStatusCompact(COMPOSER_STATUS_COMPACT_BELOW - 1)).toBe(true);
-    // the threshold itself, a 1024px window with the sidebar open, and the full 820px card
     expect(composerStatusCompact(COMPOSER_STATUS_COMPACT_BELOW)).toBe(false);
     expect(composerStatusCompact(672)).toBe(false);
     expect(composerStatusCompact(820)).toBe(false);
-    // a card that is not laid out yet has no width: it is not called narrow
     expect(composerStatusCompact(0)).toBe(false);
   });
 
@@ -437,16 +515,19 @@ describe("composer presentation helpers", () => {
     expect(composerDelivery(null, "working")).toBe("immediate");
   });
 
+  it("queues a message for a pane shown blocked only where the server shows a card's wait so", () => {
+    expect(composerDelivery("codex", "blocked", true)).toBe("queue");
+    for (const state of ["idle", "done", "unknown"] as const) expect(composerDelivery("codex", state, true)).toBe("immediate");
+    expect(composerDelivery(null, "blocked", true)).toBe("immediate");
+  });
+
   it("says the reconnecting sentence in the status content only once there is a draft", () => {
-    // the empty box's placeholder says it
     expect(composerStatusHint({ uploading: false, connected: false, text: "" })).toBe(null);
     expect(composerStatusHint({ uploading: false, connected: false, text: " " })).toBe("offline");
     expect(composerStatusHint({ uploading: false, connected: false, text: "draft" })).toBe("offline");
     expect(composerStatusHint({ uploading: false, connected: true, text: "draft" })).toBe(null);
     expect(composerStatusHint({ uploading: true, connected: true, text: "" })).toBe("uploading");
-    // an upload caught by a dropped connection: the box is empty, so the placeholder says why
     expect(composerStatusHint({ uploading: true, connected: false, text: "" })).toBe("uploading");
-    // with a draft the placeholder is gone: the reconnecting sentence is the one said (the tile says Uploading)
     expect(composerStatusHint({ uploading: true, connected: false, text: "draft" })).toBe("offline");
   });
 
@@ -496,16 +577,13 @@ describe("composer presentation helpers", () => {
       named("unrelated", "Something else"),
     ];
     const find = (query: string) => rankSlashCommands(commands, query, {}).map((command) => command.name);
-    // the namespace is not a prefix to type: the command's own word finds it
     expect(find("brain")).toEqual(["my-brainstorm-helper", "superpowers:brainstorming"]);
-    // both name prefixes precede the word match
     expect(find("review")).toEqual(["review", "reviewer-notes", "code-review"]);
     expect(find("ainst")).toEqual(["my-brainstorm-helper", "superpowers:brainstorming"]);
     expect(find("spbr")).toEqual(["superpowers:brainstorming"]);
     expect(find("diff")).toEqual(["review"]);
     expect(find("zzz")).toEqual([]);
     expect(find("")).toHaveLength(commands.length);
-    // a stronger kind of match beats a frequently used weaker one
     expect(rankSlashCommands(commands, "review", { "code-review": 9 }).map((command) => command.name)[0]).toBe("review");
   });
 
@@ -556,9 +634,6 @@ describe("context left", () => {
   });
 });
 
-// The catalog says which commands run in the terminal (a row's visibility, or its bare form's
-// interaction): the chat lists them apart and never sends one on its own. A row the agent's own
-// menu hides (agent-hidden) mirrors that menu: never listed, and typed by hand it goes like any text.
 describe("terminal commands", () => {
   const config: SlashCommand = { name: "config", description: "Open configuration", source: "builtin", visibility: "terminal" };
   const tree: SlashCommand = { name: "tree", description: "Browse the session tree", source: "builtin", forms: [{ match: "bare", interaction: "terminal" }] };
@@ -573,13 +648,11 @@ describe("terminal commands", () => {
   it("groups a row with terminal visibility, or a bare terminal form, apart from its source", () => {
     expect(terminalCommand(config)).toBe(true);
     expect(terminalCommand(tree)).toBe(true);
-    // only a subcommand needs the terminal: the command itself stays with its source
     expect([model, resume, plain, skill].map(terminalCommand)).toEqual([false, false, false, false]);
     expect(commandGroup(config)).toBe("terminal");
     expect(commandGroup(tree)).toBe("terminal");
     expect(commandGroup(resume)).toBe("builtin");
     expect(commandGroup(skill)).toBe("skill-project");
-    // the group stands last: the agent's offered commands first, what needs the terminal after them
     expect(COMMAND_GROUPS[COMMAND_GROUPS.length - 1]).toBe("terminal");
   });
 
@@ -587,7 +660,6 @@ describe("terminal commands", () => {
     const listed = commandsForTrigger(commands, "claude", slash).map((command) => command.name);
     expect(listed).toEqual(["config", "tree", "model", "resume", "compact", "deploy"]);
     expect(terminalCommand(heapdump)).toBe(false);
-    // rows without the new fields (an older server) read as they always did
     expect(commandsForTrigger([plain, skill], "claude", slash)).toEqual([plain, skill]);
   });
 
@@ -595,9 +667,7 @@ describe("terminal commands", () => {
     expect(typedTerminalCommand(commands, "/config")).toBe(config);
     expect(typedTerminalCommand(commands, "  /CONFIG  ")).toBe(config);
     expect(typedTerminalCommand(commands, "/tree")).toBe(tree);
-    // takes no argument, but a stray one is still the same command typed
     expect(typedTerminalCommand(commands, "/tree w13:p2")).toBe(tree);
-    // the typed form decides: /model opens a dialog and /model sonnet needs nothing, /resume list needs the terminal
     expect(typedTerminalCommand(commands, "/model")).toBeNull();
     expect(typedTerminalCommand(commands, "/model sonnet")).toBeNull();
     expect(typedTerminalCommand(commands, "/resume")).toBeNull();
@@ -616,16 +686,12 @@ describe("terminal commands", () => {
     // a row typed with another trigger is another row: Codex's $skill is never /skill
     expect(typedTerminalCommand([{ ...config, trigger: "$" }], "/config")).toBeNull();
     expect(typedTerminalCommand([{ ...config, trigger: "$" }], "$config")).toEqual({ ...config, trigger: "$" });
-    // a catalog without the fields names no terminal command, as before the fields existed
     expect(typedTerminalCommand([plain, skill], "/compact")).toBeNull();
   });
 
 });
 
 describe("the menu over a catalog the server built", () => {
-  // The rows come from the integrated server catalog, serialized as they cross the wire, so the
-  // client is checked against the forms and visibility the scanners really emit (Codex: terminal
-  // screens and the popup's agent-hidden rows), not against hand-written rows.
   function codexRows(): SlashCommand[] {
     const home = mkdtempSync(join(tmpdir(), "compose-catalog-"));
     try {
@@ -636,18 +702,32 @@ describe("the menu over a catalog the server built", () => {
   }
   const slash: ActiveTrigger = { kind: "slash", query: "", start: 0, end: 1 };
 
-  it("lists the terminal screens in the terminal group and never lists the agent-hidden rows", () => {
+  it("keeps terminal handoffs and drawable controls but hides unsupported ordinary live controls", () => {
     const rows = codexRows();
     const listed = commandsForTrigger(rows, "codex", slash);
     const names = new Set(listed.map((row) => row.name));
     const terminal = new Set(listed.filter((row) => commandGroup(row) === "terminal").map((row) => row.name));
-    for (const name of ["config", "resume", "permissions", "mcp", "status", "review"]) expect(terminal.has(name)).toBeTrue();
+    for (const name of ["config", "resume", "permissions", "setup-default-sandbox", "mcp", "status", "review"]) expect(terminal.has(name)).toBeTrue();
     for (const name of ["model", "compact", "init"]) expect(names.has(name) && !terminal.has(name)).toBeTrue();
+    expect(names.has("plan")).toBeFalse();
+    expect(typedTerminalCommand(rows, "/plan")).toBeNull();
+    expect(typedTerminalCommand(rows, "/permissions")?.name).toBe("permissions");
     for (const name of ["apps", "debug-config", "debug-m-drop", "debug-m-update"]) {
       expect(rows.some((row) => row.name === name && row.visibility === "agent-hidden")).toBeTrue();
       expect(names.has(name)).toBeFalse();
     }
     expect(commandsForTrigger(rows, "codex", { ...slash, prefix: "$" }).map((row) => [row.name, commandGroup(row)])).toEqual([["deploy", "skill-user"]]);
+  });
+
+  it("offers no other command for a hidden control typed whole, so Enter sends it as typed", () => {
+    const rows = codexRows();
+    expect(commandsForTrigger(rows, "codex", { ...slash, query: "plan", end: 5 })).toEqual([]);
+    expect(namesHiddenCommand(rows, "plan", "/")).toBeTrue();
+    expect(commandsForTrigger(rows, "codex", { ...slash, query: "pla", end: 4 }).some((row) => row.name === "plan")).toBeFalse();
+    expect(namesHiddenCommand(rows, "pla", "/")).toBeFalse();
+    const skill: SlashCommand = { name: "plan-review", description: "", source: "skill", trigger: "$" };
+    // inline, `use /plan` still offers the skill: only a leading command typed whole is sent as typed
+    expect(commandsForTrigger([...rows, skill], "codex", { kind: "slash", query: "plan", start: 4, end: 9 }).some((row) => row.name === "plan-review")).toBeTrue();
   });
 
   it("lists Claude's terminal screens apart and leaves out what Claude's own menu hides", () => {
@@ -718,11 +798,13 @@ describe("claudeMainAtRest", () => {
 it("takes a word naming a command the menu hides for a command, never for one no command matches", () => {
   const commands: SlashCommand[] = [
     { name: "heapdump", description: "Write a heap snapshot", source: "builtin", visibility: "agent-hidden" },
+    { name: "apps", description: "Apps", source: "builtin", visibility: "agent-hidden" },
     { name: "help", description: "Show help", source: "builtin" },
   ];
   expect(namesHiddenCommand(commands, "heapdump")).toBe(true);
   expect(namesHiddenCommand(commands, "Heap")).toBe(true);
-  // a listed command is the menu's to show, and a word no command starts is unmatched
+  expect(namesHiddenCommand(commands, "apps", "/")).toBe(true);
+  expect(namesHiddenCommand(commands, "apps", "$")).toBe(false);
   expect(namesHiddenCommand(commands, "help")).toBe(false);
   expect(namesHiddenCommand(commands, "deploy")).toBe(false);
   expect(namesHiddenCommand(commands, "")).toBe(false);

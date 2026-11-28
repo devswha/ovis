@@ -1,9 +1,9 @@
 export interface WatchStreamOptions {
   onFrame: (data: string) => void;
-  onEnd: () => void;
+  onEnd: (reason?: string) => void;
+  onScreen?: (data: string, cols: number, rows: number, full: boolean) => void;
 }
 
-/** Incremental NDJSON and frame decoder, independent of the observer process. */
 export class WatchStreamParser {
   private pending = "";
   private readonly decoder = new TextDecoder();
@@ -25,7 +25,6 @@ export class WatchStreamParser {
     this.pending = this.ended ? "" : this.pending.slice(start);
   }
 
-  /** Consume a final record without a newline and flush any incomplete UTF-8. */
   finish(): void {
     if (this.ended) return;
     this.line(this.pending);
@@ -50,11 +49,15 @@ export class WatchStreamParser {
     // herdr 0.9.3 labels a frame `encoding:"ansi"`: what the bytes are; `bytes` itself is always base64
     if (record.type === "terminal.frame" && "encoding" in record && record.encoding === "ansi" && "bytes" in record && typeof record.bytes === "string") {
       const data = this.decoder.decode(Buffer.from(record.bytes, "base64"), { stream: true });
+      if ("width" in record && typeof record.width === "number" && Number.isInteger(record.width) && record.width > 0 && record.width <= 1000
+        && "height" in record && typeof record.height === "number" && Number.isInteger(record.height) && record.height > 0 && record.height <= 1000) {
+        this.options.onScreen?.(data, record.width, record.height, "full" in record && record.full === true);
+      }
       if (data) this.options.onFrame(data);
     } else if (record.type === "terminal.closed") {
       this.ended = true;
       this.flush();
-      this.options.onEnd();
+      this.options.onEnd("reason" in record && typeof record.reason === "string" ? record.reason : undefined);
     }
   }
 }
@@ -65,15 +68,13 @@ export interface PaneWatchOptions extends WatchStreamOptions {
   rows: number;
   /** The same socket the bridge's RPCs use, not the CLI's default session. */
   socketPath: string;
-  /** How long the process may take to end once asked (KILL_GRACE_MS). */
   killGraceMs?: number;
 }
 
 const STDERR_TAIL_CHARS = 4096;
 /**
- * How long an observe process asked to end may take before it is killed outright. Its exit is waited for: a
- * pane's next view starts after it, and its place among a connection's watches is its until then
- * (core/connections.ts), so one that ignored the request would hold both for good.
+ * Its exit is waited for: a pane's next view starts after it, and its place among a connection's watches is its
+ * until then (core/connections.ts), so one that ignored the request would hold both for good.
  */
 const KILL_GRACE_MS = 1_000;
 
@@ -121,10 +122,9 @@ export class PaneWatch {
     });
   }
 
-  /** Reads no more of the process's output: both reads end, whoever holds the pipes. */
   private dropOutput(): void {
     for (const reader of this.readers) {
-      try { void reader.cancel().catch(() => { /* read to its end already */ }); } catch { /* read to its end already */ }
+      try { void reader.cancel().catch(() => {}); } catch {}
     }
   }
 
@@ -164,7 +164,6 @@ export class PaneWatch {
       }
       this.stderrTail = (this.stderrTail + decoder.decode()).slice(-STDERR_TAIL_CHARS);
     } catch {
-      // The process can close the pipe underneath us; retain the tail already read.
     } finally {
       reader.releaseLock();
     }
@@ -176,22 +175,19 @@ export class PaneWatch {
     this.options.onEnd();
   }
 
-  /** Asks the process to end, and ends it outright when it has not by the grace period. */
   private stopChild(): void {
     if (this.gone) return;
-    try { this.proc.kill(); } catch { /* already exited */ }
+    try { this.proc.kill(); } catch {}
     if (this.killer) return;
     this.killer = setTimeout(() => {
-      try { this.proc.kill("SIGKILL"); } catch { /* already exited */ }
+      try { this.proc.kill("SIGKILL"); } catch {}
     }, this.options.killGraceMs ?? KILL_GRACE_MS);
-    // a server on its way out does not wait for it
     this.killer.unref?.();
   }
 
   kill(): void {
     if (this.killed) return;
     this.killed = true;
-    // one whose process is gone already may still be read from: nothing more of it is wanted
     if (this.gone) this.dropOutput();
     this.stopChild();
   }
