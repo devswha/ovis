@@ -31,7 +31,7 @@ describe("import closure of tui/main.ts", () => {
   const allowed = (path: string) => path.startsWith("tui/") || path.startsWith("shared/") || OUTSIDE_ALLOWED.has(path);
 
   const closure = (entry: string, source: (path: string) => string | undefined) =>
-    importClosure(entry, source, allowed, (from, to) => from === "server/herdr-core/snapshot.ts" && to === "server/foreground-job.ts");
+    importClosure(entry, source, allowed, (from, to, expression) => !expression && from === "server/herdr-core/snapshot.ts" && to === "server/foreground-job.ts");
 
   it("stays inside tui/, shared/ and the listed server files", () => {
     const { reached, offenders } = closure("tui/main.ts", (path) => existsSync(join(repo, path)) ? read(path) : undefined);
