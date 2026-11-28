@@ -161,7 +161,7 @@ export function UpdateControls({ updates, bridgesFollow = false }: { updates: Up
     <div className="settings-card"><div className="settings-item">
     <p className="settings-hint">{t("Running {version}", { version: runningAppVersion(status, __APP_VERSION__) })}</p>
     {tabVersion && reload !== "restart" && <p className="settings-hint">{t("This tab still runs {version} until it is reloaded.", { version: tabVersion })}</p>}
-    {installing && !error ? <div role="status"><UpdateProgress status={status} fallback={t(status?.phase === "building" ? "Installing dependencies and building…" : "Restarting the bridge…")} /></div> : <p className="settings-hint" role={error || status?.error || failure ? "alert" : "status"}>
+    {installing && !error ? <div role="status"><UpdateProgress status={status} fallback={t(status?.phase === "building" ? "Installing dependencies and building…" : "Restarting the bridge…")} /></div> : <p className="settings-hint" role={error || status?.error || failure === "offer-changed" ? "alert" : "status"}>
       {(failure === "offer-changed" ? t("A newer release was published after you chose this update, so nothing was installed. Check again to review it.") : null) ?? error ?? status?.error ?? (restart ? <><span>{t("Ovis was updated on this PC. Restart it there to load the update.")}</span> <ExternalLink kind="link" className="settings-link" href={RESTART_HELP}>{t("How to restart")}</ExternalLink></> : null) ?? blocked ?? (busy ? t("Checking for updates…") :
         status?.available ? t("Version {version} is available.", { version: versionLabel(status.latest_version, status.latest_revision) ?? "" }) : status?.checked_at ? t("Up to date.") : t("Waiting for an update check…"))}
     </p>}
@@ -221,7 +221,7 @@ export function HerdrUpdateControls({ enabled, herdrVersion, showVersion = false
       <button type="button" className={stale ? "btn btn-primary" : "btn"} disabled={busy} onClick={() => void request()}>{t("Update herdr")}</button>
     </div>
     {(error || busy) && <p className="settings-hint" role={error ? "alert" : "status"}>{error ?? t("Updating herdr…")}</p>}
-    {!busy && status.output && <pre className="update-output" role={status.phase === "error" ? "alert" : undefined} data-failed={status.phase === "error" || undefined}>{status.output}</pre>}
+    {!busy && status.output && <pre className="update-output" role={status.phase === "error" && !error ? "alert" : undefined} data-failed={status.phase === "error" || undefined}>{status.output}</pre>}
     {/* a failure herdr printed nothing for still says it failed */}
     {!busy && !status.output && status.phase === "error" && <p className="settings-hint" role="alert">{t("herdr could not be updated, and it printed nothing to say why.")}</p>}
     </div></div>

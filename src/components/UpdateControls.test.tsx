@@ -91,6 +91,13 @@ describe("update failure announcements", () => {
     expect(html).toContain("Check for updates");
   });
 
+  it("keeps an offer this server can install only after a restart polite, as the header's line does", () => {
+    const model = { ...updates({ ...blocked, blocked_reason: null, available: true, latest_version: "0.4.23", latest_revision: "bbbb222" }), failure: "restart" } as unknown as UpdatesModel;
+    const html = render(true, model);
+    expect(html).not.toContain('role="alert"');
+    expect(html).toContain("Restart Ovis on this PC to update from here");
+  });
+
   it("keeps an ordinary update check polite", () => {
     const html = render(true, { ...updates({ ...blocked, blocked_reason: null }), busy: true });
     expect(html).not.toContain('role="alert"');
@@ -110,6 +117,26 @@ describe("update failure announcements", () => {
         createElement(HerdrUpdateControls, { enabled: true, herdrVersion: "1.0" })));
       expect(html).toContain('role="alert"');
       expect(html).toContain(source === "request" ? "The update request was refused" : "Download failed");
+    } finally {
+      hook.mockRestore();
+      if (languages) Object.defineProperty(navigator, "languages", languages);
+      else Reflect.deleteProperty(navigator, "languages");
+    }
+  });
+
+  it("announces a refused retry once, not again with the failed update's output still shown", () => {
+    const languages = Object.getOwnPropertyDescriptor(navigator, "languages");
+    Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
+    const hook = spyOn(herdrUpdate, "useHerdrUpdate").mockReturnValue({
+      status: { supported: true, phase: "error", server_version: "1.0", binary_version: "1.0", stale: false, output: "Download failed", finished_at: null },
+      error: "The update request was refused", busy: false, request: async () => undefined,
+    });
+    try {
+      const html = renderToStaticMarkup(createElement(SettingsProvider, null,
+        createElement(HerdrUpdateControls, { enabled: true, herdrVersion: "1.0" })));
+      expect(html.match(/role="alert"/g)).toHaveLength(1);
+      expect(html).toMatch(/role="alert">The update request was refused/);
+      expect(html).toContain("Download failed");
     } finally {
       hook.mockRestore();
       if (languages) Object.defineProperty(navigator, "languages", languages);
