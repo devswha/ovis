@@ -10,6 +10,8 @@ export const FLING_SLOP_PX = 8;
 /** Fastest fling, in CSS pixels per millisecond (Android's maximum fling velocity, 8000 dp/s). */
 export const FLING_MAX_VELOCITY = 8;
 export const FLING_STOP_VELOCITY = 0.02;
+/** A Codex glide sends discrete row reports: stop when even a row at the current speed takes this long. */
+export const CODEX_GLIDE_ROW_INTERVAL_MS = 90;
 /** The speed a fling keeps per millisecond (UIScrollView's normal deceleration rate). */
 export const FLING_DECELERATION = 0.998;
 /** The longest frame a fling advances by: a frame after the tab was hidden does not jump the whole glide. */
@@ -58,7 +60,7 @@ export function flingStep(velocity: number, elapsed: number): { travel: number; 
 }
 
 export interface TouchFling {
-  start(velocity: number, travel: (pixels: number) => boolean, done: () => void): void;
+  start(velocity: number, travel: (pixels: number) => boolean, done: () => void, minVelocity?: number): void;
   cancel(): void;
   dispose(): void;
   readonly active: boolean;
@@ -72,7 +74,7 @@ const browserFrames: FrameClock = {
 export function createTouchFling(frames: FrameClock = browserFrames, now: () => number = () => performance.now()): TouchFling {
   let frame: number | null = null;
   let disposed = false;
-  let glide: { velocity: number; at: number; travel: (pixels: number) => boolean; done: () => void } | null = null;
+  let glide: { velocity: number; minVelocity: number; at: number; travel: (pixels: number) => boolean; done: () => void } | null = null;
   const stop = (): void => {
     glide = null;
     if (frame !== null) frames.cancel(frame);
@@ -91,7 +93,7 @@ export function createTouchFling(frames: FrameClock = browserFrames, now: () => 
       return;
     }
     if (glide !== current) return;
-    if (Math.abs(current.velocity) < FLING_STOP_VELOCITY) {
+    if (Math.abs(current.velocity) < current.minVelocity) {
       glide = null;
       current.done();
       return;
@@ -99,13 +101,14 @@ export function createTouchFling(frames: FrameClock = browserFrames, now: () => 
     if (!disposed) frame = frames.request(onFrame);
   };
   return {
-    start(velocity, travel, done) {
+    start(velocity, travel, done, minVelocity = FLING_STOP_VELOCITY) {
       stop();
-      if (disposed || !Number.isFinite(velocity) || Math.abs(velocity) < FLING_STOP_VELOCITY) {
+      const cutoff = Number.isFinite(minVelocity) ? Math.max(FLING_STOP_VELOCITY, minVelocity) : FLING_STOP_VELOCITY;
+      if (disposed || !Number.isFinite(velocity) || Math.abs(velocity) < cutoff) {
         if (!disposed) done();
         return;
       }
-      glide = { velocity, at: now(), travel, done };
+      glide = { velocity, minVelocity: cutoff, at: now(), travel, done };
       frame = frames.request(onFrame);
     },
     cancel: stop,

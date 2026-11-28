@@ -29,7 +29,7 @@ import { fitLineHeight } from "./terminalLineHeight.ts";
 import { keepDeleteRepeatText, keyboardNeedsText, restoreDeleteRepeatCaret } from "./deleteRepeat.ts";
 import { pinchFontSize } from "./pinchFontSize.ts";
 import { finalStep, HERDR_MOUSE_SCROLL_LINES, wheelSteps } from "./wheelSteps.ts";
-import { createTouchFling, createVelocityTracker } from "./touchFling.ts";
+import { CODEX_GLIDE_ROW_INTERVAL_MS, createTouchFling, createVelocityTracker } from "./touchFling.ts";
 import { createTouchWheelPacer } from "./touchWheelPacer.ts";
 import { layoutScroll } from "./layoutScroll.ts";
 import { TOUCH_STROKE_CLAIMED } from "./touchClaim.ts";
@@ -2026,11 +2026,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       // A mouse-enabled Codex TUI handles the wheel itself: by default one report moves one
       // transcript row. Classic herdr's own history still moves three rows per report.
-      const touchStepPixels = (): number => cellHeight() * (
-        agentRef.current === "codex" && terminalScreen(term).alternate
-        && term.modes.mouseTrackingMode !== "none" && !scrollableMirror() && !wheelStateRef.current.omoQuestion
-          ? 1 : HERDR_MOUSE_SCROLL_LINES
-      );
+      const codexTouchScroll = (): boolean => agentRef.current === "codex" && terminalScreen(term).alternate
+        && term.modes.mouseTrackingMode !== "none" && !scrollableMirror() && !wheelStateRef.current.omoQuestion;
+      const touchStepPixels = (): number => cellHeight() * (codexTouchScroll() ? 1 : HERDR_MOUSE_SCROLL_LINES);
       const onTouchMove = (event: TouchEvent): void => {
         if (!pinchStroke && event.touches.length > 1) {
           stopTouchScroll();
@@ -2123,6 +2121,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           const pane = touchPane;
           const generation = touchGeneration;
           let left = touchPixels;
+          const codex = codexTouchScroll();
+          const stopVelocity = codex ? cellHeight() / CODEX_GLIDE_ROW_INTERVAL_MS : undefined;
+          let glided = false;
           // the glide belongs to the pane and attach the touch began on: a switch, a lost attach or a
           // role change, even one before the lift, stops it, as they drop the swipe's queued reports
           // (sendTouchWheels' pacer checks them too)
@@ -2134,14 +2135,21 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
               delete host.dataset.touchFling;
               return false;
             }
+            if (codex !== codexTouchScroll()) {
+              delete host.dataset.touchFling;
+              return false;
+            }
+            if (pixels !== 0) glided = true;
             const { steps, rest } = wheelSteps(left + pixels, touchStepPixels());
             left = rest;
             sendTouchWheels(steps);
             return true;
           }, () => {
             delete host.dataset.touchFling;
-            if (current()) sendTouchWheels(finalStep(left, touchStepPixels()));
-          });
+            // Round the finger's release as before, but do not tack one late report on
+            // to a completed Codex glide: the transcript can only move in whole rows.
+            if (current() && (!codex || !glided)) sendTouchWheels(finalStep(left, touchStepPixels()));
+          }, stopVelocity);
         }
         touchPixels = 0;
         tracking = false;

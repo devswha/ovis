@@ -104,6 +104,27 @@ await withDemoBrowser({ tempPrefix: "codex-drag-demo-", afterTransport: `\n<scri
       await page.locator(".pane-frame.is-current .ghostty-row", { hasText: "TRANSCRIPT-OFFSET-1" }).first().waitFor();
       assert.equal(await reports(), 1);
       await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+      if (codex) {
+        const started = await page.evaluate(({ x, y, rowHeight }) => {
+          const target = document.elementFromPoint(x, y)!;
+          const now = performance.now();
+          const send = (type: string, y: number, at: number) => {
+            const points = type === "touchend" ? [] : [new Touch({ identifier: 1, target, clientX: x, clientY: y })];
+            const event = new TouchEvent(type, { bubbles: true, cancelable: true, touches: points });
+            Object.defineProperty(event, "timeStamp", { value: at });
+            target.dispatchEvent(event);
+          };
+          send("touchstart", y, now - 80);
+          send("touchmove", y + rowHeight * 4, now);
+          send("touchend", y + rowHeight * 4, now);
+          return now;
+        }, { x, y, rowHeight: row.height });
+        await page.locator(".pane-frame.is-current [data-touch-fling]").waitFor({ state: "attached" });
+        await page.locator(".pane-frame.is-current [data-touch-fling]").waitFor({ state: "detached" });
+        const elapsed = await page.evaluate((started) => performance.now() - started, started);
+        assert.ok(elapsed < 1250, `${kind}: a Codex flick stops before a sparse tail (${elapsed.toFixed()} ms)`);
+        assert.ok(await reports() > 5, `${kind}: a flick still coasts after the finger lifts`);
+      }
       console.log(`PASS ${kind}: ${codex ? "Codex advances after one row of finger travel" : "ordinary panes retain the three-row report step"}`);
     } finally {
       await context.close();

@@ -5774,7 +5774,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   decays by 0.998 per millisecond (UIScrollView's normal deceleration), so a glide travels about
   half a second of the lift's speed. Each frame's travel becomes wheel steps through the same
   `wheelSteps` and pacer as the finger's, and the last half step goes when the glide ends. A slow
-  drag still ends where the finger does. Anything that drops a swipe's queued reports stops the
+  drag still ends where the finger does. Codex's glide stops sooner, once its speed falls below
+  one row per 90 ms, and does not round out a leftover half row after coasting. A slow finger
+  release without a glide still rounds as before. Anything that drops a swipe's queued reports stops the
   glide too, and a glide reaches only the pane and attach its touch began on: a pane switched
   before the lift gets nothing. Termux's terminal view flings its scrollback the same way. A pan of
   folded rows or an oversized mirror, done in the browser, does not glide. The wheel speed setting
