@@ -10,7 +10,9 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [0.5.13] - 2026-11-28
 
 ### Added
-- When a first GitHub or Google sign-in may match an existing Ovis account, Ovis offers to sign into that account and add the new method, or to create a separate account.
+- When a first GitHub or Google sign-in may match an existing Ovis account and the account service
+  does not join it to that account by itself (see the Account entry under Changed), Ovis offers to
+  sign into that account and add the new method, or to create a separate account.
   ([#4903](https://github.com/devswha/ovis/pull/4903))
 - Move a PC to the Ovis account signed in on its own window without having to pair your devices again.
   ([#4928](https://github.com/devswha/ovis/pull/4928))
