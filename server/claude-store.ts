@@ -309,12 +309,16 @@ async function overrideSource(value: string): Promise<ClaudeSource> {
   return dir === null ? { state: "unreadable" } : { state: "override", dir };
 }
 
-/** A Linux process's environment as /proc/<pid>/environ holds it, read in full, as a source. */
-async function environSource(environ: string): Promise<SourceRead> {
+/**
+ * A Linux process's environment as /proc/<pid>/environ holds it, read in full, as a source. A relative CLAUDE_CONFIG_DIR
+ * is the folder Claude reaches from its working folder (`cwd`, Claude's own): without one it names no store.
+ */
+async function environSource(environ: string, cwd: string | null = null): Promise<SourceRead> {
   const entries = environ.split("\0").filter((entry) => entry !== "");
   // an environment read empty is a process gone or not ours to read, not one without the variable
   if (entries.length === 0) return { source: { state: "unreadable" }, legacy: null };
-  const named = entries.filter((entry) => entry.startsWith("CLAUDE_CONFIG_DIR=")).map((entry) => entry.slice(18));
+  const named = entries.filter((entry) => entry.startsWith("CLAUDE_CONFIG_DIR=")).map((entry) => entry.slice(18))
+    .map((dir) => dir === "" || isAbsolute(dir) || cwd === null ? dir : join(cwd, dir));
   const legacy = await namedDirectory(named[0] || null);
   if (named.length > 1) return { source: { state: "unreadable" }, legacy };
   const override = named[0];
@@ -333,7 +337,7 @@ async function readClaudeSource(pid: number, home: string, platform: string, tab
       const implicit = claudeStoreKey(owner, null) === claudeStoreKey(join(home, ".claude"), null);
       return { source: implicit ? { state: "store", dir: owner } : { state: "override", dir: owner }, legacy: await namedDirectory(owner) };
     }
-    if (platform === "linux") return await environSource(await readFile(`/proc/${pid}/environ`, "utf8"));
+    if (platform === "linux") return await environSource(await readFile(`/proc/${pid}/environ`, "utf8"), await readlink(`/proc/${pid}/cwd`).catch(() => null));
     if (platform === "darwin") {
       const environ = darwinProcess.environment(pid);
       const read = environ === null ? unreadable : await environSource(environ);
@@ -820,7 +824,8 @@ async function claudeProcessRecord(
   platform: string = process.platform,
   table: () => Promise<ProcessRow[]> = recentProcessTable,
   unreadable: "none" | "throw" = "none",
-): Promise<{ sessionId: string; waitingFor: string | null } | null> {
+  kind: "interactive" | "bg" = "interactive",
+): Promise<{ sessionId: string; waitingFor: string | null; jobId: string | null } | null> {
   if ((platform !== "linux" && platform !== "darwin" && platform !== "win32") || !Number.isSafeInteger(pid) || pid <= 0) return null;
   try {
     const path = join(configDir, "sessions", `${pid}.json`);
@@ -835,7 +840,7 @@ async function claudeProcessRecord(
     const record: unknown = JSON.parse(text);
     if (record === null || typeof record !== "object" ||
       !("pid" in record) || record.pid !== pid ||
-      !("kind" in record) || record.kind !== "interactive" ||
+      !("kind" in record) || record.kind !== kind ||
       !("sessionId" in record) || typeof record.sessionId !== "string" ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(record.sessionId) ||
       !("procStart" in record) || typeof record.procStart !== "string") return null;
@@ -849,7 +854,7 @@ async function claudeProcessRecord(
       if (started === null || (await table()).find((row) => row.pid === pid)?.started !== started) return null;
     } else if (await darwinProcessStart(pid) !== record.procStart.replace(/\s+/g, " ").trim()) return null;
     const waiting = "status" in record && record.status === "waiting" && "waitingFor" in record && typeof record.waitingFor === "string" ? record.waitingFor : null;
-    return { sessionId: record.sessionId, waitingFor: waiting };
+    return { sessionId: record.sessionId, waitingFor: waiting, jobId: "jobId" in record && typeof record.jobId === "string" ? record.jobId : null };
   } catch (error) {
     if (error instanceof UnreadableClaudeRecord) throw error;
     // A closed process, absent/older native store or a torn write gives no identity.
@@ -1222,16 +1227,23 @@ async function inBackgroundSession(pid: number, platform: string): Promise<boole
 export async function claudeAttachSession(
   configDir: string, pid: number, argv: readonly string[] | null | undefined, platform: string = process.platform,
 ): Promise<{ session: string | null } | null> {
+  const attach = await attachClientJob(configDir, pid, argv, platform);
+  return attach === null ? null : { session: attach.job === null ? null : await claudeJobSession(configDir, attach.job) };
+}
+
+/** The job a `claude attach` client opened (claudeAttachedJob), null when none can be told; null for any other Claude. */
+async function attachClientJob(
+  configDir: string, pid: number, argv: readonly string[] | null | undefined, platform: string = process.platform,
+): Promise<{ job: string | null } | null> {
   const attach = claudeAttachArgs(argv);
   if (attach === null) return null;
   if (attach.behindOptions) {
     const background = await inBackgroundSession(pid, platform);
     if (background === true) return null;
     // maybe an attach client: neither its job nor a session an earlier Claude in the pane reported
-    if (background === null) return { session: null };
+    if (background === null) return { job: null };
   }
-  const job = await claudeAttachedJob(configDir, pid, attach);
-  return { session: job === null ? null : await claudeJobSession(configDir, job) };
+  return { job: await claudeAttachedJob(configDir, pid, attach) };
 }
 
 /**
@@ -1324,8 +1336,9 @@ export async function claudeRestoredPaste(
 
 /**
  * What the pane's one Claude process says in its PID record it waits on in its terminal (claudeProcessRecord), or null:
- * none said, no single Claude process, a `claude attach` client (which keeps no record), or a record that cannot be
- * trusted.
+ * none said, no single Claude process, or a record that cannot be trusted. A `claude attach` client keeps no record: the
+ * background worker that runs its job does, with `kind: "bg"` and that job's `jobId` (Claude Code 2.1.330 writes them, and
+ * matches a job's worker by them); only one live worker of the job counts.
  */
 export async function claudeForegroundWaiting(
   processes: readonly { pid: number; name?: string | null; argv0?: string | null; argv?: readonly string[] | null }[],
@@ -1337,8 +1350,13 @@ export async function claudeForegroundWaiting(
   try {
     const dir = await processClaudeConfigDir(only.pid, only.argv ?? [only.argv0 ?? only.name ?? ""], home) || defaultClaudeConfigDir(home);
     // as claudeForegroundSession tells them: `attach` behind options in a background session's own Claude is no client
-    if (await claudeAttachSession(dir, only.pid, only.argv) !== null) return null;
-    return (await claudeProcessRecord(home, only.pid, dir))?.waitingFor ?? null;
+    const attach = await attachClientJob(dir, only.pid, only.argv);
+    if (attach === null) return (await claudeProcessRecord(home, only.pid, dir))?.waitingFor ?? null;
+    if (attach.job === null) return null;
+    const pids = (await readdir(join(dir, "sessions"))).flatMap((name) => /^[1-9]\d*\.json$/.test(name) ? [Number(name.slice(0, -5))] : []);
+    const records = await Promise.all(pids.map((pid) => claudeProcessRecord(home, pid, dir, process.platform, recentProcessTable, "none", "bg")));
+    const workers = records.filter((record) => record?.jobId === attach.job);
+    return workers.length === 1 ? workers[0]!.waitingFor : null;
   } catch {
     return null;
   }

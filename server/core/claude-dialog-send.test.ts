@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, expect, it } from "bun:test";
+import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HerdrError } from "../herdr/client.ts";
+import * as served from "../runtime/capabilities.ts";
 import { createSubmitText } from "./composer.ts";
 
 /**
@@ -20,15 +21,27 @@ let screen: string;
 let processInfoFails: boolean;
 let argv: string[];
 let claude: ReturnType<typeof Bun.spawn>;
+/** What herdr names in front of the pane; the stand-in Claude by default */
+let foreground: () => Record<string, unknown>[];
+/** pane.get's scroll; herdr-core reports none */
+let scroll: Record<string, number> | undefined;
+const others: ReturnType<typeof Bun.spawn>[] = [];
 
 /** The PID record Claude Code 2.1.330 keeps for its process, with what it says it waits on. */
-function record(status: string, waitingFor?: string): void {
-  const stat = readFileSync(`/proc/${claude.pid}/stat`, "utf8");
+function record(status: string, waitingFor?: string, pid = claude.pid, kind: Record<string, string> = { kind: "interactive" }, sessions = join(store, "sessions")): void {
+  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
   const procStart = stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[19];
-  writeFileSync(join(store, "sessions", `${claude.pid}.json`), JSON.stringify({
-    pid: claude.pid, sessionId: "00000000-0000-4000-8000-000000000003", cwd: root, procStart, version: "2.1.330", kind: "interactive",
+  writeFileSync(join(sessions, `${pid}.json`), JSON.stringify({
+    pid, sessionId: "00000000-0000-4000-8000-000000000003", cwd: root, procStart, version: "2.1.330", ...kind,
     status, ...(waitingFor === undefined ? {} : { waitingFor }),
   }));
+}
+
+/** A process the test starts besides the stand-in Claude, ended after the test. */
+function spawned(command: string[], options: Parameters<typeof Bun.spawn>[1] = {}): ReturnType<typeof Bun.spawn> {
+  const child = Bun.spawn(command, { stdin: "ignore", ...options });
+  others.push(child);
+  return child;
 }
 
 beforeEach(() => {
@@ -38,6 +51,8 @@ beforeEach(() => {
   // a background session's own Claude: its argv can name `attach` behind options, and it is no attach client
   claude = Bun.spawn(["sleep", "30"], { env: { ...process.env, CLAUDE_CONFIG_DIR: store, CLAUDE_CODE_SESSION_KIND: "bg" }, stdin: "ignore" });
   argv = ["/usr/bin/claude"];
+  foreground = () => [{ pid: claude.pid, argv, cwd: root }];
+  scroll = undefined;
   calls = [];
   processInfoFails = false;
   socketBefore = process.env["HERDR_SOCKET"];
@@ -58,8 +73,8 @@ beforeEach(() => {
           return;
         }
         const result = request.method === "pane.get"
-          ? { pane: { pane_id: id, workspace_id: "w", tab_id: "w:t1", terminal_id: id, cwd: root, focused: false, revision: 0, agent: "claude", agent_status: "idle" } }
-          : request.method === "pane.process_info" ? { process_info: { foreground_processes: [{ pid: claude.pid, argv, cwd: root }] } }
+          ? { pane: { pane_id: id, workspace_id: "w", tab_id: "w:t1", terminal_id: id, cwd: root, focused: false, revision: 0, agent: "claude", agent_status: "idle", ...(scroll === undefined ? {} : { scroll }) } }
+          : request.method === "pane.process_info" ? { process_info: { pane_id: id, shell_pid: 1, foreground_processes: foreground() } }
           : request.method === "pane.read" ? { read: { text: screen } }
           : request.method === "pane.scroll_info" ? { scroll: { offset: 0, max: 0 } }
           : {};
@@ -71,8 +86,10 @@ beforeEach(() => {
 
 afterEach(async () => {
   listener.stop(true);
-  claude.kill();
-  await claude.exited;
+  for (const child of [claude, ...others.splice(0)]) {
+    child.kill();
+    await child.exited;
+  }
   if (socketBefore === undefined) delete process.env["HERDR_SOCKET"];
   else process.env["HERDR_SOCKET"] = socketBefore;
   rmSync(root, { recursive: true, force: true });
@@ -98,6 +115,69 @@ it.skipIf(!linux)("refuses a Chat send while Claude's PID record says it waits o
     expect((refused as HerdrError).code, waitingFor).toBe("agent_blocked");
     expect(typed(), waitingFor).toEqual([]);
   }
+});
+
+const refusedTyping = async (): Promise<void> => {
+  calls = [];
+  const refused = await submit()("w:p1", "hello from chat", "hello from chat", Date.now()).catch((error: unknown) => error);
+  expect(refused).toBeInstanceOf(HerdrError);
+  expect((refused as HerdrError).code).toBe("agent_blocked");
+  expect(typed()).toEqual([]);
+};
+const sends = async (): Promise<void> => {
+  calls = [];
+  await submit()("w:p1", "hello from chat", "hello from chat", Date.now());
+  expect(typed().some((call) => call.method === "agent.prompt" && call.params["text"] === "hello from chat")).toBeTrue();
+};
+
+it.skipIf(!linux)("reads the record when the only box is above the live screen, where herdr's detection read of a short pane reaches into the history (#4846)", async () => {
+  record("waiting", "dialog open");
+  const box = ["● Earlier answer", "", RULE, "❯ ", RULE, "  ? for shortcuts"];
+  // a 7-row pane: the dialog's rows are the live screen, the box above them an older frame
+  scroll = { offset_from_bottom: 0, max_offset_from_bottom: 30, viewport_rows: 7 };
+  screen = [...box, DIALOG].join("\n");
+  await refusedTyping();
+  // the box at the live bottom is typed into, whatever the record says
+  screen = ["● Reading the project", ...box].join("\n");
+  await sends();
+});
+
+it.skipIf(!linux)("reads the record of the Claude a herdr-core launcher runs below the process in front (#4846)", async () => {
+  const serving = spyOn(served, "capabilities").mockReturnValue(served.HERDR_CORE);
+  try {
+    // herdr-core names only the job's first process: here a launcher, with Claude its child in the same job
+    const launcher = spawned(["bash", "-c", "(exec -a claude sleep 30) & echo $!; wait"], { env: { ...process.env, CLAUDE_CONFIG_DIR: store }, stdout: "pipe" });
+    const { value } = await (launcher.stdout as ReadableStream<Uint8Array>).getReader().read();
+    const child = Number(new TextDecoder().decode(value).trim());
+    foreground = () => [{ pid: launcher.pid, name: "bun", argv: ["bun", "launch.ts"], cwd: root }];
+    screen = DIALOG;
+    record("waiting", "dialog open", child);
+    await refusedTyping();
+    record("idle", undefined, child);
+    await sends();
+  } finally { serving.mockRestore(); }
+});
+
+it.skipIf(!linux)("reads the record of the background worker a `claude attach` client shows, which names the job it runs (#4846)", async () => {
+  // Claude Code 2.1.330 writes a background session's record with `kind: "bg"` and the `jobId` of its job; an attach client keeps none
+  const worker = spawned(["sleep", "30"]);
+  argv = ["claude", "attach", "7c5dcf5d"];
+  screen = DIALOG;
+  record("waiting", "dialog open", worker.pid, { kind: "bg", jobId: "7c5dcf5d" });
+  await refusedTyping();
+  record("idle", undefined, worker.pid, { kind: "bg", jobId: "7c5dcf5d" });
+  await sends();
+  // another job's worker says nothing of this one
+  record("waiting", "dialog open", worker.pid, { kind: "bg", jobId: "0a1b2c3d" });
+  await sends();
+});
+
+it.skipIf(!linux)("reads the record in a relative CLAUDE_CONFIG_DIR, which Claude resolves from its working folder (#4846)", async () => {
+  const relative = spawned(["sleep", "30"], { cwd: root, env: { ...process.env, CLAUDE_CONFIG_DIR: "claude-config" } });
+  foreground = () => [{ pid: relative.pid, argv: ["claude"], cwd: root }];
+  screen = DIALOG;
+  record("waiting", "dialog open", relative.pid);
+  await refusedTyping();
 });
 
 it.skipIf(!linux)("sends as before when the pane's processes cannot be read", async () => {
