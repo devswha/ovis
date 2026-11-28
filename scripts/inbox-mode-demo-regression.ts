@@ -1023,7 +1023,9 @@ try {
             const wideRows = await page.locator(".mode-inbox .inbox-item").evaluateAll((items) => items.map((item) => {
               const r = item.querySelector(".inbox-row")!.getBoundingClientRect();
               const a = item.querySelector(".inbox-avatar")!.getBoundingClientRect();
-              return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, radius: getComputedStyle(item.querySelector(".inbox-row")!).borderRadius, avatar: [a.width, a.height, a.left - r.left], nameSize: getComputedStyle(item.querySelector(".inbox-name")!).fontSize, wordsSize: getComputedStyle(item.querySelector(".inbox-words")!).fontSize };
+              const time = item.querySelector(".inbox-line > time.inbox-time")?.getBoundingClientRect();
+              const state = item.querySelector(".inbox-state")?.getBoundingClientRect();
+              return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, radius: getComputedStyle(item.querySelector(".inbox-row")!).borderRadius, avatar: [a.width, a.height, a.left - r.left], nameSize: getComputedStyle(item.querySelector(".inbox-name")!).fontSize, wordsSize: getComputedStyle(item.querySelector(".inbox-words")!).fontSize, time: time && time.width > 0 ? { right: time.right, bottom: time.bottom } : null, stateLeft: state && state.width > 0 ? state.left : null };
             }));
             near(wideRows[0]!.top - add.bottom, 16, 2, "the first row under the top controls");
             wideRows.forEach((item, index) => {
@@ -1032,6 +1034,8 @@ try {
               assert.equal(item.radius, "12px");
               assert.deepEqual(item.avatar, [32, 32, 8], "the mark is 32px, 8px inside the row");
               assert.deepEqual([item.nameSize, item.wordsSize], ["14px", "13px"]);
+              assert.ok(item.time !== null, `wide row ${index} draws its time at the end of the name's line`);
+              if (item.stateLeft !== null) assert.ok(item.time.right <= item.stateLeft, `wide row ${index}'s time ends before its state's mark: ${item.time.right} > ${item.stateLeft}`);
               if (index > 0) near(item.top - wideRows[index - 1]!.bottom, 4, 1, "between two rows");
             });
 

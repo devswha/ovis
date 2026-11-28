@@ -2652,10 +2652,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     rail's end and the column's own edge), with
     `--radius-lg`: the mark at `--avatar-size`, `--space-2-5` before the name (`--fs-md`) over
     the words (`--fs-sm`), the state's mark at the row's end on its middle, `--space-2` inside
-    the row's box. A wide row draws its time at the end of the name's line too, as a narrow row
-    and the Agents list do, so a glance down the list says which agent has waited longest; its
-    tooltip says the name and the words whole and the time, with the full local time. The open
-    thread's row has the sidebar's selection
+    the row's box. A wide row draws its time at the end of the name's line, as a narrow row
+    does (the Agents list and the Codex app's sidebar draw each row's age on the row too), so a
+    glance down the list says which agent has waited longest; its tooltip says the name and
+    the words whole and the time, with the full local time. The open thread's row has the
+    sidebar's selection
     (`--side-selected`, the name at `--fw-selected`, `aria-current="true"`), with no border,
     stripe or outline; no row is open while no agent is chosen. A row fills with the sidebar's
     `--side-hover` under a hovering pointer and, under a press, half way from `--side-selected`
