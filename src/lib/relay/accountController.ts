@@ -36,7 +36,8 @@ import type { LeaveOutcome } from "../account/hostedSignIn.ts";
 import { leaveAccount } from "../account/leave.ts";
 import { nativeSignIn, nativeSignInAvailable, SignInNotWanted } from "../account/native.ts";
 import { deviceOs, thisDeviceLabel } from "../phone.ts";
-import { t } from "../i18n.ts";
+import { currentLocale, t } from "../i18n.ts";
+import { availableFrom } from "../account/methodSettling.ts";
 import { DEVICES_CHANGED_EVENT } from "../useRelay.ts";
 import { indexedDeviceStore, type SavedDevice, type EnrollmentState, type RelayDevice, type RelayDeviceStore } from "./device.ts";
 import { offerOf } from "./shellState.ts";
@@ -139,8 +140,14 @@ export class ConsentChangedError extends Error {
  */
 export type PairingConsent = AccountSession | null | undefined;
 function signInFailure(error: unknown): string {
-  if ((error instanceof SignInError ? error.code : error) === "denied") return t("The sign-in was cancelled.");
+  const code = error instanceof SignInError ? error.code : error;
+  if (code === "denied") return t("The sign-in was cancelled.");
+  if (code === "email_unavailable") return t("Could not check your email. Try again.");
   return t("The sign-in did not finish. Try again.");
+}
+/** A `403 method_settling`'s refusal, said as when it is available; null for any other error. */
+function settlingFailure(error: unknown): string | null {
+  return error instanceof AccountServiceError && error.code === "method_settling" && error.until !== null ? availableFrom(t, currentLocale(), error.until) : null;
 }
 
 
@@ -894,7 +901,7 @@ export function createAccountController(mount: RelayShellMount, view: {
       if (error instanceof SignedOutError || error instanceof AnotherAccountError) await refresh(true);
       if (error instanceof SignedOutError) return null;
       if (error instanceof AnotherAccountError) return t("You signed in to another account. No device was signed out.");
-      return t("Could not sign out every device. Try again.");
+      return settlingFailure(error) ?? t("Could not sign out every device. Try again.");
     }).finally(() => { if (deletion === mine) deletion = undefined; });
   };
 
@@ -902,7 +909,7 @@ export function createAccountController(mount: RelayShellMount, view: {
     if (error instanceof AccountServiceError && error.code === "reauth_required") return t("To delete your account, sign out, sign in again, then delete it within ten minutes.");
     if (error instanceof AccountServiceError && error.code === "subscription_active") return t("Cancel your subscription first, then delete the account.");
     if (error instanceof AnotherAccountError) return t("You signed in to another account. Nothing was deleted.");
-    return t("The account could not be deleted. Try again.");
+    return settlingFailure(error) ?? t("The account could not be deleted. Try again.");
   };
   /** PCR-1: a PC's removal wants the same fresh own sign-in: null when none was stored for `from`'s account. */
   const freshSignIn = accountService !== null && nativeSignInAvailable()
@@ -1686,6 +1693,6 @@ export function createAccountController(mount: RelayShellMount, view: {
   return { dispose, get state() { return accountView; }, /** this page's copy of its account's list, or null */ get list() { return lists; }, get directory() { return directory; }, get listKey() { return listKey(); }, /** the account, list and key in it that listKey is this device's for: read with it */ get listScope() { return listKey() === null || lists === null ? null : scopeOf(lists.view()); }, listHolds, listSays, listTimeOver, readList, sessionOpened, takePlace, get knowsList() { return knowsList(); },
     get openKey() { return accountView?.kind === "signed-in" && listedFor?.epoch === generation ? listedFor.openKey : null; },
      get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, storedAccount, signIn, signInAgain, chooseAccountHint, signOut, leave, deleteAccount, signOutEverywhere, freshSignIn, prepare, enroll, cancelEnrollment, armRefresh,
-    methods: methods.methods, addMethod: (provider: AccountProvider, shown: AccountSession, pc?: string) => methods.addMethod(provider, shown, pc === undefined ? undefined : { pc }), removeMethod: methods.removeMethod, signInAgainForMethod: methods.signInAgain,
+    methods: methods.methods, addMethod: (provider: AccountProvider, shown: AccountSession, pc?: string) => methods.addMethod(provider, shown, pc === undefined ? undefined : { pc }), removeMethod: methods.removeMethod, notMe: methods.notMe, signInAgainForMethod: methods.signInAgain,
     get methodsChange() { return methods.last; }, get hintMethodsChange() { return methods.last?.account === shownFor?.account ? methods.last : undefined; } };
 }

@@ -231,6 +231,21 @@ export function pcAlertKey(machine: Pick<Machine, "name" | "relay" | "server_id"
 
 /** GET /api/machines: with ?verify_source_boot=<id>, also that PC's freshly proved boot id */
 export interface MachineRoster { machines: Machine[]; verified_source_boot?: { machine_id: string; boot_id: string } }
+
+/** POST /api/machines/:machine_id/forward: one TCP port on the SSH PC's localhost. */
+export interface MachineForwardRequest { readonly port: number; readonly bind?: string }
+/** The listener on the requested local loopback address (default 127.0.0.1), not a public URL. */
+export interface MachineForwardResponse { readonly url: string }
+
+/** An explicit local listener address, never a name to resolve or a wildcard. */
+export function isForwardBind(host: string): boolean {
+  return host === "[::1]" || /^127(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(host);
+}
+
+/** A hostname a browser uses for loopback. `localhost` names use the default listener. */
+export function isForwardLoopbackHost(host: string): boolean {
+  return isForwardBind(host) || /^(?:[a-z0-9-]+\.)*localhost$/i.test(host);
+}
 /**
  * The herdr behind a PC, as its bridge can serve it. terminal_attach is false on a Windows
  * host: herdr has no `terminal attach` there yet (herdrdev/herdr#4821), and it is false on

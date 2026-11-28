@@ -68,6 +68,7 @@ const ROUTES: Readonly<Record<string, RowAction>> = {
   "POST /api/account/enroll": { action: "enroll" },
   "POST /api/account/relay-account": { action: "relay_account" },
   "POST /api/account/one-press": { action: "local_control" },
+  "POST /api/account/move": { action: "local_control" },
   "POST /api/account/pc-proof": { action: "local_control" },
   "POST /api/account/ssh-add": { action: "local_control" },
   "POST /api/alerts/webhook": { action: "webhook" },

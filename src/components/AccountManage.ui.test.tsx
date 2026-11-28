@@ -429,6 +429,16 @@ it("PCR-1: a removal that wants a fresh sign-in closes the confirm, and Sign in 
     expect(textOf(one(root, 'div[data-account-id="true"]'))).toBe("Account IDacct_0123456");
   });
 
+  it("offers a sign-in whose own way in still settles no PC Remove, sign-out of every device or account deletion", async () => {
+    const until = new Date(Date.now() + 5 * 3_600_000).toISOString();
+    const root = await openSheet({ ...hosted(async () => ({ left: true, message: null })), offered: async () => [],
+      methods: async () => ({ identities: [{ provider: "google", added_at: ago(60 * 24 * 30) }, { provider: "github", added_at: ago(60), how: "email", deniable_until: until }], history: [] }) } as ReturnType<typeof hosted>);
+    await act(async () => {});
+    expect(rows(root, "account-pcs")).toEqual(["OnlineDesk", "OfflineDead box"]);
+    expect(root.querySelector('button[data-action="sign-out-everywhere"]')).toBeNull();
+    expect(root.querySelector('button[data-action="delete-account"]')).toBeNull();
+  });
+
   it("signs every device out from Manage account after one short confirm that says PCs stay", async () => {
     let asked = 0;
     const root = await openSheet(hosted(async () => ({ left: true, message: null }), async () => { asked++; return null; }));

@@ -50,12 +50,13 @@ export function offlinePc(pc: { readonly last_seen_at: string | null; readonly a
  * throw keeps its confirm up with the error. `pcHere` false: no PC is open on this page (the hosted app's start screen),
  * so no other device is read or offered, only this one's own row.
  */
-export function AccountManageLists({ account, watching, pcHere = true, onLeave }: { readonly account: string; readonly watching: boolean; readonly pcHere?: boolean; readonly onLeave?: (shown: Shown) => Promise<void> }) {
+/** `settling`: this sign-in's own way in was just added by its email, and the service removes none of the account's PCs for it yet. */
+export function AccountManageLists({ account, watching, pcHere = true, settling = false, onLeave }: { readonly account: string; readonly watching: boolean; readonly pcHere?: boolean; readonly settling?: boolean; readonly onLeave?: (shown: Shown) => Promise<void> }) {
   return (
     <>
       <ListAlarmNotice account={account} />
       <AccountDevices account={account} pcHere={pcHere} {...(onLeave ? { onLeave } : {})} />
-      <AccountPcs account={account} watching={watching} />
+      <AccountPcs account={account} watching={watching} settling={settling} />
     </>
   );
 }
@@ -146,7 +147,7 @@ function PairedAccountDevices({ account, pcHere, onLeave }: { readonly account: 
   );
 }
 
-function AccountPcs({ account, watching }: { readonly account: string; readonly watching: boolean }) {
+function AccountPcs({ account, watching, settling }: { readonly account: string; readonly watching: boolean; readonly settling: boolean }) {
   const t = useT();
   const service = useMemo(() => new AccountService({ store: indexedAccountStore }), []);
   const [pcs, setPcs] = useState<readonly DirectoryPc[] | "failed" | null>(null);
@@ -240,7 +241,7 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
                 {post !== undefined && <button type="button" className="btn account-head-btn" data-action="add-pc" onClick={() => setAdding({ pc, post })}>{t("Add|account pc")}</button>}
                 {/* On an account with no list, a PC in use lists itself again on its next pull: only an offline one is
                     offered, whatever its age. A PC the account's list holds comes back only as a new PC: on or off */}
-                {(off || pc.by_list === true) && !watching && <button type="button" className="btn account-head-btn" data-action="remove-pc" onClick={() => setAsked({ ...pc, held: heldRemoval(account, pc.server_id) })}>{t("Remove")}</button>}
+                {(off || pc.by_list === true) && !watching && !settling && <button type="button" className="btn account-head-btn" data-action="remove-pc" onClick={() => setAsked({ ...pc, held: heldRemoval(account, pc.server_id) })}>{t("Remove")}</button>}
               </li>
             );
           })}

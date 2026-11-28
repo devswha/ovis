@@ -348,8 +348,13 @@ export class BrowserTabs {
    * An agent tab for `owner` on `url`: its id once the first address it commits is allowed, or null
    * when it is refused, fails to load or the tabs are at their limit (and then it is gone).
    */
-  async openFor(owner: string, url: string): Promise<number | null> {
-    const id = this.open(url, "agent", owner);
+  openFor(owner: string, url: string): Promise<number | null> {
+    return this.openLoaded(url, "agent", owner);
+  }
+
+  /** A tab on `url` once it loaded, as `openFor`: a person's own for a web link they clicked (main.ts, Browser for links). */
+  async openLoaded(url: string, profile: BrowserProfile, owner: string | null = null): Promise<number | null> {
+    const id = this.open(url, profile, owner);
     const tab = id === null ? undefined : this.tabs.get(id);
     if (!tab) return null;
     const contents = tab.view.webContents;

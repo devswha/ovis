@@ -233,7 +233,8 @@ function ProviderAccounts({ id, providers, removed, onLocalLogin, onFollow }: { 
   </>;
 }
 
-function stateLine(entry: AgentsPageRow, read: boolean, t: Translate): { text: string; tone: "ok" | "warn" | "none" | "dim" } {
+function stateLine(entry: AgentsPageRow, read: boolean, usesGeminiApiKey: boolean, t: Translate): { text: string; tone: "ok" | "warn" | "none" | "dim" } {
+  if (usesGeminiApiKey) return { text: t("Using a Gemini API key"), tone: "dim" };
   const state = signInState(entry.provider, entry.accounts, read, entry.missing);
   switch (state.kind) {
     case "unknown": return { text: t("Installed"), tone: "dim" };
@@ -262,12 +263,13 @@ function AgentItem({ entry, open, onToggle, allProviders, removed, read, limitsO
 }) {
   const t = useT();
   const { agent, provider, accounts } = entry;
-  const line = stateLine(entry, read, t);
+  const usesGeminiApiKey = agent.state.auth_mode === "gemini-api-key";
+  const line = stateLine(entry, read, usesGeminiApiKey, t);
   const again = read && !watching ? accounts.filter(canSignInAgain) : [];
   // an account another tool recorded is listed here, but the agent itself is still to be signed in
   const signedIn = accounts.filter(isSignIn);
   const detailsId = `agents-details-${agent.id}`;
-  const action = open || watching || !read || provider === null || (entry.missing !== null && signedIn.length === 0) ? null
+  const action = usesGeminiApiKey || open || watching || !read || provider === null || (entry.missing !== null && signedIn.length === 0) ? null
     : again.length === 1 ? <UsageSignInAgain usage={again[0]!} onStarted={onLocalLogin} onFollow={onFollow} />
       : signedIn.length === 0 ? <button type="button" className="btn agents-row-action" aria-label={t("Sign in to {agent}", { agent: agent.name })} onClick={() => provider === "claude" || provider === "codex" ? onFollow({ provider, default: true }) : onAddAccount(provider)}><KeyRound aria-hidden="true" /><span className="agents-row-action-label">{t("Sign in")}</span></button>
         : null;
@@ -291,7 +293,7 @@ function AgentItem({ entry, open, onToggle, allProviders, removed, read, limitsO
       </div>
       {open && <div className="agents-details" id={detailsId}>
         {agent.state.meets_min_version === false && agent.min_version !== null && <p className="agents-detail-note settings-condition">{t("Ovis needs {version} or later.", { version: agent.min_version.version })}</p>}
-        {provider !== null && (read ? <>
+        {!usesGeminiApiKey && provider !== null && (read ? <>
           {entry.missing !== null && <p className="agents-detail-note settings-condition" role="status">{t("Ovis reads {agent}'s sign-in from the desktop keyring with {command}, which this PC does not have. Install it (the libsecret-tools package on Debian and Ubuntu, libsecret on Fedora and Arch), then open this page again.", { agent: agent.name, command: entry.missing })}</p>}
           <div className="agents-detail-head">
             <span>{t("Accounts")} <span className="usage-account-count">{accounts.length}</span></span>
@@ -299,7 +301,7 @@ function AgentItem({ entry, open, onToggle, allProviders, removed, read, limitsO
           </div>
           {(entry.missing === null || accounts.length > 0) && <ProviderAccounts id={provider} providers={allProviders} removed={removed} onLocalLogin={watching ? undefined : onLocalLogin} onFollow={onFollow} />}
         </> : <p className="agents-detail-note" role="status">{limitsOn ? t("Loading…") : t("Turn on plan limits to see accounts.")}</p>)}
-        {provider === null && signIn !== null && (local && signIn.provider === null
+        {!usesGeminiApiKey && provider === null && signIn !== null && (local && signIn.provider === null
           ? <p className="agents-detail-note">{signIn.in_agent !== null ? t("{agent} signs in inside the agent ({how}). Ovis cannot read that sign-in, so it shows none here.", { agent: agent.name, how: signIn.in_agent }) : t("Ovis cannot read {agent}'s sign-in, so it shows none here.", { agent: agent.name })}</p>
           : !local && signIn.provider !== null ? <p className="agents-detail-note">{t("Accounts are read on the PC Ovis runs on: they are under Other accounts.")}</p> : null)}
         {(OWN_ROWS.has(agent.id) || (isBrowserToolAgent(agent.id) && local)) && <div className="settings-card agents-detail-card"><AgentOwnRows agentId={agent.id} /></div>}

@@ -429,7 +429,8 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await accountQr.getByText("This PC is in your account.", { exact: true }).waitFor();
     assert.ok(!(await accountQr.innerText()).includes("(fixture)"), "the tab does not expose an account id");
     assert.equal(await accountQr.getAttribute("data-account"), "mine", "the part says the PC is in this browser's account");
-    assert.equal(await accountQr.getByRole("button").count(), 0, "a PC that is in an account offers no code to press for");
+    // its address line's copy button is the only one: it copies, and asks the PC for nothing
+    assert.deepEqual(await accountQr.getByRole("button").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label"))), ["Copy address"], "a PC that is in an account offers no code to press for");
     assert.equal(await accountQr.getByRole("img", { name: "QR code that opens this PC in the Ovis app", exact: true }).count(), 1, "but the QR code that opens it in the Ovis app, signed in to that account");
     assert.equal(await relayTab.getByRole("button", { name: /^(Open the account|Add this PC to my account)$/ }).count(), 0, "and nothing says to add this PC to the account any more");
     assert.equal(await accountQr.evaluate((node) => node.contains(document.activeElement)), true, "the answered notice hands the focus to what the part says now");
@@ -453,7 +454,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     const phonePart = accountQr.getByTestId("connect-phone-scan");
     await phonePart.getByRole("img", { name: "QR code that opens this PC in the Ovis app", exact: true }).waitFor();
     assert.equal(await relayTab.getByText("Your account's PCs", { exact: true }).count(), 0, "the relay tab lists no account PCs");
-    assert.deepEqual(await accountQr.getByRole("button").allInnerTexts(), ["Get a pairing code"], "a code only on a press");
+    assert.deepEqual(await accountQr.getByRole("button").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label") ?? node.textContent?.trim())), ["Get a pairing code", "Copy address"], "a code only on a press, and this PC's address to copy");
     assert.equal(await relayQr.count(), 0, "and no relay pairing QR code");
     assert.equal(await relayTab.getByRole("switch").count(), 0, "online and in the account, the tab has nothing to switch");
     assert.equal(await relayTab.getByTestId("pair-with-code").count(), 0, "no second Pair with a code");

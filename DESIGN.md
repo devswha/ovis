@@ -894,6 +894,10 @@ floor of `--fs-meta` holds at scale 1 and only grows with it.
   link to the system default; the row follows the system's own default-browser list instead, and
   only for web links (`kind` link): sign-ins, Ovis pages and mailto stay with the system default.
   The row is missing where the browser itself shows the link (a browser tab, the phone apps).
+- Antigravity (Settings → Agents) distinguishes API-key mode from account sign-in, as the
+  [Codex app's profile menu](https://developers.openai.com/codex/auth#check-authentication-or-sign-out)
+  does. Ovis uses the existing agent status line, hides the OAuth controls in that mode, and
+  does not present the API key as a subscription.
 - New agents (Settings → Agents): `claudeLaunchMode` (`--permission-mode`: `acceptEdits`,
   `auto`, `plan`, `dontAsk`, `bypassPermissions`) and `codexLaunchMode` (`readOnly`, `auto`,
   `fullAccess`, each a `--sandbox` and `--ask-for-approval` pair) become the `agent.args` the new
@@ -1861,9 +1865,22 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   workspace, tab and pane order. **Activity** pins a blocked agent on top and orders the rest by
   their most recent state change (herdr's `state_change_seq`, read from the snapshot's `agents`),
   within each PC, so the agent just worked in stays on top while it runs and after it finishes.
+  With agents on more than one PC, it orders them all together: the blocked agents of every PC
+  first, then by when this server saw each agent's state change (`changed_at`,
+  `server/agent-changes.ts`), kept in `agent-changes.json`, so a reload or a restart keeps the
+  order and every browser shows the same one. A change made while the server was away or the PC
+  unreachable is dated when its raised counter is first seen again; an agent with no time yet keeps
+  its PC's own Activity order after the dated ones. Do not compare two PCs' `state_change_seq`:
+  each herdr counts from an origin of its own. Do not keep this order in the browser: a reload
+  loses it, and two browsers disagree. With one PC, herdr's counters alone order the list.
   It changes only the Agents list; herdr's order and the workspace rows stay as they are.
   A raw counter rollback clears synthetic recency even on older bridges without an epoch.
   This ordering correction never changes finish identities or read records.
+- Screen readers can browse the named status badges and the transcript without their DOM changes
+  speaking. Following T3 Code, separate polite regions announce completed replies in the open chat
+  and transitions to input needed or done in other panes, with the agent and workspace named.
+  Chat reads at most 300 characters of each new final answer. Opening a thread or loading older
+  rows does not announce their contents; the composer's own open-pane status stays in place.
 - Appearance's **Group agents by state** (off by default, kept on this device, as the sidebar
   filter is) moves the Agents list above the workspaces and splits its unpinned rows into
   groups: **Needs you** (blocked), **Working** (BG included), **Done** (a finish not read yet)
@@ -5223,8 +5240,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Add a connection (`components/ConnectPhoneDialog.tsx`, a `.modal`, a bottom sheet on a phone) follows
   herdr's own **Add a machine** sheet: one tab per way across the top (the `.segmented` primitive,
   as FilesDialog's tabs), and under each the things that way found, each with one action, then a
-  field to type one. **SSH** (only for the PC's owner on its own page) lists the PCs saved in herdr
-  (**Connect**), the server's ssh config hosts and its Tailscale login's PCs, one row each: the name,
+  field to type one. If the PC's own window is signed in to a different account, the relay tab keeps
+  this hierarchy: one line explaining the mismatch, **Move this PC to this account** as the primary
+  action, then a quiet button for the PC's existing sign-in path. **SSH** (only for the PC's owner
+  on its own page) lists the PCs saved in herdr (**Connect**), the server's ssh config hosts and its
+  Tailscale login's PCs, one row each: the name,
   the address dim and ellipsized (under the name on a phone), a neutral pill for where it was found
   (herdr, ssh config, Tailscale), then **Add** or a quiet **Added** in the done green; **Add** and the
   typed address close Settings and open the PC setup dialog with the address filled in. **Tailscale**
@@ -6584,3 +6604,5 @@ command opens on a typed address; no code is copied.
 ## Touch prompt suggestions
 
 The empty composer follows Claude Code's [prompt suggestion model](https://code.claude.com/docs/en/interactive-mode): accept into an editable draft, then send separately. A phone has no Tab key: Settings → Chat → Composer buttons → Suggestion (off by default) adds a chip above the box that takes it. The grey words themselves never take a tap, with the chip on or off: that tap is how the box is focused to type one's own reply, and a suggestion of normal length covers most of the first line, so taking it there filled the box on most taps meant to start typing (#3807). An explicit action takes the suggestion, as Tab does in Claude Code's own input; focusing the box does not. Tab and the chip share the same acceptance function. A suggestion that exceeds the message limit leaves the draft unchanged and shows the limit in the existing alert. gjc's `promptSuggestions` and omp's `composer.predictions` draw their suggestion the same way, as ghost text in the theme's dim color in their empty box, and the composer offers it as it offers Claude's; one they cut short at the box's edge (ending in `…`) is not offered, since only part of it would go into the draft. Typed text there must never read as a suggestion, so omp's is offered only in the `dim` of one of its built-in themes and in no color any of them types in; the dim `Queueing` header of a queue draft is not offered either. The theme on screen is not known, so a custom omp theme whose text color is exactly one of those dim colors is a known limit: its typed text reads as a suggestion. No code or visual assets are copied.
+
+On a touch screen a swipe forward across the empty box also accepts the suggestion, with no setting: one finger, at least 48px along the line (left to right in a left-to-right box, mirrored in a right-to-left one), from a point at least 24px from either screen edge so Android's back gesture stays the system's. The stroke must be horizontal from its first move (more than 1.5 times as far sideways as up or down once it leaves a 10px rest area) and must leave that area within 400ms. A stroke that starts as a scroll, goes backward or rests first (a long press: the caret loupe, a selection, the paste menu) stays what it began as even when it later drifts sideways. While text anywhere is selected the stroke is the selection's, and a pane that may only be watched takes nothing, by swipe, Tab or chip. It acts through the same acceptance function as Tab, so the message limit and an open IME composition still apply, and it fires as soon as the stroke qualifies. Touch listeners are passive and never prevent the default, so a tap still places the caret, a vertical drag still scrolls a tall box and a long press still selects; once the box has text, or no suggestion is offered, the swipe does nothing. Like the chip, the accepted text focuses the box when its pane is active (raising the keyboard) and leaves the caret at the end. Nothing is added to the box to show the swipe: the composer stays minimal, and the opt-in chip remains the visible action (also for a screen reader). The drawer's swipe (`edgeSwipe.ts`) ignores strokes that start on a text field, so the two never both act. It is Claude Code's Tab (or Right Arrow) acceptance moved to touch, and its gesture follows Gboard's Smart Compose, where a swipe right across the grey inline suggestion accepts it, the touch counterpart of the right-arrow acceptance in Warp's Next Command and fish's autosuggestions. None of the listed coding-agent apps has a touch gesture for this: Paseo and T3 Code show no ghost-text suggestion in their composers, and the Claude and ChatGPT apps offer suggested follow-ups as tap chips, which is what the opt-in suggestion chip already does. No code is copied.

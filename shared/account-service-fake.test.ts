@@ -1163,3 +1163,37 @@ describe("PC invites (POST /v1/pc-invites, /v1/pc-invites/redeem)", () => {
     expect((await list(service.issueToken("acct_1"))).body.invites).toEqual([]);
   });
 });
+
+describe("what a PC moving between accounts reads of the service", () => {
+  async function proved(service: FakeAccountService, machine: ReturnType<typeof pc>, path: string, body: Record<string, unknown>) {
+    const challenge = await (await service.fetch(post("/v1/pc/challenge", { server_id: machine.serverId, public_key: machine.publicKey }))).json() as { challenge_id: string; frame: string };
+    const proof = answerServerChallenge(challenge.frame, machine.keys.secretKey, { server_id: machine.serverId, role: "account", connection_id: challenge.challenge_id });
+    return service.fetch(post(path, { server_id: machine.serverId, challenge_id: challenge.challenge_id, proof, ...body }));
+  }
+
+  test("an admit repeated within ten minutes answers the admission it made, also after the PC took it", async () => {
+    const service = new FakeAccountService();
+    service.opensAll = true;
+    service.completions = true;
+    const token = service.issueToken("acct_1", { twoStep: true });
+    const machine = pc();
+    const send = (method: string, path: string, body?: unknown) => service.fetch(new Request(BASE + path, { method,
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }));
+    expect((await send("PUT", `/v1/pcs/${machine.serverId}`, { label: "pc", public_key: machine.publicKey, relay: "wss://relay.ovis.sh" })).status).toBe(200);
+    const first = await (await send("POST", `/v1/pcs/${machine.serverId}/admit`, {})).json() as { admitted_at: string };
+    expect((await proved(service, machine, "/v1/pc/admission", { account: "acct_1", with_listing_id: true })).status).toBe(200);
+    const admitted = async () => (await (await proved(service, machine, "/v1/pc/mailbox", { account: "acct_1", with_listing_id: true })).json() as { listing_admitted: boolean }).listing_admitted;
+    expect(await admitted()).toBe(true);
+    const again = await send("POST", `/v1/pcs/${machine.serverId}/admit`, {});
+    expect(again.status).toBe(200);
+    expect((await again.json() as { admitted_at: string }).admitted_at).toBe(first.admitted_at);
+    expect(await admitted()).toBe(true);
+  });
+
+  test("a service that issues no relay pass answers 503 relay_pass_unavailable", async () => {
+    const service = new FakeAccountService();
+    const response = await proved(service, pc(), "/v1/pc/relay-pass", { account: "acct_1", pass_versions: [1, 2] });
+    expect(response.status).toBe(503);
+    expect((await response.json() as { error: { code: string } }).error.code).toBe("relay_pass_unavailable");
+  });
+});

@@ -46,9 +46,10 @@ import { linksSomewhere, readLink } from "./lib/deepLink.ts";
 import { pageSearch } from "./lib/pageQuery.ts";
 import { copyText } from "./lib/clipboard.ts";
 import { CommandPalette } from "./components/CommandPalette.tsx";
-import { AppLayoutContext, appLayoutOf, MachineContext } from "./lib/machineContext.tsx";
+import { AppLayoutContext, appLayoutOf, MachineContext, MachineRosterContext } from "./lib/machineContext.tsx";
 import { addPcExit, addPcMoreItem, MachineActionBanner, MachineSidebar } from "./components/MachineSidebar.tsx";
 import { SidebarResizer } from "./components/SidebarResizer.tsx";
+import { BackgroundAgentAnnouncer } from "./components/BackgroundAgentAnnouncer.tsx";
 import { type PanePresence, useSidebarActivityState } from "./lib/sidebarActivity.tsx";
 import { useAgentStateStamping } from "./lib/useAgentStateSince.ts";
 import { FilePanelResizer } from "./components/FilePanelResizer.tsx";
@@ -90,6 +91,7 @@ import { RelayNotice } from "./components/RelayNotice.tsx";
 import { InstallHint } from "./components/InstallHint.tsx";
 import { DevicePairedNotice, DeviceRemovedNotice } from "./components/DevicePairedNotice.tsx";
 import { NewPcNotices } from "./components/NewPcNotices.tsx";
+import { JoinedNotice } from "./components/JoinedNotice.tsx";
 import { UnconfirmedPcNotices } from "./components/UnconfirmedPcNotices.tsx";
 import { AccountJoinRequests } from "./components/AccountJoinRequests.tsx";
 import { hostedAccountItems } from "./components/AccountHead.tsx";
@@ -109,7 +111,7 @@ import { folderQueryFor } from "./lib/paletteFolders.ts";
 import { FileViewer } from "./components/FileViewer.tsx";
 import { WebPanel } from "./components/WebPanel.tsx";
 import { BrowserSidePanel } from "./components/BrowserSidePanel.tsx";
-import { useDesktopBrowser, useShownBrowserTab } from "./lib/desktopBrowser.ts";
+import { useBrowserLinkTabs, useDesktopBrowser, useShownBrowserTab } from "./lib/desktopBrowser.ts";
 import { BrowserPanel } from "./components/BrowserPanel.tsx";
 import { BrowserTabsGroup } from "./components/BrowserTabsGroup.tsx";
 import { WebPanelContext } from "./lib/webPanel.ts";
@@ -531,6 +533,8 @@ export function App() {
     if (viewing !== null && fileDocked) closeFile();
     setBrowserTab(tab);
   };
+  // a web link main opened in the built-in browser (Settings → Browser for links) is shown there once main lists it
+  useBrowserLinkTabs(browserTabs !== null && filePanelAvailable && !inMode && locked === false, (id) => { openBrowserTab("new"); setOpeningTab(id); });
   const browserShown = browserTabs !== null && filePanelAvailable && !inMode && (browserTab === "new" || shownBrowserTab !== null) && webPage === null && !(viewing !== null && fileDocked);
   const panePresence = useCallback((): PanePresence => !(locked === false && linkLanded && pendingFile.current === null && pendingCreate.current === null
     && !drawerOpen && !settingsOpen && !newSessionOpen
@@ -984,11 +988,13 @@ export function App() {
   );
 
   return (
+    <MachineRosterContext.Provider value={machinesRef}>
     <MachineSessionsProvider sessions={machineSessions} machineIds={machines.map((machine) => machine.id)}><MachineContext.Provider value={selectedMachineId}><AppLayoutContext.Provider value={appLayout}><div className={`app${(inMode ? !inboxWide : sidebarCollapsed) ? " sidebar-collapsed" : ""}${inMode ? " is-inbox" : ""}${listScreen ? " is-inbox-list" : ""}${inboxWide ? " is-inbox-wide" : ""}${inboxWide && !inbox.shown && selectedPane !== null && !chatShown ? " is-inbox-terminal" : ""}${tabRoom ? " is-inbox-tab-room" : ""}`} style={sidebarWidth === null && filePanelWidth === null ? undefined : {
       ...(sidebarWidth === null ? {} : { "--sidebar-user-w": `${sidebarWidth}px` }),
       ...(filePanelWidth === null ? {} : { "--file-panel-user-w": `${filePanelWidth}px` }),
     } as CSSProperties}>
       {selectedPane !== null && !guideShown && !inbox.shown && <h1 className="visually-hidden">{selectedTitle}</h1>}
+      <BackgroundAgentAnnouncer machines={sidebarMachines} openMachineId={selectedMachineId} openPaneId={presentedPaneId} />
       {listScreen || inboxWide ? null : <header className={`app-header is-zoned${chatShown ? " is-chat" : ""}${stripInHeader && !phoneTabRow ? " has-tab-row" : ""}${phoneTabRow && stripInHeader ? " has-phone-tabs" : ""}`}>
         <div className="header-side">
           {wideScreen && !sidebarCollapsed && !inMode && <SidebarBrand dark={resolvedTheme === "dark"} />}
@@ -1209,6 +1215,7 @@ export function App() {
         {pairedNotices.length > 0 && <DevicePairedNotice events={pairedNotices} onDismiss={dismissPairedNotice} onOpen={(event) => { dismissPairedNotice(event); setSettingsLinkPage("devices"); setSettingsOpen(true); }} />}
         {deviceNotices}
         {health !== null && <NewPcNotices enabled={machineSessions.peek("local")?.socket?.accountOpensAll() === true} ownWindowOf={ownWindowHere(health.auth) ? health.web_ui?.server_id : undefined} signIn={accountSignedIn ?? undefined} />}
+        {health !== null && <JoinedNotice />}
         {/* NewPcNotices above tells of a PC confirmed here; the hosted app's sign-in again comes back to this page, which goes on with the add */}
         {health !== null && <UnconfirmedPcNotices enabled={machineSessions.peek("local")?.socket?.accountOpensAll() === true} tellConfirmed={false}
           onSignInAgain={hostedSignIn?.signInAgain} />}
@@ -1499,5 +1506,6 @@ export function App() {
         view={terminalPeek !== null ? "terminal" : view} actions={actions} watching={viewOnly(selectedMachineId)} inboxMode={inMode} />
       <MarkdownLinkMenu />
     </div></AppLayoutContext.Provider></MachineContext.Provider></MachineSessionsProvider>
+    </MachineRosterContext.Provider>
   );
 }

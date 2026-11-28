@@ -3,7 +3,8 @@ import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { freeAgentName } from "./agent-name.ts";
 import { launchedAgents } from "./launched-agents.ts";
-import { isShellAgentKind, startShellAgent, type ShellAgentLocator } from "./shell-agent.ts";
+import { isShellAgentKind, shellAgentExecutable, startShellAgent, type ShellAgentLocator } from "./shell-agent.ts";
+import { cmdLauncher } from "./approvals/cmd.ts";
 import { agentStart, HerdrError, paneGet, sessionSnapshot } from "./herdr/client.ts";
 import { requestFault } from "./http.ts";
 import { agentStartArgs } from "./claude-settings-file.ts";
@@ -84,14 +85,15 @@ async function startDshTui(paneId: string, args: string[], options: { locator?: 
   }
 }
 
-let approvals: { hub: ApprovalHub; version: (kind: string) => Promise<string | null>; codex: CodexServers | null } | null = null;
+type Probe = (kind: string) => Promise<{ version: string | null; executable?: string | null } | null>;
+let approvals: { hub: ApprovalHub; probe: Probe; codex: CodexServers | null } | null = null;
 
 /**
  * What an agent this server starts asks its approvals through (server/approvals/hub.ts), and how its installed version
  * is read, which decides whether it gets the hook; and where a Codex gets its own app server (server/approvals/codex.ts).
  */
-export function useApprovalHub(hub: ApprovalHub | null, version: (kind: string) => Promise<string | null> = async () => null, codex: CodexServers | null = null): void {
-  approvals = hub === null ? null : { hub, version, codex };
+export function useApprovalHub(hub: ApprovalHub | null, probe: Probe = async () => null, codex: CodexServers | null = null): void {
+  approvals = hub === null ? null : { hub, probe, codex };
 }
 
 /**
@@ -100,7 +102,7 @@ export function useApprovalHub(hub: ApprovalHub | null, version: (kind: string) 
  */
 async function codexLauncher(kind: string, paneId: string, args: string[] | undefined, platform: string): Promise<string | undefined> {
   if (kind !== "codex" || approvals?.codex == null || !capabilities().launcher || hcMachine() !== null || platform === "win32") return undefined;
-  return approvals.codex.launch(paneId, args, await approvals.version(kind)) ?? undefined;
+  return approvals.codex.launch(paneId, args, (await approvals.probe(kind))?.version ?? null) ?? undefined;
 }
 
 let browserTools: { read: () => unknown; dir: string } | null = null;
@@ -149,15 +151,27 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
   try {
     const kind = agent.kind as string;
     const shell = isShellAgentKind(kind);
+    const coreCmd = kind === "cmd" && capabilities().launcher;
     // another machine of the core: its path would be this PC's, and its start is never seen there (no pids)
     if (shell && hcMachine() !== null) return { agent_started: false, error: { code: "other_machine", message: `${kind} starts only on the PC that runs Ovis` } };
+    const coreCmdProgram = !coreCmd ? null
+      : locator === undefined ? shellAgentExecutable(kind, options.platform) : await locator.executable(kind);
+    if (coreCmd && coreCmdProgram === null) return { agent_started: false, error: { code: "agent_start_failed", message: `${kind} is not on this server's PATH or its login shell's` } };
     // an agent another machine of the core starts could not reach this PC's hub
     // a Claude's status line is the one its project's settings set, above the user's (server/approvals/claude.ts)
     const paneCwd = (): Promise<string | null> => kind === "claude" ? paneGet(paneId).then((pane) => pane.cwd ?? null, () => null) : Promise.resolve(null);
-    const args = approvals !== null && approvals.hub.handles(kind) && hcMachine() === null
-      ? approvals.hub.launchArgs(kind, paneId, agent.args as string[] | undefined, await approvals.version(kind), await paneCwd()) : agent.args as string[] | undefined;
+    const plain = agent.args as string[] | undefined;
+    let args = plain;
+    if (approvals !== null && approvals.hub.handles(kind) && hcMachine() === null) {
+      const probe = await approvals.probe(kind);
+      const cmdPath = capabilities().launcher && (options.platform ?? process.platform) !== "win32" ? probe?.executable : null;
+      args = approvals.hub.launchArgs(kind, paneId, plain, kind !== "cmd" || cmdPath ? probe?.version ?? null : null, await paneCwd());
+      if (kind === "cmd" && cmdPath && args?.[0] === "--mod" && args[1] && args.length === (plain?.length ?? 0) + 2) {
+        program = cmdLauncher(args[1], cmdPath, plain ?? []);
+      }
+    }
     await markLocalAgentLaunch(paneId, options.platform ?? process.platform);
-    if (shell) {
+    if (shell && !coreCmd) {
       const shellOptions = locator ? { locator } : {};
       tool = kind === "dsh-tui" ? null : launchHarnessTool(paneId, kind, { args, platform: options.platform ?? process.platform, browsers: null });
       const pid = kind === "dsh-tui" && args !== undefined
@@ -172,7 +186,9 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
       tool = launchHarnessTool(paneId, kind, { args, platform: options.platform ?? process.platform, browsers: browserTools?.read() });
       const launchArgs = tool?.args ?? withBrowserTool(kind, args, options.platform ?? process.platform);
       const startArgs = launchArgs === undefined ? undefined : agentStartArgs(kind, launchArgs, { platform: options.platform, dir: options.settingsDir });
-      program = await codexLauncher(kind, paneId, startArgs, options.platform ?? process.platform);
+      program ??= await codexLauncher(kind, paneId, startArgs, options.platform ?? process.platform);
+      // a Command Code started with the Ovis mod runs through its launcher (cmdLauncher) above
+      const executable = program ?? coreCmdProgram ?? undefined;
       // herdr refuses a name another agent holds. Two creations at once can pick the same
       // free one: the refused one picks again. It also refuses a pane whose shell is not up
       // yet (`agent_pane_busy`, herdr 0.9.3), which a pane made a moment ago can be.
@@ -184,7 +200,7 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
             kind,
             paneId,
             ...(startArgs === undefined ? {} : { args: startArgs }),
-            ...(program === undefined ? {} : { program }),
+            ...(executable === undefined ? {} : { program: executable }),
             ...(tool ? { toolDoor: { socket: tool.socket, tokenFile: tool.tokenFile } } : {}),
             timeoutMs: 60_000,
           });
@@ -207,7 +223,8 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
   } catch (error) {
     // a launcher that never ran: its folder goes, and Ovis stops waiting for its server
     tool?.cancel();
-    if (program !== undefined) approvals?.codex?.abandon(paneId, program);
+    if (program !== undefined && agent.kind === "codex") approvals?.codex?.abandon(paneId, program);
+    if (program !== undefined && agent.kind === "cmd") approvals?.hub.forget(paneId);
     return {
       agent_started: false,
       error: requestFault(error, "agent_start_failed"),

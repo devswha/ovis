@@ -134,7 +134,7 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
     setState({ kind: "starting" });
     void (async () => {
       const requester = { label: thisDeviceLabel(), os: deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0) };
-      const options = { service, store: indexedAccountStore, requester };
+      const options = { service, store: indexedAccountStore, requester, emailLink: offer.emailLink === true };
       const fallback = offer.device[0];
       const picked = deviceOnly ? offer.device.find((device) => device === provider) : undefined;
       const started = picked !== undefined ? await startDeviceSignIn({ ...options, provider: picked })

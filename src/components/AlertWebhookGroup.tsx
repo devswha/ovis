@@ -25,6 +25,7 @@ export function AlertWebhookGroup() {
   const [unreadable, setUnreadable] = useState<string | null>(null);
   const [preset, setPreset] = useState<AlertWebhookPreset | "off">("off");
   const [alerts, setAlerts] = useState<AlertPrefs>({ input: true, done: "long" });
+  const [link, setLink] = useState(true);
   const [busy, setBusy] = useState(false);
   const [line, setLine] = useState<{ text: string; error: boolean } | null>(null);
   const secret = useRef<HTMLInputElement>(null);
@@ -35,6 +36,7 @@ export function AlertWebhookGroup() {
     setUnreadable(null);
     setPreset(next.preset ?? "off");
     setAlerts(next.alerts);
+    setLink(next.link !== false);
   };
   useEffect(() => {
     fetchAlertWebhook().then(show, (error: unknown) => {
@@ -50,13 +52,17 @@ export function AlertWebhookGroup() {
   };
 
   const saved = view?.configured === true && view.preset === preset;
-  const save = (prefs: AlertPrefs) => run(async () => {
+  // a phone app's own client also meets PCs from before the link switch: they answer no `link` and would ignore it
+  const linkKnown = typeof view?.link === "boolean";
+  // a switch saves only what it changed: the server keeps the rest, so a draft address in the field or another
+  // device's newer choice is not sent along
+  const save = (change: Pick<AlertWebhookSave, "alerts" | "link">, form = false) => run(async () => {
     if (preset === "off") return;
-    const typed = secret.current?.value.trim() ?? "";
-    const request: AlertWebhookSave = { preset, alerts: prefs, ...(typed ? preset === "telegram" ? { token: typed } : { url: typed } : {}),
-      ...(preset === "telegram" ? { chat_id: chatId.current?.value.trim() ?? "" } : {}) };
+    const typed = form ? secret.current?.value.trim() ?? "" : "";
+    const request: AlertWebhookSave = { preset, ...change, ...(typed ? preset === "telegram" ? { token: typed } : { url: typed } : {}),
+      ...(form && preset === "telegram" ? { chat_id: chatId.current?.value.trim() ?? "" } : {}) };
     show(await saveAlertWebhook(request));
-    if (secret.current) secret.current.value = "";
+    if (form && secret.current) secret.current.value = "";
     setLine({ text: t("Saved"), error: false });
   });
   const choose = (patch: Partial<AlertPrefs>) => {
@@ -66,7 +72,14 @@ export function AlertWebhookGroup() {
     setAlerts(next);
     if (!saved) return;
     const held = view.alerts;
-    void save(next).then((landed) => { if (!landed) setAlerts(held); });
+    void save({ alerts: next }).then((landed) => { if (!landed) setAlerts(held); });
+  };
+  const chooseLink = (value: boolean) => {
+    if (busy) return;
+    setLink(value);
+    if (!saved) return;
+    const held = view.link;
+    void save({ link: value }).then((landed) => { if (!landed) setLink(held); });
   };
   const pick = (value: AlertWebhookPreset | "off") => {
     setLine(null);
@@ -75,13 +88,15 @@ export function AlertWebhookGroup() {
       return;
     }
     setPreset(value);
+    // the saved destination's own choice, or on for one not saved yet (the server's default)
+    setLink(value !== view?.preset || view?.link !== false);
   };
   const test = () => run(async () => {
     setLine(null);
     try { await testAlertWebhook(); setLine({ text: t("Test sent. Check the destination."), error: false }); }
     finally { show(await fetchAlertWebhook()); }
   });
-  const submit = (event: FormEvent) => { event.preventDefault(); void save(alerts); };
+  const submit = (event: FormEvent) => { event.preventDefault(); void save({ alerts, ...(linkKnown ? { link } : {}) }, true); };
 
   const note = t("Sends alerts to another app too, with the PC and pane names and a link to open the pane.");
   if (view === null) {
@@ -133,7 +148,7 @@ export function AlertWebhookGroup() {
             <button type="button" className="btn" disabled={busy || !saved} onClick={() => void test()}>{t("Send a test")}</button>
           </form>
           {saved && !line?.error && <p className="settings-hint">{t("Saved on this PC. Leave the field empty to keep it.")}</p>}
-          {saved && !view.reachable_link && <p className="settings-hint">{t("Messages have no link a phone can open yet. Save once from this PC's network address, not localhost or the relay.")}</p>}
+          {saved && link && !view.reachable_link && <p className="settings-hint">{t("Messages have no link a phone can open yet. Save once from this PC's network address, not localhost or the relay.")}</p>}
           <p className={line?.error || lastError ? "settings-hint alert-webhook-error" : "settings-hint"} role={line?.error ? "alert" : "status"}>{line?.text ?? lastError}</p>
         </div>
         <SettingsRow label={t("Needs input")} description={t("Also sends there when an agent asks you something. Chosen apart from this device's own alerts.")}>
@@ -148,6 +163,9 @@ export function AlertWebhookGroup() {
         <SettingsRow label={t("Stopped on an error")} description={t("Also sends there when a turn ends on an error, for the agents that report one (OmO and GJC).")}>
           <Toggle disabled={busy} label={t("Stopped on an error")} checked={alerts.error === true} onChange={(error) => choose({ error })} />
         </SettingsRow>
+        {linkKnown && <SettingsRow label={t("Link to the pane")} description={t("Adds a link that opens the pane to each message. Off sends only the text.")}>
+          <Toggle disabled={busy} label={t("Link to the pane")} checked={link} onChange={chooseLink} />
+        </SettingsRow>}
       </>}
       {preset === "off" && line !== null && <p className={line.error ? "settings-item settings-hint alert-webhook-error" : "settings-item settings-hint"} role="status">{line.text}</p>}
     </SettingsGroup>

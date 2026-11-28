@@ -20,6 +20,7 @@ export function tunnelRelays(relays: Relay[], serve: (remotePort: number) => Rel
       relays.push(relay);
       const key = `${port}:${remotePort}`;
       forwarded.set(key, [...forwarded.get(key) ?? [], relay]);
+      return { listening: () => relay.port !== undefined, close: async () => { relay.stop(true); } };
     }),
     spyOn(prototype, "tunnel").mockImplementation(async function (this: Tunnel, ssh, descriptor) {
       const opened = await tunnel.call(this, ssh, descriptor);
