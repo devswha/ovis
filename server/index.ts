@@ -1120,6 +1120,7 @@ export async function serve(): Promise<void> {
   let choice: RuntimeChoice;
   let fallback: "no_herdr_core" | "no_alt_runtime" | undefined;
   let machineRefusal: () => string | null | Promise<string | null> = () => null;
+  let runtimeLine: string | null = null;
   try {
     if (profile) {
       const engine = machineEngine(stateDir, Number(startEnv["PORT"] ?? 0));
@@ -1132,7 +1133,7 @@ export async function serve(): Promise<void> {
     } else {
       choice = await chooseRuntime({ stateDir, port: Number(startEnv["PORT"] || DEFAULT_PORT), env: startEnv });
       setRuntime(choice.runtime);
-      console.log(`Runtime: ${choice.runtime} (${choice.reason})`);
+      runtimeLine = `Runtime: ${choice.runtime} (${choice.reason})`;
       try {
         herdrCore = await startRuntime(stateDir);
       } catch (err) {
@@ -1150,6 +1151,15 @@ export async function serve(): Promise<void> {
     console.error(`Ovis cannot start: ${err instanceof Error ? err.message : String(err)}.`);
     process.exit(1);
   }
+  // a profile may have marked the folder while the runtime started: looked for again before this server says what it
+  // serves or writes its first file there (telemetry.json); createServer looks once more
+  const markedSince = profile ? null : profileFolderRefusal(stateDir);
+  if (markedSince !== null) {
+    console.error(markedSince);
+    herdrCore?.stop();
+    process.exit(1);
+  }
+  if (runtimeLine !== null) console.log(runtimeLine);
   const updates = connectUpdater();
   const telemetry = new Telemetry({ stateDir, version, env: process.env, fetch, previousVersion: () => updates.installed().previous_version, runtime: herdrCore === null ? "herdr" : "herdr-core" });
   const portal = profile ? undefined : new PortalService({ stateDir });
@@ -1178,6 +1188,7 @@ export async function serve(): Promise<void> {
   } catch (err) {
     if (err instanceof ProfileFolderError) {
       console.error(err.message);
+      herdrCore?.stop();
       process.exit(1);
     }
     const { code, syscall } = err as { code?: string; syscall?: string };

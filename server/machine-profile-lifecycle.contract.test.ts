@@ -282,6 +282,41 @@ it("refuses an ordinary server whose folder a profile marked after its first loo
   expect(readdirSync(dir)).toEqual(["machine-profile.json"]);
 });
 
+/** A herdr-core for an ordinary server: `hc` answers its version, and nothing of the user's core is looked at. */
+function fakeCore(onVersion = ""): Record<string, string> {
+  const bin = scratch();
+  const hc = join(bin, "hc");
+  writeFileSync(hc, `#!/bin/sh\nif [ "$1" = --version ]; then ${onVersion} echo 'hc 0.1.18'; else exit 1; fi\n`, { mode: 0o700 });
+  const core = mkdtempSync("/tmp/ovis-machine-core-absent-");
+  cleanup.push(() => rmSync(core, { recursive: true, force: true }));
+  return { OVIS_PROFILE: "", OVIS_PREVIEW: "", OVIS_RUNTIME: "herdr-core", OVIS_HC_BIN: hc, HC_SOCKET: join(core, "absent.sock"), XDG_RUNTIME_DIR: core, XDG_STATE_HOME: core, XDG_CONFIG_HOME: core };
+}
+
+it("refuses an ordinary server whose folder a profile marked while its herdr-core started, before it names its runtime or writes there, and stops that runtime", async () => {
+  const dir = state();
+  const server = launch(dir, fakeCore(`printf '%s' '{"profile":"machine"}' > '${join(dir, "machine-profile.json")}';`));
+  expect(await refused(server)).toContain(join(dir, "machine-profile.json"));
+  expect(server.output()).not.toContain("Runtime:");
+  expect(readdirSync(dir)).toEqual(["machine-profile.json"]);
+});
+
+it("turns createServer's refusal of a folder marked after serve() looked into one sentence and exit 1, and stops the herdr-core it started", async () => {
+  const dir = state();
+  // the mark comes as serve() names its runtime, after its own looks: only createServer's look sees it
+  const preload = join(scratch(), "mark-late.ts");
+  writeFileSync(preload, `import { writeFileSync } from "node:fs";
+const log = console.log;
+console.log = (...args) => {
+  if (String(args[0]).startsWith("Runtime:")) writeFileSync(${JSON.stringify(join(dir, "machine-profile.json"))}, '{"profile":"machine"}', { mode: 0o600 });
+  log(...args);
+};
+`);
+  const server = launch(dir, { ...fakeCore(), BUN_OPTIONS: `--preload=${preload}` });
+  expect(await refused(server)).toContain(join(dir, "machine-profile.json"));
+  expect(server.output()).toContain("Runtime: herdr-core");
+  expect(readdirSync(dir)).not.toContain("herdr-core.sock");
+});
+
 it("refuses a state folder whose machine-profile.json is not its own, naming that file, and leaves it as it was", async () => {
   const dir = realpathSync(state());
   writeFileSync(join(dir, "machine-profile.json"), '{"profile":"other"}', { mode: 0o600 });
