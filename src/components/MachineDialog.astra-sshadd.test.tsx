@@ -186,7 +186,7 @@ test("a Windows PC that connected opens: only an add still due holds Open PC", a
   setTransport({ ...transport, fetch: async (input) => {
     switch (String(input)) {
       case "/api/health": return Response.json({ auth: { via: "local" } });
-      case "/api/account/status": return Response.json({ account: null, pc_add_from_account: false });
+      case "/api/account/status": return Response.json({ account: null });
       case "/api/machines/setup": return Response.json({ id: "win", machine_id: "win-pc", phase: "connected", step: "Connected", action_required: null, error: null, challenge: null, installations: [], ssh_output: null, target: { destination: "win" }, windows_startup: true } satisfies SetupJob);
       default: throw new Error(`Unexpected request: ${input}`);
     }

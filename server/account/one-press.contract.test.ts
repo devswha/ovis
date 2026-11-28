@@ -1319,9 +1319,10 @@ test.skipIf(process.platform !== "linux").each(["herdr-web-ui", "ovis"])("siblin
   const code = await phone(), localDigits = await phone(), memberDigits = await phone(), memberCode = await phone();
   const coded = devices.pairRelay(devices.startPairing().code, "Local code", code.spki)!;
   link(coded.device.id, code.spki);
-  const memberCoded = devices.pairRelay(devices.startPairing().code, "Member code", memberCode.spki)!;
+  // a code a member device started stands on the account's authority, not this PC's
+  const memberCoded = devices.pairRelay(devices.startPairing(Date.now(), { remote: true, startedBy: plain.id, memberRequired: true, by: null }).code, "Member code", memberCode.spki)!;
   link(memberCoded.device.id, memberCode.spki);
-  expect(devices.originOf(memberCoded.device.id)).toMatchObject({ from: "remote", how: "code", by: null });
+  expect(devices.originOf(memberCoded.device.id)).toMatchObject({ from: "remote", how: "member", by: legacy.key.spki });
   const digits = devices.pairRelayApproved("Local digits", localDigits.spki, { path: "account" })!;
   link(digits.device.id, localDigits.spki);
   const member = devices.pairRelayApproved("Member digits", memberDigits.spki, { path: "account", addedBy: plain.id })!;
@@ -1336,15 +1337,12 @@ test.skipIf(process.platform !== "linux").each(["herdr-web-ui", "ovis"])("siblin
   expect(devices.originOf(digits.device.id)).toMatchObject({ from: "remote", how: "digits", by: null });
   expect(devices.originOf(member.device.id)).toMatchObject({ from: "remote", how: "member", by: legacy.key.spki });
   await f.app.stop();
-  // a code a member device started names that member as `by`: it stood on the account's authority, not this PC's
-  const rowsFile = join(f.stateDir, "devices.json");
-  const rows = JSON.parse(readFileSync(rowsFile, "utf8")) as { devices: { id: string; origin?: object }[] };
-  rows.devices = rows.devices.map(row => row.id === memberCoded.device.id ? { ...row, origin: { ...row.origin, by: legacy.key.spki } } : row);
-  writeFileSync(rowsFile, JSON.stringify(rows), { mode: 0o600 });
   const root = mkdtempSync(join(tmpdir(), "unlisting-siblings-"));
   try {
     const active = join(root, "herdr-web-ui"), sibling = join(root, "ovis");
     for (const dest of [active, sibling]) cpSync(f.stateDir, dest, { recursive: true });
+    // the sibling's registry is the copy the bound start's merge writes there (imported rows without an origin)
+    rmSync(join(sibling, "devices.json"));
     const opts = { port: 0, hostname: "127.0.0.1", token: "", tailscaleOwner: null, registerBridge: false, sidecar: false };
     const bound = createServer({ ...opts, stateDir: active, siblingStateDir: sibling, accountService: { url: "https://account.test", fetch: f.account.fetch } });
     try {
@@ -1355,6 +1353,8 @@ test.skipIf(process.platform !== "linux").each(["herdr-web-ui", "ovis"])("siblin
       await bound.context.services.accountMailbox.readSnapshot();
       expect(bound.context.services.devices.account()).toBeNull();
     } finally { await bound.stop(); }
+    const copies = (JSON.parse(readFileSync(join(sibling, "devices.json"), "utf8")) as { devices: { imported?: true; origin?: object }[] }).devices;
+    expect(copies.length > 0 && copies.every(row => row.imported === true && row.origin === undefined)).toBe(true);
     const stateDir = join(root, restartFolder);
     const offline = createServer({ ...opts, stateDir, siblingStateDir: stateDir === active ? sibling : active, accountService: { url: "off" } });
     const closes: (() => void)[] = [];
