@@ -167,6 +167,8 @@ export function signalChildGroup(child: { pid: number; exitCode: number | null; 
 export interface TestCore {
   env: Record<string, string>;
   pids: number[];
+  /** the folder the core was made in (coreFolder), when it has one: its environment must stay under it */
+  readonly root?: string;
 }
 
 /** What stopTestCores did, per core in the order given, and what it found left. */
@@ -233,7 +235,7 @@ function statusPids(out: string): number[] {
 }
 
 /** a core that runs for sure: every pid recorded for it alive and its socket there (status anywhere else could start one) */
-const surelyRuns = (core: TestCore) => core.pids.length > 0 && core.pids.every(pidAlive) && existsSync(core.env["HC_SOCKET"]!);
+const surelyRuns = (pids: number[], socket: string) => pids.length > 0 && pids.every(pidAlive) && existsSync(socket);
 
 /** until `done()` holds or `waitMs` passed: hc's core and holder are daemons, whose exit no event announces */
 async function settle(done: () => boolean, waitMs: number): Promise<void> {
@@ -252,22 +254,28 @@ async function settle(done: () => boolean, waitMs: number): Promise<void> {
  * provenCore shows the pid is still that core's. Any other pid alive is named in `unproven` and left
  * alone (a pid that no status of this helper named is never proven: record pids with corePids).
  * Delete a core's folder only after this: a late hc child would otherwise run whatever hc PATH finds.
- * Throws before any hc command when an environment is not isolated.
+ * Throws before any hc command when an environment is not isolated (under the core's root, when it names one). Each
+ * environment is read once, at the call: a change made to it during the stop reaches no hc command.
  */
 export async function stopTestCores(bin: string, cores: TestCore[], waitMs = STOP_WAIT_MS): Promise<StopResult> {
-  for (const core of cores) refuseUnlessIsolated(core.env);
+  const envs = cores.map((core) => {
+    const env = { ...core.env };
+    refuseUnlessIsolated(env, core.root);
+    return env;
+  });
   const stopped: (number | null)[] = [];
   const killed: number[] = [];
   const unproven: number[] = [];
-  for (const core of cores) {
-    const socket = core.env["HC_SOCKET"]!;
+  for (const [at, core] of cores.entries()) {
+    const env = envs[at]!;
+    const socket = env["HC_SOCKET"]!;
     // a status that fails keeps the pids recorded so far
-    if (surelyRuns(core)) core.pids = [...new Set([...core.pids, ...(await corePids(bin, core.env).catch(() => []))])];
+    if (surelyRuns(core.pids, socket)) core.pids = [...new Set([...core.pids, ...(await corePids(bin, env).catch(() => []))])];
     if (!core.pids.some(pidAlive) && !existsSync(socket)) {
       stopped.push(null);
       continue;
     }
-    stopped.push(await Bun.spawn([bin, "server", "stop"], { env: core.env, stdout: "ignore", stderr: "ignore", timeout: STOP_WAIT_MS, killSignal: "SIGKILL" }).exited);
+    stopped.push(await Bun.spawn([bin, "server", "stop"], { env, stdout: "ignore", stderr: "ignore", timeout: STOP_WAIT_MS, killSignal: "SIGKILL" }).exited);
     await settle(() => !core.pids.some(pidAlive) && !existsSync(socket), waitMs);
     // what of this core outlived the wait goes before the next core is stopped: while it ran, it could dial that one and start it again
     const ended: number[] = [];
@@ -286,7 +294,7 @@ export async function stopTestCores(bin: string, cores: TestCore[], waitMs = STO
     killed.push(...ended);
     await settle(() => !ended.some(pidAlive), waitMs);
   }
-  return { stopped, killed, unproven, socketsLeft: cores.map((core) => core.env["HC_SOCKET"]!).filter((socket) => existsSync(socket)) };
+  return { stopped, killed, unproven, socketsLeft: envs.map((env) => env["HC_SOCKET"]!).filter((socket) => existsSync(socket)) };
 }
 
 /** What an IsolatedCore's stop found: whether anything had to be killed, and what is left. */

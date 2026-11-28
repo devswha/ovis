@@ -232,6 +232,20 @@ it("runs no hc command of a core whose environment stopped being isolated", () =
   }
 });
 
+it("stops no core whose environment was moved to another isolated core's socket, outside its own folder", async () => {
+  rmSync(record, { force: true });
+  const core = new IsolatedCore(bin, coreFolder(root));
+  // another test core's environment, isolated on its own and with its socket there: only the folder tells it apart
+  const other = withSocket("another-core");
+  try {
+    core.env["HC_SOCKET"] = other["HC_SOCKET"];
+    expect(await core.stop().then(() => "stopped", () => "refused")).toBe("refused");
+    expect(ran()).toBe("");
+  } finally {
+    rmSync(core.root, { recursive: true, force: true });
+  }
+});
+
 it("refuses a folder whose socket path is longer than the OS takes, and leaves nothing of it", () => {
   const deep = join(root, "d".repeat(Math.max(1, 108 - root.length)));
   mkdirSync(deep);
