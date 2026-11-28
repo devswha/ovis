@@ -48,7 +48,9 @@ and a greeting refused by its start arguments are settled by the first ask. When
 names another process, the locks are not read at all.
 
 Linux process/lock discovery and native lifecycle behavior were tested with Agy 1.3.3.
-macOS uses `lsof` for the same held-file evidence but has not been tested natively.
+macOS uses `lsof` for the same held-file evidence. A pane identified as Agy also accepts
+the exact foreground process name `antigravity` on macOS; it still needs one verified
+process and conversation lock. The full Chat flow has not been tested natively on macOS.
 Its `ps` process-birth check has one-second resolution; same-second PID reuse is not distinguished.
 Windows has no `/proc` and no `lsof`, so the same held-file evidence is asked of the documented
 Restart Manager: `RmGetList` names the processes using a presence lock, and only the pane's own Agy
