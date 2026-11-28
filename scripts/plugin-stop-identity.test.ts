@@ -94,7 +94,7 @@ it.skipIf(process.platform !== "win32")("ends a process only through a handle wh
     const started = Number(birth.birth.value);
     const other = terminateWindowsTree(server.pid!, started + 1);
     expect(other.status).not.toBe(0);
-    expect(other.stderr).toContain("no longer the process that was checked");
+    expect(other.replaced).toBe(true);
     expect(() => process.kill(server.pid!, 0), "a process whose creation time differs is not ended").not.toThrow();
     const ended = terminateWindowsTree(server.pid!, started);
     expect(ended.status, `the handle's creation time is the process table's, to the ms: ${ended.stderr}`).toBe(0);

@@ -758,7 +758,7 @@ type StopDependencies = {
   readonly processTable: typeof windowsProcessTable;
   readonly isAlive: (pid: number) => boolean;
   /** `started`: the creation time the stop verified, which the process must still have when it is ended */
-  readonly terminateTree: (pid: number, started?: number) => { status: number | null; error: Error | undefined; stderr: string };
+  readonly terminateTree: (pid: number, started?: number) => { status: number | null; error: Error | undefined; stderr: string; replaced?: boolean };
 };
 
 const stopDependencies: StopDependencies = {
@@ -822,6 +822,13 @@ export async function stop(dependencies: StopDependencies = stopDependencies, { 
   }
 }
 
+/** Ovis for Windows' Start goes on to start after this line (exit 0); it reports every stop that exits nonzero. */
+function pidReused(pid: number): number {
+  forgetServer(pid);
+  process.stdout.write(`Ovis is not running (pid ${pid} now belongs to another process)\n`);
+  return 0;
+}
+
 function recordedWindowsBirth(pid: number): number | null {
   try {
     const owner = JSON.parse(readFileSync(OWNER_FILE, "utf8")) as { pid?: unknown; birth?: unknown };
@@ -850,11 +857,7 @@ async function stopInTurn(dependencies: StopDependencies): Promise<number> {
       ? owner.started === birth
       : owner.started <= recordedAt && startedByThisPlugin(owner.path ?? "", windowsArgv(owner.commandLine ?? "")));
     // proved only by a creation time recorded and read that differ: an unread table or a record without one proves nothing
-    if (owner?.started !== undefined && birth !== null && owner.started !== birth) {
-      forgetServer(pid);
-      process.stdout.write(`Ovis is not running (pid ${pid} now belongs to another process)\n`);
-      return 0;
-    }
+    if (owner?.started !== undefined && birth !== null && owner.started !== birth) return pidReused(pid);
     if (!owner || !identified
       || !existsSync(PID_FILE) || statSync(PID_FILE).mtimeMs !== recordedAt
       || Number(readFileSync(PID_FILE, "utf8").trim()) !== pid) {
@@ -867,6 +870,8 @@ async function stopInTurn(dependencies: StopDependencies): Promise<number> {
     })];
     // Windows has no Unix process groups or graceful SIGTERM: include the supervisor and bridge.
     const killed = dependencies.terminateTree(pid, owner.started);
+    // the server exited after the table was read, and its number went to another process, which was left alone
+    if (killed.replaced === true) return pidReused(pid);
     if (killed.status !== 0 && recordedPid() !== null) {
       process.stderr.write(`could not stop Ovis: ${killed.error?.message ?? killed.stderr.trim()}\n`);
       return 1;
@@ -899,11 +904,7 @@ async function stopInTurn(dependencies: StopDependencies): Promise<number> {
     return 0;
   } else {
     // the recorded server is gone and its pid is someone else's now: nothing of ours to signal.
-    if (recordedServer(pid) === "replaced") {
-      forgetServer(pid);
-      process.stdout.write(`Ovis is not running (pid ${pid} now belongs to another process)\n`);
-      return 0;
-    }
+    if (recordedServer(pid) === "replaced") return pidReused(pid);
     if (!provenServer(pid)) {
       if ((liveProcess(pid) ?? dependencies.isAlive(pid)) === false) {
         forgetServer(pid);

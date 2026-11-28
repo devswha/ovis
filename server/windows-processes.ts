@@ -95,9 +95,9 @@ const FILETIME_EPOCH_MS = 11_644_473_600_000n;
  * `taskkill /t /f` on `pid`. Given `started` (the creation time in ms a process table read gave, which the caller
  * verified), only through a handle to the process held until taskkill returns, whose own creation time must be that one:
  * Windows never hands a number on while a handle to its process is open, so a process that exited after the table was
- * read, its number since given to another, is never the one ended.
+ * read, its number since given to another, is never the one ended: `replaced` then, and nothing is ended.
  */
-export function terminateWindowsTree(pid: number, started?: number): { status: number | null; error: Error | undefined; stderr: string } {
+export function terminateWindowsTree(pid: number, started?: number): { status: number | null; error: Error | undefined; stderr: string; replaced?: boolean } {
   let release = (): void => {};
   if (started !== undefined) {
     const kernel = dlopen(join(process.env["SystemRoot"] || process.env["windir"] || "C:\\Windows", "System32", "kernel32.dll"), {
@@ -114,9 +114,13 @@ export function terminateWindowsTree(pid: number, started?: number): { status: n
     release = () => { kernel.symbols.CloseHandle(handle); kernel.close(); };
     const times = Buffer.alloc(32);
     const read = kernel.symbols.GetProcessTimes(handle, times, times.subarray(8), times.subarray(16), times.subarray(24)) !== 0;
-    if (!read || Number(times.readBigUInt64LE(0) / 10_000n - FILETIME_EPOCH_MS) !== started) {
+    if (!read) {
       release();
-      return { status: 1, error: undefined, stderr: `pid ${pid} is no longer the process that was checked, so nothing was ended` };
+      return { status: 1, error: undefined, stderr: `the creation time of pid ${pid} could not be read, so nothing was ended` };
+    }
+    if (Number(times.readBigUInt64LE(0) / 10_000n - FILETIME_EPOCH_MS) !== started) {
+      release();
+      return { status: 1, error: undefined, stderr: `pid ${pid} is no longer the process that was checked, so nothing was ended`, replaced: true };
     }
   }
   try {
