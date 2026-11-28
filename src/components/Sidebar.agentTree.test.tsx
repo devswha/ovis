@@ -8,6 +8,7 @@ import { SettingsProvider } from "../lib/settings.ts";
 import { inactiveSidebarFilter, sidebarFilter } from "../lib/sidebarFilter.ts";
 import { SidebarFilterProvider } from "../lib/sidebarFilterContext.ts";
 import { currentSidebarPins, setSidebarPins } from "../lib/sidebarPins.ts";
+import { PanePressContext } from "../lib/paneSubmitContext.ts";
 import { Sidebar } from "./Sidebar.tsx";
 
 const workspace = (id: string, tabs: number): WorkspaceInfo =>
@@ -170,6 +171,20 @@ describe("Settings > Appearance > Agents under workspaces (#773)", () => {
     expect(tree()).toEqual([["api", "api:claude", "api:codex"], ["web", "web:pi"]]);
     expect(selected).toEqual([]);
     expect(JSON.parse(page.window.localStorage.getItem("ovis:workspace-agents-folded:local")!)).toEqual([]);
+  });
+
+  it("starts no conversation's load when a press on a row only folds its agents (#3884)", async () => {
+    page.window.localStorage.setItem("ovis:sidebar-agent-tree", "true");
+    const pressed: string[] = [];
+    await page.render(createElement(SettingsProvider, null, createElement(SidebarFilterProvider, { value: { filter: inactiveSidebarFilter(), reportBranches: () => {} } },
+      createElement(PanePressContext.Provider, { value: (_machineId: string, paneId: string) => { pressed.push(paneId); } },
+        createElement(Sidebar, { snapshot, online: true, selectedPaneId: "web:pi", actions })))));
+    const press = (target: HTMLElement) => act(async () => {
+      Reflect.apply(target.dispatchEvent, target, [new page.window.PointerEvent("pointerdown", { bubbles: true, button: 0 })]);
+    });
+    await press(selectOf("api"));
+    await press(agentButton("api:claude"));
+    expect(pressed).toEqual(["api:claude"]);
   });
 
   it("opens a workspace with no agent under it as today, and every row with the setting off", async () => {

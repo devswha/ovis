@@ -298,6 +298,48 @@ describe("the sidebar on a PC the Herdr app lays out", () => {
     fetch.mockRestore();
   });
 
+  // a repository row drawn without its worktrees (its group pinned apart, or the filter keeping none) folds its
+  // agents: its menu's fold and New tab with agent… work that same fold (#3884)
+  const agentsUnder = (id: string) => [...page.container.querySelectorAll(`li[data-workspace="${id}"] li[data-agent-pane]`)].map((agent) => agent.getAttribute("data-agent-pane"));
+  const keptRoot = new Set(["root"]);
+  const cases: [string, string[], SidebarFilter | undefined][] = [
+    ["its repository is pinned", ["local:workspace:root"], undefined],
+    ["only its worktree is pinned", ["local:workspace:child"], undefined],
+    ["the filter keeps it without its worktrees", [], { query: "root", active: true, matches: 1, machines: new Map([["local", { shown: true, matched: false, workspaces: keptRoot, matchedWorkspaces: keptRoot, revealedWorkspaces: keptRoot, panes: new Set(["root:p"]), matchedPanes: new Set<string>() }]]) }],
+  ];
+  for (const [name, pins, filter] of cases) {
+    it(`folds and unfolds a repository row's agents from its menu as from its row when ${name} (#3884)`, async () => {
+      page.window.localStorage.setItem("ovis:sidebar-agent-tree", "true");
+      setSidebarPins(pins);
+      const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ error: "not_found" }, { status: 404 }), { preconnect: globalThis.fetch.preconnect }));
+      try {
+        const withAgents = (shown: SessionSnapshot): SessionSnapshot => ({ ...shown, panes: shown.panes.map((entry) => ({ ...entry, agent: "claude" })) });
+        await draw(withAgents(roster([workspace("root", worktree(false)), workspace("child", worktree(true))])), TUI, true, { filter });
+        expect(agentsUnder("root")).toEqual(["root:p"]);
+        await act(async () => { row("root").click(); });
+        expect(agentsUnder("root")).toEqual([]);
+        await menuOf("root");
+        expect(menuItem("fold").textContent?.trim()).toBe("Expand");
+        await pressMenu("new-tab");
+        expect(agentsUnder("root")).toEqual(["root:p"]);
+        expect(page.window.localStorage.getItem("ovis:worktree-group-collapsed:local:r")).toBeNull();
+      } finally {
+        fetch.mockRestore();
+      }
+    });
+  }
+
+  it("says a folded repository row is open while the filter shows its own agents (#3884)", async () => {
+    page.window.localStorage.setItem("ovis:sidebar-agent-tree", "true");
+    page.window.localStorage.setItem("ovis:worktree-group-collapsed:local:r", "1");
+    const kept = new Set(["root", "child"]);
+    const filter: SidebarFilter = { query: "root", active: true, matches: 1, machines: new Map([["local", { shown: true, matched: false, workspaces: kept, matchedWorkspaces: new Set(["root"]), revealedWorkspaces: new Set<string>(), panes: new Set(["root:p", "child:p"]), matchedPanes: new Set(["root:p"]) }]]) };
+    const withAgents = (shown: SessionSnapshot): SessionSnapshot => ({ ...shown, panes: shown.panes.map((entry) => ({ ...entry, agent: "claude" })) });
+    await draw(withAgents(roster([workspace("root", worktree(false)), workspace("child", worktree(true))])), TUI, false, { filter });
+    expect(agentsUnder("root")).toEqual(["root:p"]);
+    expect(row("root").getAttribute("aria-expanded")).toBe("true");
+  });
+
   it("lets a TUI PC's rows be dragged and moved with Alt+arrows", async () => {
     const coordinator = await draw(roster([workspace("a"), workspace("b")]), TUI);
     const reorder = spyOn(coordinator, "reorder").mockImplementation(async () => undefined);
