@@ -249,10 +249,15 @@ export interface StoredDevice {
   tailnet_nodes?: string[];
 }
 
+/** The row as a plain pairing of this PC: every field that made it a member of an account goes. */
+export function withoutMembership(row: StoredDevice): StoredDevice {
+  const { account: _account, linked_at: _linked, member_approved_in: _approval, account_add: _add, joined_by: _joined, ...paired } = row;
+  return paired;
+}
+
 export function markBeforeMove(row: StoredDevice, mark: BeforeMove): StoredDevice {
   if (row.account !== mark.account && row.member_approved_in !== mark.account) return row;
-  const { account: _account, linked_at: _linked, member_approved_in: _approval, account_add: _add, joined_by: _joined, ...paired } = row;
-  return { ...paired, before_move: mark };
+  return { ...withoutMembership(row), before_move: mark };
 }
 
 function isBeforeMove(value: unknown): value is BeforeMove {
@@ -1769,12 +1774,7 @@ export class DeviceStore {
     const gone = members.filter(row => !keepsPairingOnUnlist(row) || this.coveredByEvidence(row));
     if (gone.length) this.drop(gone, "pc", reason);
     if (gone.length === members.length) return;
-    const next = this.devices.map(row => {
-      if (row.account !== account && row.member_approved_in !== account) return row;
-      const { account: _account, linked_at: _linked, member_approved_in: _approval,
-        account_add: _add, joined_by: _joined, ...paired } = row;
-      return paired;
-    });
+    const next = this.devices.map(row => row.account !== account && row.member_approved_in !== account ? row : withoutMembership(row));
     this.save(next);
     this.devices = next;
   }
