@@ -75,9 +75,9 @@ describe("what the browser loads", () => {
     expect(leadsTo("shared/web-policy.ts", "../package.json")).toBe("package.json");
   });
 
-  /** Each value import of shared/protocol.ts that `entries` reach, directly or through other modules. */
+  /** Each value import of shared/protocol.ts that `entries` load, directly or through other modules; type-only imports load nothing. */
   const protocolValueLoads = (entries: string | readonly string[], source: (path: string) => string | undefined): string[] =>
-    importClosure(entries, source, (path) => path !== "shared/protocol.ts", (_from, to) => to === "shared/protocol.ts").offenders;
+    importClosure(entries, source, (path) => path !== "shared/protocol.ts", () => true).offenders;
 
   it("imports only types from shared/protocol.ts", () => {
     const browserEntries = files("{src,site}/**/*.{mjs,js,ts,tsx}").filter((file) => !/\.test\./.test(file));
@@ -105,11 +105,12 @@ describe("what the browser loads", () => {
         "export * from \"../shared/protocol.ts\";",
         "export { DEFAULT_PORT } from \"../shared/protocol.ts\";",
       ].join("\n"),
+      "src/types-of-value-ok.ts": "import type { port } from \"../shared/reexport-value.ts\";\nexport type Port = typeof port;",
       "src/transitive-bad.ts": "import { port } from \"../shared/reexport-value.ts\";\nexport { port };",
       "shared/reexport-value.ts": "import { DEFAULT_PORT } from \"./protocol.ts\";\nexport const port = DEFAULT_PORT;",
     };
     const source = (path: string) => graph[path];
-    expect(protocolValueLoads("src/types-ok.ts", source)).toEqual([]);
+    expect(protocolValueLoads(["src/types-ok.ts", "src/types-of-value-ok.ts"], source)).toEqual([]);
     expect(protocolValueLoads("src/direct-bad.ts", source).map((offender) => offender.split(":")[1])).toEqual(["1", "2", "3", "4", "5", "6"]);
     expect(protocolValueLoads(["src/types-ok.ts", "src/transitive-bad.ts"], source)).toEqual([
       "shared/reexport-value.ts:1: ./protocol.ts (shared/protocol.ts)",
