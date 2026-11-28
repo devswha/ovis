@@ -23,11 +23,12 @@ const specifiers = (file: string): { specifier: string; at: string }[] =>
   specifiersIn(stripComments(read(file))).map(({ specifier, line }) => ({ specifier, at: `${file}:${line}: ${specifier}` }));
 
 describe("imports", () => {
-  it("name relative modules with their extension and never use the @shared alias", () => {
+  it("name relative modules with their extension and never use the @shared alias, nor a root path in browser code", () => {
     const offenders = SOURCES.flatMap((file) => specifiers(file)
-      .filter(({ specifier }) => specifier.startsWith("@shared/") || (specifier.startsWith(".") && !/\.(?:ts|tsx|mjs|js|css|json|md|svg|png|woff2|html|txt|wasm|sh)(?:\?[\w&=-]*)?$/.test(specifier)))
+      // Vite resolves a root path such as "/shared/x.ts" in src/ and site/; the walks in this repository follow only relative ones.
+      .filter(({ specifier }) => specifier.startsWith("@shared/") || (specifier.startsWith("/") && /^(?:src|site)\//.test(file)) || (specifier.startsWith(".") && !/\.(?:ts|tsx|mjs|js|css|json|md|svg|png|woff2|html|txt|wasm|sh)(?:\?[\w&=-]*)?$/.test(specifier)))
       .map(({ at }) => at));
-    fail(offenders, "Imports carry explicit .ts/.tsx extensions and relative paths (AGENTS.md, Code conventions): write \"./x.ts\" or \"../shared/x.ts\", never \"./x\" or \"@shared/x\".");
+    fail(offenders, "Imports carry explicit .ts/.tsx extensions and relative paths (AGENTS.md, Code conventions): write \"./x.ts\" or \"../shared/x.ts\", never \"./x\", \"@shared/x\" or \"/shared/x.ts\".");
   });
 
   it("finds the specifiers and the line each is on", () => {
