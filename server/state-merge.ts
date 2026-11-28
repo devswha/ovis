@@ -17,7 +17,7 @@ import { copyFileSync, existsSync, mkdirSync, realpathSync, rmSync, statSync } f
 import { join, resolve } from "node:path";
 import { MAX_PREFERENCES_BYTES, sharedPreferencesBody, type PreferencesChange } from "../shared/preferences.ts";
 import type { RowOrigin } from "./account/admission-order.ts";
-import { readDeviceRegistry, VOUCHED, type DeviceRegistry, type StoredDevice } from "./devices.ts";
+import { readDeviceRegistry, VOUCHED, withoutMembership, type DeviceRegistry, type StoredDevice } from "./devices.ts";
 import { preparePrivateState, publishPrivateState, writePrivateState } from "./private-state.ts";
 import { normalizeEndpoint, PUSH_EXTRA_KEYS } from "./push.ts";
 import { readStateId, STATE_ID_FILE, writeStateId } from "./preferences.ts";
@@ -139,8 +139,7 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
     // Require the same credential: the mere absence of a binding does not turn a member into a paired row.
     if (rules.boundAccount !== undefined && original.account !== undefined && original.account !== rules.boundAccount &&
       twin.account === undefined && original.token_hash === twin.token_hash && original.relay_public_key === twin.relay_public_key) {
-      const { account: _account, linked_at: _linked, account_add: _add, member_approved_in: _member, joined_by: _joined, ...paired } = original;
-      device = paired;
+      device = withoutMembership(original);
     }
     if (rules.dropConflictingKeys && twin.relay_public_key !== device.relay_public_key) { rules.onDropped?.(device); continue; }
     const history = {
