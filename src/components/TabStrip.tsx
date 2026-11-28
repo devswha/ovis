@@ -164,6 +164,15 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const panes = rosterPanes(snapshot.panes.filter((pane) => pane.workspace_id === workspace.workspace_id), selectedPane.pane_id);
   // The snapshot order is authoritative; number identifies a tab and does not change on a move.
   const tabs = snapshot.tabs.filter((tab) => tab.workspace_id === workspace.workspace_id);
+  const tabIds = tabs.map((tab) => tab.tab_id).join("\n");
+  // herdr numbers a new tab after the highest one left, so a closed tab's id comes back: its unfinished name must not
+  useEffect(() => {
+    const open = new Set(tabIds.split("\n"));
+    for (const key of renameDraftStore.keys()) {
+      const [keyOwner, tabId] = JSON.parse(key) as [string, string];
+      if (keyOwner === owner && !open.has(tabId)) renameDraftStore.delete(key);
+    }
+  }, [owner, tabIds]);
   const moveToWorkspace = (tab: HerdrTab, targetWorkspaceId: string): void => {
     setError(null);
     void onMoveToWorkspace?.(tab.tab_id, targetWorkspaceId).catch((reason: unknown) => setError(routeMissing(reason) ? t("This PC's bridge does not offer this yet") : t("Move failed: {reason}", { reason: said(reason) })));
