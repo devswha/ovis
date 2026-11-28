@@ -192,10 +192,14 @@ process.stdin.on("data", chunk => {
         localStorage.setItem(`ovis:view:${pane}`, "terminal");
         const Native = window.WebSocket;
         const sockets = new Set<WebSocket>();
+        // Dropped, the link stays down until restored: a reconnect then dials a port nothing listens on. The server is on
+        // this device, so the page ignores navigator.onLine, and setOffline alone raced a reconnect that got through.
+        let blocked = false;
         window.WebSocket = class extends Native {
-          constructor(url: string | URL, protocols?: string | string[]) { super(url, protocols); sockets.add(this); }
+          constructor(url: string | URL, protocols?: string | string[]) { super(blocked ? "ws://127.0.0.1:9/" : url, protocols); sockets.add(this); }
         };
-        (window as any).dropTestSockets = () => { for (const socket of sockets) socket.close(); };
+        (window as any).dropTestSockets = () => { blocked = true; for (const socket of sockets) socket.close(); };
+        (window as any).restoreTestSockets = () => { blocked = false; };
       }, pane);
       // With a mouse the prompt is answered in the grid, as in any terminal: no masked field takes the grid's place
       // (the field is the phone's, where the keyboard would learn what is typed), and the grid keeps the keyboard
@@ -238,6 +242,7 @@ process.stdin.on("data", chunk => {
       assert.equal(await view.evaluate(() => JSON.stringify({ ...localStorage }).includes("offline-secret")), false);
       assert.equal(await view.locator(".terminal-banner-draft").count(), 0);
       assert.equal(await view.locator(".draft-held").count(), 0);
+      await view.evaluate(() => (window as any).restoreTestSockets());
       await desktop.setOffline(false);
       // back online, the prompt read again; the one key then typed is all the program gets: nothing typed offline
       // came with the reconnect, with or without its Enter
