@@ -29,6 +29,10 @@ export function createVelocityTracker(): VelocityTracker {
     add(time, position) {
       if (!Number.isFinite(time) || !Number.isFinite(position)) return;
       reach = Math.max(reach, Math.abs(position));
+      // a finger that turns back flings its new way: the samples before the turn do not count toward its speed
+      const last = samples.at(-1);
+      const before = samples.at(-2);
+      if (last && before && Math.sign(position - last.position) * Math.sign(last.position - before.position) < 0) samples = [last];
       samples.push({ time, position });
       while (samples.length > 2 && time - samples[1]!.time > FLING_HORIZON_MS) samples.shift();
     },
