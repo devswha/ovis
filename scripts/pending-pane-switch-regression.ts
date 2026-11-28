@@ -313,9 +313,17 @@ try {
   // A real lost WebSocket is different from component navigation: ownership ends. Only the bridge's
   // receipt that it holds the message untyped, for this browser, brings the copy back, held for an
   // explicit Send now; nothing is ever sent without one.
-  const lostConnection = async (): Promise<void> => {
+  // the loss is the page's socket closing: the header still says live through its reconnect grace
+  // (src/lib/reconnectGrace.ts, about 5 s in all), which left a loaded runner too little of a 10 s wait.
+  // The newest socket is the page's own: a reloaded document's sockets never report their close.
+  const dropConnection = async (): Promise<void> => {
+    const live = sockets.at(-1)!;
+    assert.equal(live.isClosed(), false, "the page holds a connection to drop");
     admit = false; await routed!.close();
-    await page.locator(".conn-live").waitFor({ state: "hidden" });
+    await until(() => live.isClosed(), "the page's connection to the bridge closed");
+  };
+  const lostConnection = async (): Promise<void> => {
+    await dropConnection();
     admit = true;
     await page.locator(".conn-live").waitFor(); await inputReady(pane);
   };
@@ -394,8 +402,7 @@ try {
   }));
   await witnessPage.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
   await until(() => witnessAttached, "the witness tab attached the pane");
-  admit = false; await routed!.close();
-  await page.locator(".conn-live").waitFor({ state: "hidden" });
+  await dropConnection();
   await until(() => witnessTold, "the bridge kept the held receipt as the connection closed");
   await witness.close();
   // the bridge times its receipts by the time that passed (a clock that only moves forward), not by the PC's clock:
