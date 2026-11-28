@@ -210,21 +210,29 @@ describe("BackgroundWait", () => {
     expect(waits.waiting("p1")).toBe(true);
   });
 
-  it("keeps, past a reset, no rest or count of the lifetime before, only the status seen of the pane", () => {
-    const waits = new BackgroundWait(clock().now);
-    // one lifetime's turn rests on its work
+  it("keeps, past another agent's lifetime, only the rests seen since the agent that followed began", () => {
+    const time = clock();
+    const waits = new BackgroundWait(time.now);
+    // one agent's turn rests on its work
     waits.status("p", "working");
     waits.running("p", 1, null);
     waits.status("p", "done");
     expect(waits.waiting("p")).toBe(true);
-    // the agent's next lifetime there counts work of its own: the rest before it holds nothing
-    waits.reset("p");
-    waits.running("p", 1, null);
+    time.pass(1000);
+    const since = time.now();
+    // the next agent's turn rests before its tracker knows its session
+    waits.status("p", "working");
+    time.pass(1000);
+    waits.status("p", "idle");
+    waits.resetBefore("p", since);
     expect(waits.waiting("p")).toBe(false);
-    // a turn it then ends on that work holds
-    waits.status("p", "working");
-    waits.status("p", "done");
+    // its tracker counts what that turn started: the turn holds
+    waits.running("p", 1, since);
     expect(waits.waiting("p")).toBe(true);
+    // a reset keeps no rest
+    waits.reset("p");
+    waits.running("p", 1, since);
+    expect(waits.waiting("p")).toBe(false);
   });
 
   it("lets go at once when a count falls without its work ending (a setting turned off)", () => {
