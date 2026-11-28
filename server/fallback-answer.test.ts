@@ -239,6 +239,13 @@ test.each([
   expect(parseFallbackPrompt(agent, after.replace(from, to)).id).not.toBe(parseFallbackPrompt(agent, before).id);
 });
 
+// a wider pane pads maki's status bar after its mode: " ⠙ [BUILD]      /home/…/maki  anthropic/…"
+test("keeps maki's card while its spinner turns on a status bar padded after its mode", () => {
+  const screen = recorded("lab-maki-waiting-a").replace("[BUILD]../scratch", "[BUILD]        /home/me/scratch");
+  expect(screen).toContain("\u2807 [BUILD]        /home");
+  expect(parseFallbackPrompt("maki", screen.replace("\u2807 [BUILD]", "\u2819 [BUILD]")).id).toBe(parseFallbackPrompt("maki", screen).id);
+});
+
 // Grok 1.0.92 redraws the tool call its permission panel asks about every tenth of a second (server/fixtures/record-cards)
 test.each(["long-a1", "phone-a1"])("keeps Grok's permission card (%s) while its tool call's timers tick, and not once its words change", (name) => {
   const turns = (JSON.parse(readFileSync(join(import.meta.dir, "fixtures/record-cards/grok.json"), "utf8")) as { turns: { turn: string; screen: string }[] }).turns;

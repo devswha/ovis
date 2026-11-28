@@ -156,7 +156,7 @@ const WAITING_LINES: Readonly<Record<string, readonly WaitingLine[]>> = {
     // its tool row: "⠏ bash> List directory contents    16:34:03"
     { pattern: new RegExp(`^${BRAILLE_SPINNER} (\\S+> \\S.* \\d{2}:\\d{2}:\\d{2})$`, "u"), steady: "<spinner> $1" },
     // its status bar: "⠇ [BUILD]../lab-maki  anthropic/… $0.001"
-    { pattern: new RegExp(`^${BRAILLE_SPINNER} (\\[[A-Z]+\\]\\S.*)$`, "u"), steady: "<spinner> $1" },
+    { pattern: new RegExp(`^${BRAILLE_SPINNER} (\\[[A-Z]+\\]\\s*\\S.*)$`, "u"), steady: "<spinner> $1" },
   ],
   // "⠋ Using Shell (ls -la)"
   kimi: [{ pattern: new RegExp(`^${BRAILLE_SPINNER} (Using \\S+ \\(.*\\))$`, "u"), steady: "<spinner> $1" }],
