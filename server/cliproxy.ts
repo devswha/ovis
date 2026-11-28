@@ -3,6 +3,7 @@ import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs
 import { join } from "node:path";
 import type { CLIProxyStatus, ProviderUsage, UsageFailure } from "../shared/protocol.ts";
 import { isJsonObject } from "./http.ts";
+import { withOwnerGuard } from "./owner-guard.ts";
 import { writePrivateState } from "./private-state.ts";
 import { failureOf, FRESH_MS, MIN_REFRESH_MS, systemUsageContext, USAGE_PROVIDERS, UsageFailed, UsageHttpError } from "./usage.ts";
 
@@ -72,6 +73,19 @@ function readOwnFile(path: string): string {
     if (Buffer.byteLength(text) > HIDDEN_MAX_BYTES) throw new Error("not this server's file");
     return text;
   } finally { closeSync(fd); }
+}
+interface SavedHidden { hub: unknown; accounts: Record<string, string[]>; keys: string[]; blind: boolean; partial: string[] }
+const strings = (list: unknown): list is string[] => Array.isArray(list) && list.every((item) => typeof item === "string");
+/** The saved hidden list `text` holds, or null when it is not one. */
+function parseSaved(text: string): SavedHidden | null {
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { return null; }
+  if (!isJsonObject(value)) return null;
+  const accounts = value["accounts"], keys = value["keys"], blind = value["blind"], partial = value["partial"];
+  if (!isJsonObject(accounts) || !strings(keys) || typeof blind !== "boolean"
+    || !Object.values(accounts).every((identities) => strings(identities) && identities.length > 0)
+    || (partial !== undefined && !strings(partial))) return null;
+  return { hub: value["hub"], accounts: accounts as Record<string, string[]>, keys, blind, partial: partial ?? [] };
 }
 type Config = { readonly url: string; readonly management_key: string };
 const DEFAULT_URL = "http://localhost:8317";
@@ -259,24 +273,34 @@ export class CLIProxyService {
       console.warn("cliproxy: the saved hidden accounts cannot be read; no Hub account is read while a hidden one is unknown");
       return;
     }
-    let value: unknown;
-    try { value = JSON.parse(text); } catch { value = null; }
-    const accounts = isJsonObject(value) ? value["accounts"] : null;
-    const keys = isJsonObject(value) ? value["keys"] : null;
-    const strings = (list: unknown): list is string[] => Array.isArray(list) && list.every((item) => typeof item === "string");
-    if (!isJsonObject(value) || !isJsonObject(accounts) || !strings(keys) || typeof value["blind"] !== "boolean"
-      || !Object.values(accounts).every((identities) => strings(identities) && identities.length > 0)
-      || (value["partial"] !== undefined && !strings(value["partial"]))) {
+    const saved = parseSaved(text);
+    if (saved === null) {
       this.blind = true;
       console.warn("cliproxy: the saved hidden accounts are not a list; no Hub account is read while a hidden one is unknown");
       return;
     }
-    for (const [key, identities] of Object.entries(accounts)) this.hiddenAccounts.set(key, identities as string[]);
-    this.covered = new Set(keys);
-    this.partial = new Set(value["partial"] as string[] | undefined);
-    this.blind = value["blind"];
-    if (value["hub"] !== this.hub()) this.forgetIndexed();
+    for (const [key, identities] of Object.entries(saved.accounts)) this.hiddenAccounts.set(key, identities);
+    this.covered = new Set(saved.keys);
+    this.partial = new Set(saved.partial);
+    this.blind = saved.blind;
+    if (saved.hub !== this.hub()) this.forgetIndexed();
     this.savedHidden = this.hiddenDocument();
+  }
+
+  /**
+   * Takes from the list on disk which account each key still hidden here is, where this server does not know it: another
+   * server on the same state directory may have learned and saved it since (#3426). Never a key that list holds in part.
+   */
+  private adoptSaved(): void {
+    let saved: SavedHidden | null;
+    try { saved = parseSaved(readOwnFile(this.hiddenPath)); } catch { return; }
+    if (saved === null || saved.partial.includes(EVERY_KEY)) return;
+    const hidden = this.hidden(), whole = this.hiddenWhole(), hub = saved.hub === this.hub();
+    for (const [key, identities] of Object.entries(saved.accounts)) {
+      if (this.hiddenAccounts.has(key) || saved.partial.includes(key) || (whole && !hidden.has(key))) continue;
+      const kept = hub ? identities : identities.filter((identity) => !isIndexed(identity));
+      if (kept.length > 0) this.hiddenAccounts.set(key, kept);
+    }
   }
 
   private hiddenDocument(): string {
@@ -287,16 +311,21 @@ export class CLIProxyService {
   private saveHidden(): boolean {
     if (this.hiddenDocument() === this.savedHidden) return true;
     try {
-      // never a list a start refuses (HIDDEN_MAX_BYTES): it would read no Hub account (#3449). One that cannot fit is a failed
-      // save, and not left to the older list either: knowing less of these accounts, a restart would read them (#3453)
-      if (!this.fitHidden()) {
-        const blind = this.blindDocument() ?? JSON.stringify({ hub: this.hub(), accounts: {}, keys: [], blind: true, partial: [EVERY_KEY] });
-        if (blind !== this.savedHidden) { writePrivateState(this.hiddenPath, JSON.parse(blind)); this.savedHidden = blind; }
-        throw new Error("the hidden accounts do not fit in a saved list");
-      }
-      const document = this.hiddenDocument();
-      writePrivateState(this.hiddenPath, JSON.parse(document));
-      this.savedHidden = document;
+      // under the guard other servers on this state directory take too, with what one of them saved since: a server that
+      // knows less of a hidden account never writes over what another learned of it (#3426)
+      withOwnerGuard(this.hiddenPath, () => {
+        this.adoptSaved();
+        // never a list a start refuses (HIDDEN_MAX_BYTES): it would read no Hub account (#3449). One that cannot fit is a failed
+        // save, and not left to the older list either: knowing less of these accounts, a restart would read them (#3453)
+        if (!this.fitHidden()) {
+          const blind = this.blindDocument() ?? JSON.stringify({ hub: this.hub(), accounts: {}, keys: [], blind: true, partial: [EVERY_KEY] });
+          if (blind !== this.savedHidden) { writePrivateState(this.hiddenPath, JSON.parse(blind)); this.savedHidden = blind; }
+          throw new Error("the hidden accounts do not fit in a saved list");
+        }
+        const document = this.hiddenDocument();
+        writePrivateState(this.hiddenPath, JSON.parse(document));
+        this.savedHidden = document;
+      });
       this.hiddenSaveFailed = false;
       return true;
     } catch {
@@ -436,15 +465,17 @@ export class CLIProxyService {
     this.entries = this.entries.filter((entry) => hidden.has(entry.key));
   }
 
-  call(path: string, init: RequestInit = {}): Promise<Record<string, unknown>> {
+  /** `sendable`: asked as the request's turn comes, after the calls queued before it; false withdraws it unsent. */
+  call(path: string, init: RequestInit = {}, sendable?: () => boolean): Promise<Record<string, unknown>> {
     // A revoked key must cause one refusal, not one per account (the proxy bans after five).
-    const request = this.requests.then(() => this.request(path, init));
+    const request = this.requests.then(() => this.request(path, init, sendable));
     this.requests = request.then(() => undefined, () => undefined);
     return request;
   }
 
-  private async request(path: string, init: RequestInit): Promise<Record<string, unknown>> {
+  private async request(path: string, init: RequestInit, sendable?: () => boolean): Promise<Record<string, unknown>> {
     if (this.blocked) throw this.blocked;
+    if (sendable !== undefined && !sendable()) throw new CLIProxyError("cliproxy_withdrawn", 409, "Hub request withdrawn");
     const config = this.config;
     if (!config) throw new CLIProxyError("cliproxy_not_configured", 409, "Configure Hub first");
     try {
@@ -572,6 +603,7 @@ export class CLIProxyService {
    */
   private async collect(kept: ReadonlySet<string>, start: ReadView, answer: { whole: boolean },
     learned: Map<string, { identities: readonly string[]; shown: boolean; kept?: ProviderUsage }>): Promise<readonly ProviderUsage[] | null> {
+    const generation = this.generation;
     try {
       const body = await this.call("/credentials");
       if (!Array.isArray(body["files"])) throw new CLIProxyError("cliproxy_response", 502, "Hub returned an unreadable response");
@@ -600,7 +632,9 @@ export class CLIProxyService {
         const last = kept.has(entry.key) && holder !== null ? this.entries.find((held) => held.key === entry.key && this.holders.get(held) === holder) : undefined;
         const identities = accountIdentities(provider.id, holder, email, index);
         const shown = !start.hidden.has(entry.key) && !live.hidden.has(entry.key);
-        if (last) { learned.set(entry.key, { identities, shown, kept: last }); return [Promise.resolve(last)]; }
+        // a kept row stands only while its account is not hidden under another key: then it is listed unread, without numbers (#3426)
+        const hiddenElsewhere = shown && identities.some((identity) => start.hiddenIdentities.has(identity) || live.hiddenIdentities.has(identity));
+        if (last && !hiddenElsewhere) { learned.set(entry.key, { identities, shown, kept: last }); return [Promise.resolve(last)]; }
         const held = (row: ProviderUsage): ProviderUsage => {
           if (holder !== null) this.holders.set(row, holder);
           this.identities.set(row, identities);
@@ -617,12 +651,19 @@ export class CLIProxyService {
         // the hub set the account aside (its sign-in refused, or its limits reached): nothing is asked for it
         if (file["unavailable"] === true) return [Promise.resolve(held(unread("failed", "hub")))];
         return [(async (): Promise<ProviderUsage> => {
+          // sent only while this report is the current one and the account may still be read: hidden, or the Hub changed,
+          // while the call waited behind others, it is withdrawn unsent (#3426)
+          let withdrawn = false;
+          const sendable = () => {
+            withdrawn = generation !== this.generation || unreadableIn(this.view(this.hidden(), this.hiddenWhole()), entry.key, identities);
+            return !withdrawn;
+          };
           try {
             const reading = await provider.read({ ...ctx, fetch: async (url, init) => {
               const header = Object.fromEntries(new Headers(init.headers).entries());
               header["authorization"] = "Bearer $TOKEN$";
               try {
-                const answer = await this.call("/requests/api-call", { method: "POST", body: JSON.stringify({ auth_index: index, method: "GET", url, header }) });
+                const answer = await this.call("/requests/api-call", { method: "POST", body: JSON.stringify({ auth_index: index, method: "GET", url, header }) }, sendable);
                 const status = answer["status_code"];
                 if (typeof status !== "number" || status < 200 || status > 599 || typeof answer["body"] !== "string") throw proxyInvalid();
                 return new Response(answer["body"], { status });
@@ -633,6 +674,7 @@ export class CLIProxyService {
             } }, { token: "$TOKEN$", expiresAt: null, chatgptAccount: workspace });
             return reading ? { ...entry, plan: reading.plan, windows: reading.windows, problem: null, checked_at: new Date().toISOString() } : entry;
           } catch (error) {
+            if (withdrawn) return { ...entry, problem: null };
             const status = error instanceof UsageHttpError ? error.status : null;
             if (status === 401 || status === 403) return unread("expired");
             if (status === 429) return unread("rate_limited");
