@@ -144,6 +144,7 @@ run_script scripts/conversation-search-browser-qa.ts
 run_script scripts/conversation-search-demo-regression.ts
 run_script scripts/chat-gjc-streaming-browser-qa.ts
 run_script scripts/chat-scroll-padding-regression.ts
+run_script scripts/chat-hold-visible-row-regression.ts
 run_script scripts/chat-selection-copy-regression.ts
 run_script scripts/chat-fallback-browser-qa.ts
 run_script scripts/grok-chat-browser-qa.ts
