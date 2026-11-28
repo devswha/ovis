@@ -37,7 +37,7 @@ index b6c7481603f4119495551b3e4c1c071984c144af..7fba09c4ba014c5fb43884bff1029fad
      /**
       * Sets a measured item size and recalculates list positions as needed.
 diff --git a/react.mjs b/react.mjs
-index 95465f2ab89ce41a10553f58af83618f7310e83c..f722c1795a48a07331396fba16fbcc409635561b 100644
+index 95465f2ab89ce41a10553f58af83618f7310e83c..cb92502393ab9dcfc6fc7522722b3008ab5d335c 100644
 --- a/react.mjs
 +++ b/react.mjs
 @@ -1251,7 +1251,40 @@ function calculateOffsetWithOffsetPosition(ctx, offsetParam, params) {
@@ -126,7 +126,24 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..f722c1795a48a07331396fba16fbcc40
              });
            }
            setTimeout(
-@@ -2054,6 +2091,7 @@ function scrollTo(ctx, params) {
+@@ -1666,7 +1703,15 @@ function prepareMVCP(ctx, dataChanged) {
+     } else if (scrollTarget !== void 0) {
+       targetId = getId(state, scrollTarget);
+     } else if (idsInView.length > 0 && state.didContainersLayout && !dataChanged) {
+-      targetId = idsInView.find((id) => indexByKey.get(id) !== void 0);
++      // Hold a row the reader has seen at its measured size: a row a scroll just uncovered is drawn at
++      // its estimate, and holding it moves every row under it by the estimate's error when it is measured.
++      targetId = idsInView.find((id) => {
++        var _a4;
++        return indexByKey.get(id) !== void 0 && state.sizesKnown.has(id) && !((_a4 = state.firstMeasuredKeys) == null ? void 0 : _a4.has(id));
++      });
++      if (targetId === void 0) {
++        targetId = idsInView.find((id) => indexByKey.get(id) !== void 0);
++      }
+     }
+     if (dataChanged && idsInView.length > 0 && state.didContainersLayout) {
+       for (let i = 0; i < idsInView.length; i++) {
+@@ -2054,6 +2099,7 @@ function scrollTo(ctx, params) {
    const {
      animated,
      isInitialScroll,
@@ -134,7 +151,7 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..f722c1795a48a07331396fba16fbcc40
      offset: scrollTargetOffset,
      precomputedWithViewOffset,
      waitForInitialScrollCompletionFrame
-@@ -2094,7 +2132,7 @@ function scrollTo(ctx, params) {
+@@ -2094,7 +2140,7 @@ function scrollTo(ctx, params) {
      }
    }
    if (forceScroll || !isInitialScroll || Platform.OS === "android") {
@@ -143,7 +160,7 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..f722c1795a48a07331396fba16fbcc40
    } else {
      state.scroll = offset;
    }
-@@ -2119,6 +2157,7 @@ function scrollToIndex(ctx, {
+@@ -2119,6 +2165,7 @@ function scrollToIndex(ctx, {
    animated = true,
    forceScroll,
    isInitialScroll,
@@ -151,7 +168,7 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..f722c1795a48a07331396fba16fbcc40
    viewPosition
  }) {
    const state = ctx.state;
-@@ -2137,6 +2176,7 @@ function scrollToIndex(ctx, {
+@@ -2137,6 +2184,7 @@ function scrollToIndex(ctx, {
      index,
      isInitialScroll,
      itemSize,
@@ -159,7 +176,7 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..f722c1795a48a07331396fba16fbcc40
      offset: firstIndexOffset,
      viewOffset,
      viewPosition: viewPosition != null ? viewPosition : 0
-@@ -2998,6 +3038,7 @@ function scrollToFallbackOffset(ctx, offset) {
+@@ -2998,6 +3046,7 @@ function scrollToFallbackOffset(ctx, offset) {
    var _a3;
    (_a3 = ctx.state.refScroller.current) == null ? void 0 : _a3.scrollTo({
      animated: false,
@@ -167,7 +184,7 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..f722c1795a48a07331396fba16fbcc40
      x: ctx.state.props.horizontal ? offset : 0,
      y: ctx.state.props.horizontal ? 0 : offset
    });
-@@ -4783,10 +4824,35 @@ function updateItemSizes(ctx, measurement) {
+@@ -4783,13 +4832,42 @@ function updateItemSizes(ctx, measurement) {
      updateItemSizesBatch(ctx, [measurement]);
    }
  }
@@ -200,10 +217,33 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..f722c1795a48a07331396fba16fbcc40
    const state = ctx.state;
    const result = {};
 +  hearUnheardScroll(ctx);
++  const firstMeasuredKeys = /* @__PURE__ */ new Set();
    for (const measurement of measurements) {
      const ownsMeasuredItem = measurement.containerId === void 0 || peek$(ctx, `containerItemKey${measurement.containerId}`) === measurement.itemKey;
      if (ownsMeasuredItem) {
-@@ -5668,7 +5734,10 @@ function sortDOMElements(container, indexByElement) {
++      if (!state.sizesKnown.has(measurement.itemKey)) {
++        firstMeasuredKeys.add(measurement.itemKey);
++      }
+       const index = state.indexByKey.get(measurement.itemKey);
+       const itemData = index === void 0 ? void 0 : (_a3 = state.props.data) == null ? void 0 : _a3[index];
+       const metadata = measurement.containerId !== void 0 && index !== void 0 && itemData !== void 0 ? resolveContainerItemMetadata(state, measurement.containerId, index, itemData) : void 0;
+@@ -4797,7 +4875,14 @@ function updateItemSizesBatch(ctx, measurements) {
+       mergeItemSizeUpdateResult(result, nextResult);
+     }
+   }
+-  flushItemSizeUpdates(ctx, result);
++  // rows measured for the first time here were drawn at their estimates: the list does not hold them
++  // in place while it moves the view for their sizes (prepareMVCP)
++  state.firstMeasuredKeys = firstMeasuredKeys;
++  try {
++    flushItemSizeUpdates(ctx, result);
++  } finally {
++    state.firstMeasuredKeys = void 0;
++  }
+ }
+ function applyItemSize(ctx, itemKey, sizeObj, resolvedMeasurementItem) {
+   var _a3, _b;
+@@ -5668,7 +5753,10 @@ function sortDOMElements(container, indexByElement) {
            break;
          }
        }
@@ -215,7 +255,7 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..f722c1795a48a07331396fba16fbcc40
          container.insertBefore(element, nextStableElement);
        } else {
          container.appendChild(element);
-@@ -5715,35 +5784,22 @@ function findLIS(arr) {
+@@ -5715,35 +5803,22 @@ function findLIS(arr) {
  // src/hooks/useDOMOrder.ts
  function useDOMOrder(ref) {
    const ctx = useStateContext();
@@ -265,7 +305,7 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..f722c1795a48a07331396fba16fbcc40
  }
  function useFreshDataTransitionVisibility(readyToRender, transitionEpoch) {
    const [completedTransitionEpoch, setCompletedTransitionEpoch] = useState(transitionEpoch);
-@@ -6074,7 +6130,7 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
+@@ -6074,7 +6149,7 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
      return horizontal ? scrollElement.scrollLeft : scrollElement.scrollTop;
    }, [getMaxScrollOffset, horizontal, isWindowScroll]);
    const scrollToLocalOffset = useCallback(
@@ -274,7 +314,7 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..f722c1795a48a07331396fba16fbcc40
        const scrollElement = scrollRef.current;
        const target = getScrollTarget();
        if (!target || typeof target.scrollTo !== "function") {
-@@ -6100,7 +6156,8 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
+@@ -6100,7 +6175,8 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
        } else {
          options.top = clampedOffset;
        }
@@ -284,7 +324,7 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..f722c1795a48a07331396fba16fbcc40
      },
      [getMaxScrollOffset, getScrollTarget, horizontal, isWindowScroll]
    );
-@@ -6123,13 +6180,13 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
+@@ -6123,13 +6199,13 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
          target.scrollBy({ behavior: "auto", left: x, top: y });
        },
        scrollTo: (options) => {
@@ -302,7 +342,7 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..f722c1795a48a07331396fba16fbcc40
        },
        scrollToOffset: (params) => {
          const { offset, animated = true } = params;
-@@ -6219,7 +6276,7 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
+@@ -6219,7 +6295,7 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
    useEffect(() => {
      const doScroll = () => {
        if (contentOffset) {
@@ -311,7 +351,7 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..f722c1795a48a07331396fba16fbcc40
        }
      };
      doScroll();
-@@ -6384,7 +6441,7 @@ function getScrollAdjustTarget(ctx, contentNode) {
+@@ -6384,7 +6460,7 @@ function getScrollAdjustTarget(ctx, contentNode) {
    return scrollElement ? { contentNode: resolvedContentNode, scrollElement } : null;
  }
  function scrollAdjustBy(el, left, top) {
@@ -320,7 +360,7 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..f722c1795a48a07331396fba16fbcc40
  }
  function ScrollAdjust() {
    const ctx = useStateContext();
-@@ -6425,8 +6482,11 @@ function ScrollAdjust() {
+@@ -6425,8 +6501,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -333,7 +373,7 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..f722c1795a48a07331396fba16fbcc40
              void contentNode.offsetHeight;
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
-@@ -7194,10 +7254,12 @@ function scrollToEnd(ctx, options) {
+@@ -7194,10 +7273,12 @@ function scrollToEnd(ctx, options) {
    }
    const paddingBottom = state.props.stylePaddingBottom || 0;
    const footerSize = peek$(ctx, "footerSize") || 0;
@@ -347,7 +387,7 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..f722c1795a48a07331396fba16fbcc40
      viewPosition: 1
    });
    return true;
-@@ -7286,6 +7348,7 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+@@ -7286,6 +7367,7 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
      }
    };
    const startImperativeScroll = (resolve) => {
@@ -355,7 +395,7 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..f722c1795a48a07331396fba16fbcc40
      state.scheduledWork.cancel("imperativeScrollReady");
      const token = ++imperativeScrollToken;
      settlePendingImperativeScroll(state);
-@@ -7436,15 +7499,24 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+@@ -7436,15 +7518,24 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
          params.index >= 0 ? () => isScrollToIndexReady(params.index) : void 0
        );
      },
