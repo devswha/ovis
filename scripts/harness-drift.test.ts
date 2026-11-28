@@ -14,9 +14,15 @@ describe("harness drift", () => {
     expect(rows.map(({ kind, latest, outside }) => [kind, latest, outside])).toEqual([["outside", "2.0.0", true], ["unread", "npm answered 503", false]]);
   });
 
-  it("checks every hooked agent and Codex's own server against the windows in the code", () => {
+  it("holds Prime Agent to the 0.10 releases its daemon's protocol was measured on", () => {
+    const prime = HARNESSES.filter((harness) => harness.kind === "prime-agent");
+    expect(drifted(prime, new Map([["prime-agent", { version: "0.10.9" }]]))).toEqual([]);
+    expect(drifted(prime, new Map([["prime-agent", { version: "0.11.0" }]])).map((row) => row.outside)).toEqual([true]);
+  });
+
+  it("checks every hooked agent, Codex's own server and Prime Agent against the windows in the code", () => {
     // every window starts at the version it was measured from: a release older than all of them is outside each one
     const rows = drifted(HARNESSES, new Map(HARNESSES.map((harness) => [harness.kind, { version: "0.0.1" }])));
-    expect(rows.map((row) => [row.kind, row.outside])).toEqual([...APPROVAL_ADAPTERS.map((adapter) => adapter.kind), "codex"].map((kind) => [kind, true]));
+    expect(rows.map((row) => [row.kind, row.outside])).toEqual([...APPROVAL_ADAPTERS.map((adapter) => adapter.kind), "codex", "prime-agent"].map((kind) => [kind, true]));
   });
 });
