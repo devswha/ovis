@@ -303,17 +303,21 @@ export const indexedAccountStore: AccountStore = {
     return name === "session" ? sessionWritten(written) : written;
   },
   update(name, change) {
+    let changed = false;
     const written = transact("readwrite", (store) => {
       const request = store.get(name);
       request.onsuccess = () => {
         const next = change(request.result as never);
-        if (name === "session" && next !== request.result) store.delete("connect_epoch");
+        // a change that keeps what it was given writes nothing: every read of the sign-in goes through here (service.ts, session)
+        if (next === request.result) return;
+        changed = true;
+        if (name === "session") store.delete("connect_epoch");
         if (next === undefined) store.delete(name);
         else store.put(next, name);
       };
       return () => undefined;
     });
-    return name === "session" ? sessionWritten(written) : written;
+    return name === "session" ? written.finally(() => { if (changed) globalThis.window?.dispatchEvent?.(new Event(ACCOUNT_SESSION_EVENT)); }) : written;
   },
   updateMany(names, change) {
     let sessionChanged = false;

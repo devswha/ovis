@@ -242,13 +242,14 @@ export function createAccountController(mount: RelayShellMount, view: {
     const live = (): boolean => epoch === generation;
     let replaced = false;
     // another sign-in took this read's place: the rows kept from the earlier one are not its to draw, not even
-    // when its own read then fails, so it starts from its heading alone and is read again
-    const replacedBy = (next: AccountSession): void => {
+    // when its own read then fails, so it starts from its heading alone, drawn now, and is read again
+    const replacedBy = async (next: AccountSession): Promise<void> => {
       directory = [];
       listedFor = undefined;
       accountView = { kind: "signed-in", provider: next.provider, pcs: null, error: null };
       shownFor = undefined;
       replaced = true;
+      await changed();
     };
     // the sign-in this read is for, once it is known: a read that fails lists the account's PCs it listed last (knownPcs)
     let readFor: AccountSession | undefined;
@@ -257,14 +258,14 @@ export function createAccountController(mount: RelayShellMount, view: {
         const session = await account.session();
         if (!live()) return;
         if (session === undefined) { if (initial) { await changed(); return; } throw new SignedOutError(); }
-        // named before it is drawn: a confirm drawn from this view records whose account it speaks of
-        if (initial) { accountView = { kind: "signed-in", provider: session.provider, pcs: null, error: null }; shownFor = session; await changed(); }
         // the rows on screen are another sign-in's (another tab signed in since they were read): they go before this
-        // read, so its failure cannot draw them again under this one
-        else if (shownFor !== undefined && !sameSignIn(shownFor, session)) {
-          directory = [];
-          listedFor = undefined;
-          current = accountView = { kind: "signed-in", provider: session.provider, pcs: null, error: null };
+        // read, a read of the front page's too, so its failure cannot draw them again under this one
+        const another = shownFor !== undefined && !sameSignIn(shownFor, session);
+        if (another) { directory = []; listedFor = undefined; }
+        // named before it is drawn: a confirm drawn from this view records whose account it speaks of
+        if (initial || another) {
+          accountView = { kind: "signed-in", provider: session.provider, pcs: null, error: null };
+          if (another) current = accountView;
           shownFor = session;
           await changed();
           if (!live()) return;
@@ -306,7 +307,7 @@ export function createAccountController(mount: RelayShellMount, view: {
         const still = await account.session();
         if (!live()) return;
         if (still === undefined) throw new SignedOutError();
-        if (!sameSignIn(still, session)) { replacedBy(still); return; }
+        if (!sameSignIn(still, session)) { await replacedBy(still); return; }
         directory = listed;
         const at = Date.now();
         const projection = { accountKey: key.public_spki, account: session.account, registered: openKey !== null };
@@ -318,13 +319,16 @@ export function createAccountController(mount: RelayShellMount, view: {
       } catch (error) {
         if (!live()) return;
         const next = error instanceof SignedOutError ? await account.session().catch(() => undefined) : undefined;
-        if (next !== undefined) { if (live()) replacedBy(next); return; }
+        if (next !== undefined) { if (live()) await replacedBy(next); return; }
         if (!live()) return;
         if (error instanceof SignedOutError) { directory = []; dropKnownPcs(); accountView = { kind: "signed-out", error: t("Your sign-in ended. Sign in again to see every PC of your account.") }; followedFor = undefined; forgetNames(readFor?.account); followed?.poke(); }
         else {
           console.warn("Ovis: the account's PCs could not be read", error instanceof Error ? error.name : error);
           const devices = await store.list();
+          // another tab may have stored another sign-in after the service's own check of this one: its heading, not these rows
+          const now = readFor === undefined ? undefined : await account.session().catch(() => undefined);
           if (!live()) return;
+          if (now !== undefined && readFor !== undefined && !sameSignIn(now, readFor)) { await replacedBy(now); return; }
           const kept = current?.kind === "signed-in" && current.pcs !== null && listedFor?.epoch === epoch
             ? myPcs(drawnPcs(directory, listedFor.projection.account, listedFor.at), devices, { now: listedFor.at, ...listedFor.projection, outdated: view.outdated() })
             : current?.kind === "signed-in" && current.pcs !== null ? current.pcs : myPcs([], devices, { now: Date.now(), outdated: view.outdated() });
