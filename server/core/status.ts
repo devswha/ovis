@@ -767,17 +767,18 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   }
 
   /**
-   * GJC's discovery no longer finds gjc in a pane: what its turn waited on is over. Where GJC's wait held the pane, its
-   * end is told, unless native OmO took the pane, whose own status stands.
+   * GJC's discovery no longer finds gjc in a pane: what its turn waited on is over, and its count goes with it. Where
+   * GJC's wait held the pane, its end is alerted. A pane native OmO took is OmO's to tell.
    */
   function gjcLost(paneId: string): void {
-    const held = gjcWaits.waiting(paneId) && gjcLives.has(paneId);
+    const told = gjcLives.has(paneId);
+    const held = told && gjcWaits.waiting(paneId);
     forgetGjcWait(paneId);
-    if (!held || omo.runs(paneId)) return;
+    if (!told || omo.runs(paneId)) return;
     const status = completions.current(paneId);
     if (status === undefined) return;
-    broadcastAll(paneStatus(paneId, status));
-    alert(paneId, alertStatus(status, waitingOn(paneId)));
+    broadcastAll(paneStatus(paneId, status, { background_tasks: backgroundOf(paneId) }));
+    if (held) alert(paneId, alertStatus(status, waitingOn(paneId)));
   }
 
   function claudeAgentsChanged(paneId: string, running: number, turnRunning: number, promptAt: number | null, resetHold = false, agent: string | null = null, settled = false, capped = true): void {

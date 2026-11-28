@@ -2672,9 +2672,8 @@ describe("the status hub's GJC turn at rest under its background job", () => {
     h.rest();
     h.poll();
     expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
-    // When GJC is found in the pane, at rest with no job, and herdr's event names it there.
+    // When GJC is found in the pane, at rest with no job.
     const g = await gjcPane(prompt(0) + answer(100), h);
-    handlers.onStatus(pane.pane_id, "idle", "gjc");
     // Then nothing holds the pane.
     expect((await g.status.clientSnapshot()).panes[0]?.background_wait).toBeUndefined();
   });
