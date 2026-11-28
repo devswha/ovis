@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readProcessBirth } from "../server/process-owner.ts";
+import { terminateWindowsTree } from "../server/windows-processes.ts";
 
 /**
  * herdr plugin update builds the new version in a new installation folder while the server the old folder started
@@ -37,10 +38,11 @@ function scratchWithRecord(pid: number, birth?: { platform: string; value: strin
 const windowsCase = (rowStarted: number, commandLine: string) => `
   const own = '"' + process.execPath + '" "' + ${JSON.stringify(join(root, "server", "managed.ts"))}.replace(${JSON.stringify(root)}, process.env.HERDR_PLUGIN_ROOT) + '"';
   const pid = Number((await Bun.file(process.env.HERDR_PLUGIN_STATE_DIR + "/server.pid").text()).trim()), rows = [{ pid, parent: 0, path: process.execPath, commandLine: ${JSON.stringify(commandLine)} === "OWN" ? own : ${JSON.stringify(commandLine)}, started: ${rowStarted} }];
-  let target = 0, terminated = false;
+  let target = 0, checked, terminated = false;
   const result = await stop({ isWindows: true, isAlive: () => !terminated, processTable: async () => terminated ? [] : rows,
-    terminateTree: (p) => { target = p; terminated = true; return { status: 0, error: undefined, stderr: "" }; } });
-  console.log(JSON.stringify({ result, stopped: target === pid }));`;
+    terminateTree: (p, started) => { target = p; checked = started; terminated = true; return { status: 0, error: undefined, stderr: "" }; } });
+  // ended through the creation time it verified, which the kill checks again on the process's handle
+  console.log(JSON.stringify({ result, stopped: target === pid && checked === rows[0].started }));`;
 const oldFolderServer = `"${process.execPath}" "${join(tmpdir(), "old installation", "checkout", "server", "managed.ts")}"`;
 
 it("stops, from a new installation folder, the server another folder started: by its recorded pid and birth", async () => {
@@ -55,17 +57,50 @@ it("stops, from a new installation folder, the server another folder started: by
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }, 30_000);
 
-it("refuses a process that only holds the recorded pid, even one whose command line names this plugin's server", async () => {
+// Ovis for Windows' Start goes on to start for this line alone (it exits 0), and reports every failed stop
+it("leaves alone a process that only holds the recorded pid, even one whose command line names this plugin's server, and says the pid is another process's", async () => {
   for (const commandLine of [oldFolderServer, `"${process.execPath}" "${join(root, "server", "managed.ts")}"`]) {
     const scratch = scratchWithRecord(process.pid, { platform: "win32", value: "1700000000000" });
     try {
       const { code, out, err } = await runStop(scratch, windowsCase(1700000009999, commandLine));
       expect(code, err).toBe(0);
-      expect(JSON.parse(out.trim().split("\n").at(-1)!)).toEqual({ result: 1, stopped: false });
-      expect(existsSync(join(scratch, "state", "server.pid"))).toBe(true);
+      expect(JSON.parse(out.trim().split("\n").at(-1)!)).toEqual({ result: 0, stopped: false });
+      expect(out).toMatch(new RegExp(`^Ovis is not running \\(pid ${process.pid} now belongs to another process\\)$`, "m"));
+      expect(err).not.toContain("could not verify");
+      expect(existsSync(join(scratch, "state", "server.pid")), "the record of a server that is gone is forgotten").toBe(false);
     } finally { rmSync(scratch, { recursive: true, force: true }); }
   }
 }, 60_000);
+
+it("fails, keeping the record, when it cannot read who holds the recorded pid: never says the pid is another process's (#4006)", async () => {
+  const scratch = scratchWithRecord(process.pid, { platform: "win32", value: "1700000000000" });
+  try {
+    // the process table query failed or timed out: windowsProcessTable answers no rows
+    const { code, out, err } = await runStop(scratch, windowsCase(1700000000000, oldFolderServer).replace("terminated ? [] : rows", "[]"));
+    expect(code, err).toBe(0);
+    expect(JSON.parse(out.trim().split("\n").at(-1)!)).toEqual({ result: 1, stopped: false });
+    expect(err).toContain("could not verify the recorded Ovis process; it was left running and its pid file was kept");
+    expect(out, "regression: an identity it could not read was reported as a reused pid").not.toContain("belongs to another process");
+    expect(existsSync(join(scratch, "state", "server.pid"))).toBe(true);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+}, 30_000);
+
+it.skipIf(process.platform !== "win32")("ends a process only through a handle whose creation time is the one the stop verified (#4006)", async () => {
+  const server = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], { detached: true, stdio: "ignore", windowsHide: true });
+  try {
+    const exited = new Promise<void>((resolve) => server.once("exit", () => resolve()));
+    const birth = readProcessBirth(server.pid!);
+    if (birth.state !== "identified") throw new Error(`no birth for ${server.pid}: ${birth.state}`);
+    const started = Number(birth.birth.value);
+    const other = terminateWindowsTree(server.pid!, started + 1);
+    expect(other.status).not.toBe(0);
+    expect(other.replaced).toBe(true);
+    expect(() => process.kill(server.pid!, 0), "a process whose creation time differs is not ended").not.toThrow();
+    const ended = terminateWindowsTree(server.pid!, started);
+    expect(ended.status, `the handle's creation time is the process table's, to the ms: ${ended.stderr}`).toBe(0);
+    await exited;
+  } finally { if (server.exitCode === null && server.signalCode === null) server.kill("SIGKILL"); }
+}, 30_000);
 
 it("stops a real process recorded the way start records it, from another folder, on this platform", async () => {
   const server = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], { detached: true, stdio: "ignore", windowsHide: true });

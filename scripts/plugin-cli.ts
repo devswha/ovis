@@ -103,7 +103,8 @@ const SPECS: Readonly<Record<string, Spec>> = {
     flags: [["--json", "One JSON object: version, running, server id, relay, account, waiting for Add"]],
   },
   start: { command: "start", summary: "Start Ovis on this PC", usage: "ovis start" },
-  stop: { command: "stop", summary: "Stop Ovis on this PC", usage: "ovis stop" },
+  // --if-down: Ovis for Windows' Start, which leaves alone a server that answers once the stop has its turn
+  stop: { command: "stop", summary: "Stop Ovis on this PC", usage: "ovis stop", hidden: ["--if-down"] },
   tui: {
     command: "tui", passThrough: true,
     summary: "Show herdr-core's terminals in this terminal",

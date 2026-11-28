@@ -1366,6 +1366,33 @@ console.log(key.publicKey);
     Assert ((Get-FileHash $exe).Hash -eq (Get-FileHash (Join-Path $releaseDir 'v1.2.3\ovis-server-windows-x64.exe')).Hash) 'The checked binary must be installed in bin'
     Assert ((Get-Content -Raw (Join-Path $ovisHome 'bin\dist\index.html')) -match '1\.2\.3') 'The client must be unpacked beside it'
     Assert ($state.linkedRoot -eq (Join-Path $ovisHome 'plugin') -and (Test-Path (Join-Path $ovisHome 'plugin\herdr-plugin.toml'))) 'The plugin that runs it must be linked into herdr'
+    # Ovis for Windows runs the plugin's commands through this run.ps1 (Setup.PluginCommandLine), in Windows PowerShell with
+    # stdout and stderr piped: a command's first line and exit code decide its status, StoppedServer and a failed stop (#4006)
+    $runCheck = Join-Path $binaryScratch 'run.ps1 as the app runs it'
+    New-Item -ItemType Directory -Force -Path (Join-Path $runCheck 'plugin'), (Join-Path $runCheck 'bin') | Out-Null
+    Copy-Item -LiteralPath (Join-Path $ovisHome 'plugin\run.ps1') -Destination (Join-Path $runCheck 'plugin\run.ps1')
+    Add-Type -OutputType ConsoleApplication -OutputAssembly (Join-Path $runCheck 'bin\ovis-server.exe') -TypeDefinition @'
+public static class OvisServerStandIn {
+    public static int Main(string[] args) {
+        switch (string.Join(" ", args)) {
+            case "plugin status": System.Console.Out.WriteLine("down http://127.0.0.1:7317 (pid 4242)"); System.Console.Error.WriteLine("on stderr"); return 0;
+            case "plugin stop": System.Console.Out.WriteLine("stopped Ovis (pid 4242)"); return 0;
+            case "plugin stop --if-down": System.Console.Out.WriteLine("Ovis already running at http://127.0.0.1:7317"); return 0;
+            case "plugin stop --refused": System.Console.Error.WriteLine("could not verify the recorded Ovis process; it was left running and its pid file was kept"); return 1;
+            default: System.Console.Error.WriteLine("unexpected: " + string.Join(" ", args)); return 9;
+        }
+    }
+}
+'@
+    foreach ($case in @(@('status', 0, 'down http://127.0.0.1:7317 (pid 4242)'), @('stop', 0, 'stopped Ovis (pid 4242)'), @('stop --if-down', 0, 'Ovis already running at http://127.0.0.1:7317'), @('stop --refused', 1, 'could not verify the recorded Ovis process; it was left running and its pid file was kept'))) {
+        # as Run.Program starts it: cmd.exe, the command line Setup.PluginCommandLine gives, stderr into the same pipe
+        $info = New-Object Diagnostics.ProcessStartInfo 'cmd.exe', ('/d /c "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + (Join-Path $runCheck 'plugin\run.ps1') + '" ' + $case[0] + ' 2>&1"')
+        $info.UseShellExecute = $false; $info.RedirectStandardOutput = $true; $info.CreateNoWindow = $true
+        $process = [Diagnostics.Process]::Start($info); $said = $process.StandardOutput.ReadToEnd(); $process.WaitForExit()
+        $first = ($said -split "\r?\n")[0]
+        Assert ($process.ExitCode -eq $case[1] -and $first -eq $case[2]) "run.ps1 $($case[0]), as the app runs it, must exit $($case[1]) with first line '$($case[2])': exit $($process.ExitCode), said: $said"
+    }
+    Write-Host 'PASS run.ps1: status and stop answer through Windows PowerShell with their pipes, by first line and exit code'
     Assert (($state.herdrStarts -join ',') -eq 'desktop' -and $state.runValue -eq "`"$powershellExe`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$(Join-Path $ovisHome 'start-herdr.ps1')`"") "The release's binary must start herdr where it was stopped, with its sign-in start: $($state.herdrStarts -join ',') $($state.runValue)"
     $state.adds = @()
     $again = & $copy -Ref 'v1.2.3' -Account 'acct_bin' 6>&1 | Out-String

@@ -275,9 +275,10 @@ it.skipIf(process.platform !== "win32")("starts after its launcher exits, stops 
       expect((await fetch(`http://127.0.0.1:${port}/api/health`)).ok).toBe(true);
       expect(() => process.kill(unrelated.pid, 0)).not.toThrow();
       await run("stop");
-      // Simulate PID reuse after taskkill: the real CLI must leave this live fixture alone.
+      // Simulate PID reuse after the process table was read: the table names the server, but the live process that holds
+      // the number now started at another time. The real CLI checks that on the process's handle and ends nothing (#4006).
       const preload = join(scratch, "stop-boundaries.ts");
-      for (const missingIdentity of [false, true]) {
+      {
         writeFileSync(join(state, "server.pid"), String(unrelated.pid));
         writeFileSync(preload, `
           Bun.spawnSync = ({ cmd }) => {
@@ -285,23 +286,21 @@ it.skipIf(process.platform !== "win32")("starts after its launcher exits, stops 
             console.log("simulated tree termination");
             return { exitCode: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), pid: 0 };
           };
-          let reads = 0;
           Bun.spawn = (command) => {
             if (command[0] !== "powershell") throw new Error("unexpected probe");
-            const first = reads++ === 0;
             const row = { ProcessId: ${unrelated.pid}, ParentProcessId: 0, ExecutablePath: process.execPath,
-              CommandLine: '"' + process.execPath + '" "' + ${JSON.stringify(join(root, "server", "managed.ts"))} + '"',
-              ...(first ? { Started: 1 } : ${missingIdentity} ? {} : { Started: 2 }) };
+              CommandLine: '"' + process.execPath + '" "' + ${JSON.stringify(join(root, "server", "managed.ts"))} + '"', Started: 1 };
             return { exited: Promise.resolve(0), stdout: new Blob([JSON.stringify([row])]) };
           };
         `);
         const stop = Bun.spawn([process.execPath, "--preload", preload, join(root, "scripts", "plugin.ts"), "stop"],
           { cwd: root, windowsHide: true, env, stdout: "pipe", stderr: "pipe" });
         const [out, err, code] = await Promise.all([new Response(stop.stdout).text(), new Response(stop.stderr).text(), stop.exited]);
-        expect(out).toContain("simulated tree termination");
-        expect(code, out + err).toBe(missingIdentity ? 1 : 0);
+        expect(out, "regression (fails on main): taskkill was sent to a number another process holds now").not.toContain("simulated tree termination");
+        expect(code, out + err).toBe(0);
+        expect(out).toContain(`Ovis is not running (pid ${unrelated.pid} now belongs to another process)`);
         expect(() => process.kill(unrelated.pid, 0)).not.toThrow();
-        expect(existsSync(join(state, "server.pid"))).toBe(missingIdentity);
+        expect(existsSync(join(state, "server.pid")), "the record of a server that is gone is forgotten").toBe(false);
       }
     } finally {
       unrelated.kill(); await unrelated.exited;

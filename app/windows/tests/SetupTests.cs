@@ -206,12 +206,14 @@ namespace Ovis
                     files.Add(checkout + @"\run.ps1");
                     Equal("bun " + checkout + @"\scripts\plugin.ts status", string.Join(" ", Setup.PluginCommandLine(checkout, "status", files.Contains)));
                 }),
-                Case("Start reports a stop that failed, but not one that left another program's reused pid alone", () =>
+                Case("Start's stop --if-down reaches plugin.ts and run.ps1 alike, after the command", () =>
                 {
-                    Equal(false, Setup.StopFailed(0, "stopped Ovis (pid 5472)\n"));
-                    Equal(false, Setup.StopFailed(1, "could not verify the recorded Ovis process; it was left running and its pid file was kept\n"));
-                    Equal(true, Setup.StopFailed(1, "could not stop Ovis: Access is denied.\n"));
-                    Equal(true, Setup.StopFailed(1, null));
+                    var linked = @"C:\Users\u\AppData\Local\ovis\plugin";
+                    var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { linked + @"\run.ps1" };
+                    Equal("powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + linked + @"\run.ps1 stop --if-down", string.Join(" ", Setup.PluginCommandLine(linked, "stop", files.Contains, "--if-down")));
+                    var checkout = @"C:\Users\u\AppData\Roaming\herdr\plugins\github\devswha.ovis-aa47ee43150f";
+                    files.Add(checkout + @"\scripts\plugin.ts");
+                    Equal("bun " + checkout + @"\scripts\plugin.ts stop --if-down", string.Join(" ", Setup.PluginCommandLine(checkout, "stop", files.Contains, "--if-down")));
                 }),
                 Case("the old id's plugin.ts is told the state dir herdr keeps for it, found as herdr finds it", () =>
                 {
