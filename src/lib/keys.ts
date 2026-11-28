@@ -190,6 +190,18 @@ export function modifyOtherKeysLevel(level: number, final: "m" | "n", params: Re
   return final === "m" && typeof value === "number" ? value : 0;
 }
 
+/**
+ * Alt with a character key under modifyOtherKeys level 2, as xterm and Ghostty encode it (#4898):
+ * CSI 27 ; modifier ; code point ~, Alt+K as CSI 27;3;107~ and Alt+Shift+K as CSI 27;4;75~. `typed` is
+ * what the input layer made of the key, ESC before the character. null keeps it: below level 2,
+ * for a control character (Alt+Enter, Ctrl+Alt+K) and for any other key.
+ */
+export function altOtherKeySequence(typed: string, shift: boolean, modifyOtherKeys: number): string | null {
+  const character = modifyOtherKeys >= 2 && typed.startsWith("\u001b") ? [...typed.slice(1)] : [];
+  if (character.length !== 1 || !isPrintable(character[0]!)) return null;
+  return `\u001b[27;${shift ? 4 : 3};${character[0]!.codePointAt(0)}~`;
+}
+
 /** Ctrl+Enter under modifyOtherKeys, as xterm encodes it; null keeps xterm.js's own CR. */
 export function ctrlEnterSequence(modifyOtherKeys: number): string | null {
   return modifyOtherKeys > 0 ? "\u001b[27;5;13~" : null;

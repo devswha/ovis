@@ -2,7 +2,7 @@ import { useContext, useLayoutEffect, useRef, type Dispatch, type RefObject, typ
 import { HerdrSocket, markTyped } from "./ws.ts";
 import { sendInOrder } from "./sendInOrder.ts";
 import { MachineSession, type MachineSessionRegistry } from "./machineSession.ts";
-import { clipboardKey, hasModifiers, physicalKey, terminalChord, navigationSequence, keyFromData, ctrlEnterSequence, mirroredCtrlEnterKey, modifyOtherKeysLevel, NO_STICKY_MODIFIERS, type StickyModifiers } from "./keys.ts";
+import { clipboardKey, hasModifiers, physicalKey, terminalChord, navigationSequence, keyFromData, altOtherKeySequence, ctrlEnterSequence, mirroredCtrlEnterKey, modifyOtherKeysLevel, NO_STICKY_MODIFIERS, type StickyModifiers } from "./keys.ts";
 import { EMPTY_DRAFT, applyToDraft, draftIsEmpty, holdBefore, type InputDraft } from "./draft.ts";
 import { pendingMessages } from "./pendingMessages.ts";
 import { FrameGate } from "./inputRow.ts";
@@ -1604,6 +1604,15 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           enterAs = enterKey !== null ? "\r" : ctrlEnterSequence(modifyOtherKeysRef.current);
         }
       });
+      // xterm.js types Alt+K as ESC k; a program that asked for modifyOtherKeys level 2 (Pi, gentle-shell) reads only
+      // the CSI 27;3;107~ xterm and Ghostty send then (#4898). A mirrored pane never hears that request and keeps ESC k.
+      let altTyped: string | null = null;
+      let altAs: string | null = null;
+      const onAltKey = term.onKey(({ key, domEvent: event }) => {
+        altAs = event.altKey && !event.ctrlKey && !event.metaKey && !event.isComposing && event.keyCode !== 229
+          ? altOtherKeySequence(key, event.shiftKey, modifyOtherKeysRef.current) : null;
+        altTyped = altAs !== null ? key : null;
+      });
       // Let xterm finish pending IME text before remapping the key's following data.
       // Cmd+Backspace uses the terminal's Ctrl+U line-deletion shortcut on macOS. Ctrl+Backspace erases the word
       // before the cursor with Ctrl+W, where xterm sends Ctrl+H, which a shell reads as a one-character erase (#3415).
@@ -1738,6 +1747,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (modifiedEnter) data = enterAs!;
         enterAs = null;
         enterKey = null;
+        if (altAs !== null && data === altTyped) data = altAs;
+        altAs = null;
+        altTyped = null;
         if (commandBackspace && data === "\x7f") data = "\x15";
         if (controlBackspace && data === "\b") data = "\x17";
         commandBackspace = false;
@@ -2696,6 +2708,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         reassertIfStaleRef.current = () => undefined;
         document.removeEventListener("visibilitychange", onVisibility);
         onModifiedEnter.dispose();
+        onAltKey.dispose();
         onCommandBackspace.dispose();
         inputViewportResize.dispose();
         frameResize.dispose();

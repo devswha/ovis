@@ -7,6 +7,8 @@ import { paneSendKeys, paneSendText } from "../server/herdr/client.ts";
 import { shownRows } from "./shown-rows.ts";
 
 const MODIFIED_CTRL_ENTER = "\x1b[27;5;13~";
+const MODIFIED_ALT_K = "\x1b[27;3;107~";
+const MODIFIED_ALT_SHIFT_K = "\x1b[27;4;75~";
 const NO_SEND_WAIT_MS = 300;
 
 async function until(check: () => boolean, label: string): Promise<void> {
@@ -22,7 +24,9 @@ type Sent = { type: "input"; pane_id: string; text: string } | { type: "keys"; p
 /**
  * A mirrored pane (no terminal attach on its PC, #924) never shows the browser the program's
  * request, so there Ctrl+Enter goes as herdr's `ctrl+enter` key, which herdr encodes in the
- * program's own mode: the program reads the same bytes either way.
+ * program's own mode: the program reads the same bytes either way. Alt with a character key goes
+ * as xterm and Ghostty encode it under modifyOtherKeys level 2 (CSI 27;3;107~ for Alt+K, #4898), and
+ * as ESC before the character otherwise; a mirrored pane keeps the latter.
  */
 export async function checkCtrlEnter(browser: Browser, origin: string, paneId: string): Promise<void> {
   const context = await browser.newContext({ viewport: { width: 1100, height: 650 } });
@@ -95,6 +99,10 @@ process.stdin.on("data", (data) => {
     let since = reads().length;
     await press("Control+Enter", ctrlEnter(true));
     await read(MODIFIED_CTRL_ENTER, since);
+    since = reads().length;
+    await press("Alt+k", typed(mirrored ? "\x1bk" : MODIFIED_ALT_K));
+    await read(mirrored ? "\x1bk" : MODIFIED_ALT_K, since);
+    await press("Alt+Shift+K", typed(mirrored ? "\x1bK" : MODIFIED_ALT_SHIFT_K));
     for (const [shortcut, expected] of [["Enter", "\r"], ["Shift+Enter", "\x1b\r"], ["Alt+Enter", "\x1b\r"]]) {
       await press(shortcut!, typed(expected!));
     }
@@ -129,7 +137,11 @@ process.stdin.on("data", (data) => {
     since = reads().length;
     await press("Control+Enter", ctrlEnter(false));
     await read("\r", since);
+    since = reads().length;
+    await press("Alt+k", typed("\x1bk"));
+    await read("\x1bk", since);
     console.log(`PASS Ctrl+Enter stays Enter until the pane asks for modifyOtherKeys, then reaches it as CSI 27;5;13~${mirrored ? " (mirrored pane, herdr's key)" : ""}`);
+    console.log(`PASS Alt+K reaches the pane as ${mirrored ? "ESC k (mirrored pane)" : "CSI 27;3;107~ under modifyOtherKeys 2"} and as ESC k once it is off`);
     console.log("PASS Enter, Shift+Enter and Alt+Enter keep their sequences; IME text precedes Ctrl+Enter");
   } finally {
     await paneSendKeys(paneId, ["ctrl+c"]).catch(() => {});

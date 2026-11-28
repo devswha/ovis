@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { altSequence, clipboardKey, physicalKey, controlCode, ctrlEnterSequence, mirroredCtrlEnterKey, isPrintable, keySequence, modifyOtherKeysLevel, sanitizeKeyBarExtras, navigationSequence, terminalChord, keyFromData, NO_MODIFIER_LATCH, releaseLatched, stepModifier } from "./keys.ts";
+import { altOtherKeySequence, altSequence, clipboardKey, physicalKey, controlCode, ctrlEnterSequence, mirroredCtrlEnterKey, isPrintable, keySequence, modifyOtherKeysLevel, sanitizeKeyBarExtras, navigationSequence, terminalChord, keyFromData, NO_MODIFIER_LATCH, releaseLatched, stepModifier } from "./keys.ts";
 
 describe("clipboardKey", () => {
   it("recognizes native Ctrl+C/V on Korean and Russian layouts without replacing Latin layout letters", () => {
@@ -204,6 +204,20 @@ describe("ctrlEnterSequence", () => {
     expect(ctrlEnterSequence(0)).toBeNull();
     expect(ctrlEnterSequence(1)).toBe("\u001b[27;5;13~");
     expect(ctrlEnterSequence(2)).toBe("\u001b[27;5;13~");
+  });
+});
+
+describe("altOtherKeySequence", () => {
+  it("encodes Alt with a character as Ghostty and xterm do under modifyOtherKeys level 2 (#4898)", () => {
+    expect(altOtherKeySequence("\u001bk", false, 2)).toBe("\u001b[27;3;107~");
+    expect(altOtherKeySequence("\u001bK", true, 2)).toBe("\u001b[27;4;75~");
+    expect(altOtherKeySequence("\u001b ", false, 2)).toBe("\u001b[27;3;32~");
+  });
+
+  it("keeps ESC before the character below level 2, and every control or non-Alt key at any level", () => {
+    expect(altOtherKeySequence("\u001bk", false, 0)).toBeNull();
+    expect(altOtherKeySequence("\u001bk", false, 1)).toBeNull();
+    for (const typed of ["\u001b\r", "\u001b\u000b", "\u001b\u007f", "\u001b[1;3D", "k"]) expect(altOtherKeySequence(typed, false, 2)).toBeNull();
   });
 });
 
