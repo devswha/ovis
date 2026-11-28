@@ -308,7 +308,7 @@ session="$(python3 -c 'import json,sys; d = json.loads(sys.argv[1]); print(d.get
 say "WebDriverAgent session $session: ${answer:0:300}"
 # the app opens on Connect a PC's three tabs (Ovis relay, Tailscale, SSH): the Tailscale tab's address field opens
 # a pairing link of this app at its PC's page, as any address field there does
-way="$(find '{"using":"predicate string","value":"type == \"XCUIElementTypeButton\" AND label == \"Tailscale\""}' "the Tailscale tab")"
+way="$(find '{"using":"predicate string","value":"type IN {\"XCUIElementTypeButton\", \"XCUIElementTypeToggle\"} AND label == \"Tailscale\""}' "the Tailscale tab")"
 json -X POST "$wda/session/$session/element/$way/click" -d '{}' >/dev/null
 field="$(find '{"using":"class chain","value":"**/XCUIElementTypeTextField"}' "the connect screen's address field")"
 json -X POST "$wda/session/$session/element/$field/click" -d '{}' >/dev/null
@@ -316,7 +316,7 @@ json -X POST "$wda/session/$session/element/$field/value" -d "$(python3 -c 'impo
 open="$(find '{"using":"predicate string","value":"type == \"XCUIElementTypeButton\" AND label IN {\"Connect\", \"연결\"}"}' "the Connect button")"
 json -X POST "$wda/session/$session/element/$open/click" -d '{}' >/dev/null
 await_event 3 SHELL 120 >/dev/null
-find '{"using":"predicate string","value":"label BEGINSWITH \"Pair with\" OR label ENDSWITH \"페어링할까요?\""}' "the hosted shell's pairing question" >/dev/null
+find '{"using":"predicate string","value":"label BEGINSWITH \"Pair with\" OR label ENDSWITH \"페어링을 시작할까요?\""}' "the hosted shell's pairing question" >/dev/null
 shot ios-confirm.png
 say "the app opened the pairing link on its connect screen: the shell asks to pair"
 pair="$(find '{"using":"predicate string","value":"type == \"XCUIElementTypeButton\" AND label IN {\"Pair\", \"페어링\"}"}' "the Pair button")"
