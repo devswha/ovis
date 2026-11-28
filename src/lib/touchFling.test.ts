@@ -68,6 +68,16 @@ describe("the finger's speed at the lift", () => {
     expect(tracker.release(t)).toBeCloseTo(-30 / 24, 5);
   });
 
+  test("keeps the stroke's way through a slip back smaller than the touch slop as the finger lifts", () => {
+    const tracker = createVelocityTracker();
+    let t = 0;
+    let position = 0;
+    tracker.add(t, position);
+    for (let n = 0; n < 10; n++) tracker.add(t += 10, position += 20);
+    tracker.add(t += 8, position -= 3);
+    expect(tracker.release(t)).toBeGreaterThan(1);
+  });
+
   test("follows a finger that turned back through a move that went nowhere", () => {
     const tracker = createVelocityTracker();
     let t = 0;
