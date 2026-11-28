@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, it, jest, setSystemTime, spyOn } from "bun:test";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -2706,6 +2707,52 @@ describe("the status hub's GJC turn at rest under its background job", () => {
     discovery = spyOn(gjc, "gjcPanes").mockResolvedValue(new Map());
     expect((await h.snapshot()).panes[0]?.background_wait).toBe(true);
     expect(h.alerts.slice(told)).not.toContain("done");
+  });
+
+  it("alerts the finish of the agent that took the pane when its subagent ends while a late read named gjc there", async () => {
+    // Given a pane gjc left whose OpenCode turn rests on its subagent, and a read begun while herdr named gjc answered late.
+    const h = hub();
+    const taken = opencode("ses_parent");
+    const named = { ...opencode(null), agent: "gjc" };
+    const path = join(root, `gjc-background-${++transcripts}.jsonl`);
+    writeFileSync(path, prompt(0) + answer(100));
+    discovery = spyOn(gjc, "gjcPanes").mockResolvedValue(new Map([[named.pane_id, { path, startedAt: null }]]));
+    h.herdrSays(named);
+    handlers.onBaseline([named]);
+    await h.snapshot();
+    const late = await h.heldSnapshot();
+    handlers.onStatus(named.pane_id, "unknown", null);
+    h.herdrSays(taken);
+    handlers.onStatus(named.pane_id, "working", "opencode");
+    handlers.onStatus(named.pane_id, "idle", "opencode");
+    await h.settle();
+    await late();
+    expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+    // When OpenCode's subagent ends before GJC's next discovery, which then finds no gjc there.
+    const db = new Database(join(root, "opencode.db"));
+    db.query("INSERT INTO session_message VALUES ('msg_child_done', 'ses_child', 'assistant', 2, ?, ?, ?)").run(at + 2000, at + 2000, JSON.stringify({ time: { created: at + 2000, completed: at + 2000 }, finish: "stop" }));
+    const tick = BackgroundWait.prototype.tick;
+    const ranOut = Promise.withResolvers<void>();
+    const timer = spyOn(BackgroundWait.prototype, "tick").mockImplementation(function (this: BackgroundWait) {
+      const out = tick.call(this);
+      if (out.includes(named.pane_id)) ranOut.resolve();
+      return out;
+    });
+    try {
+      await h.status.opencodeAgents.poll();
+      discovery.mockRestore();
+      discovery = spyOn(gjc, "gjcPanes").mockResolvedValue(new Map());
+      await h.status.gjc.refresh([taken as HerdrPane]);
+      setSystemTime(Date.now() + 90_000);
+      await ranOut.promise;
+      // Then the wait ends, and its finish is alerted.
+      expect(h.last()).toMatchObject({ tasks: 0, bg: false });
+      expect(h.alerts.at(-1)).not.toBe("working");
+    } finally {
+      timer.mockRestore();
+      db.query("DELETE FROM session_message WHERE id = 'msg_child_done'").run();
+      db.close();
+    }
   });
 
   it("reads DONE and alerts the finish once a job gjc wrote no end for has held the rest as long as a wait is held", async () => {

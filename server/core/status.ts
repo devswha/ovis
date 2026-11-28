@@ -385,8 +385,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     },
   });
   function owns(paneId: string, tracker: "claude" | "opencode"): boolean {
-    // an OmO or GJC pane's count and wait are its own transcript's (omoChanged, gjcChanged)
-    if (omo.runs(paneId) || gjc.runs(paneId)) return false;
+    if (omo.runs(paneId)) return false;
     const agent = agentNow.get(paneId);
     const other = tracker === "claude" ? "opencode" : "claude";
     if (agent !== undefined && agent !== other) return true;
@@ -792,7 +791,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     }
     const status = completions.current(paneId);
     if (status === undefined) return;
-    broadcastAll(paneStatus(paneId, status, { background_tasks: running }));
+    // a pane whose gjc transcript is read shows GJC's count: a Claude or OpenCode session that held it before counts nothing there
+    broadcastAll(paneStatus(paneId, status, { background_tasks: gjc.tracks(paneId) ? gjc.backgroundOf(paneId) : running }));
     if (changed) alert(paneId, alertStatus(status, waits.waiting(paneId)));
     if (changed) claudeFailHeldEnds(paneId);
   }
