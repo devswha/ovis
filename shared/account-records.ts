@@ -131,7 +131,9 @@ function signingBytes(values: readonly unknown[], domain = ACCOUNT_RECORD_PREFIX
 }
 
 /** Signs with the client's account key; `record.signer` must be that key's public half. */
-export async function signAccountRecord<T extends UnsignedAccountRecord>(record: T, privateKey: CryptoKey): Promise<T & { signature: string }> {
+export async function signAccountRecord<T extends UnsignedAccountRecord>(input: T, privateKey: CryptoKey): Promise<T & { signature: string }> {
+  // One copy is signed and returned, so a caller changing its object during the await cannot split the two
+  const record = { ...input };
   const signature = new Uint8Array(await crypto.subtle.sign(SIGN, privateKey, recordSigningBytes(record) as Uint8Array<ArrayBuffer>));
   const signed = { ...record, signature: toBase64Url(signature) };
   parseAccountRecord(signed);
@@ -312,7 +314,9 @@ export function isDeviceSafetyRecord(record: SafetyRecord): record is DeviceSafe
 }
 
 /** Signs a block or a lift with the device's account key and gives it its id. */
-export async function signSafetyRecord<T extends UnsignedSafetyRecord>(record: T, privateKey: CryptoKey): Promise<T & { id: string; signature: string }> {
+export async function signSafetyRecord<T extends UnsignedSafetyRecord>(input: T, privateKey: CryptoKey): Promise<T & { id: string; signature: string }> {
+  // One copy gives the bytes, the id and the result, so a caller changing its object during the await cannot split them
+  const record = { ...input };
   const signature = new Uint8Array(await crypto.subtle.sign(SIGN, privateKey, safetySigningBytes(record) as Uint8Array<ArrayBuffer>));
   const signed = { ...record, id: safetyRecordId(record), signature: toBase64Url(signature) };
   parseSafetyRecord(signed);
