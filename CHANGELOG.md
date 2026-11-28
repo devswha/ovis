@@ -7,6 +7,202 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 ## [Unreleased]
 
+## [0.5.13] - 2026-11-28
+
+### Added
+- When a first GitHub or Google sign-in may match an existing Ovis account, Ovis offers to sign into that account and add the new method, or to create a separate account.
+  ([#4903](https://github.com/devswha/ovis/pull/4903))
+- Move a PC to the Ovis account signed in on its own window without having to pair your devices again.
+  ([#4928](https://github.com/devswha/ovis/pull/4928))
+- Manage account on app.ovis.sh and in the phone app now shows the account's ways to sign in, where
+  you can add or remove one as in the desktop app. Under them, there and in the desktop app, it
+  lists the latest changes to them: the date, what changed and the number of the device that did it.
+  ([#4892](https://github.com/devswha/ovis/pull/4892))
+- Agents that may call other agents can now start Kimi Code on this PC, as they start Gemini CLI:
+  every file edit or command it asks about comes to you as an approval card.
+  ([#4452](https://github.com/devswha/ovis/pull/4452) by @mckinnon)
+- Agents that may call other agents can now start Qwen Code on this PC, as they start Gemini CLI:
+  it starts in its default approval mode, and every file edit or command it asks about comes to
+  you as an approval card.
+  ([#4453](https://github.com/devswha/ovis/pull/4453) by @mckinnon)
+- Settings → Alerts → Also send to has a Link to the pane switch: turn it off and Telegram, Slack,
+  Discord, ntfy and JSON messages carry only the text, without the link that opens the pane.
+  ([#4924](https://github.com/devswha/ovis/pull/4924))
+- Command Code 1.93.4+ (1.x) started by Ovis on local herdr-core, with the same executable in the
+  pane as the version check, now opens its own session in Chat, reports turn ends,
+  and takes one-time approvals and question answers as data. Command Code blocks its terminal prompt
+  while the mod waits, so Chat goes first: choose **Answer in terminal** or wait five minutes.
+  Without a connected viewer or a reachable hub, the terminal takes over immediately.
+  Ovis changes no Command Code settings. The session mod also supplies herdr's resume command.
+  ([#4913](https://github.com/devswha/ovis/pull/4913))
+- Command Code joins the agent pickers (New workspace, New tab with agent…, New worktree) on Linux
+  and macOS: herdr has no kind for it, so Ovis starts `cmd` in the pane's shell.
+  ([#3843](https://github.com/devswha/ovis/pull/3843) by @jimbb)
+- On a touch screen, swiping forward across the empty chat box inserts the agent's suggested
+  prompt, as Tab does on a keyboard, without turning on the suggestion chip.
+  ([#4251](https://github.com/devswha/ovis/pull/4251) by @mdobro)
+- Add a connection → Ovis relay shows this PC's address (`app.ovis.sh/s/<id>/`, the page its QR
+  code opens) on one line under "This PC is in your account.", with a button that copies it to
+  paste in any browser. Copying asks nothing of the PC; where the browser will not copy, the
+  address is selected instead.
+  ([#4911](https://github.com/devswha/ovis/pull/4911))
+- The usage strip reads Devin CLI subscription usage from the CLI's own `credentials.toml`: the daily
+  and weekly quota windows and the USD overage balance, with `devin auth login` as the sign-in tab.
+  ([#4891](https://github.com/devswha/ovis/pull/4891) by @andycjw)
+- Latin American Spanish is available in the dictation language list.
+  ([#4920](https://github.com/devswha/ovis/pull/4920))
+- herdr-core: a pasted or attached image in a terminal on a machine the core reaches lands beside
+  that terminal on that machine, and its path there goes into the prompt.
+  ([#4926](https://github.com/devswha/ovis/pull/4926))
+- Kimi Code can be installed from Settings → Agents, with Moonshot AI's own install commands for
+  macOS, Linux and Windows; its sign-in opens Kimi Code, where `/login` signs in.
+  ([#4452](https://github.com/devswha/ovis/pull/4452) by @mckinnon)
+- The Subscription usage strip and Settings read Kimi Code's plan limits — the 5-hour session,
+  the week, the month and its code share, plus Extra Usage spend — through the Kimi CLI's own
+  sign-in (`kimi login` is offered for signing in).
+  ([#4452](https://github.com/devswha/ovis/pull/4452) by @mckinnon)
+- In the desktop app, Settings → Chat → Browser for links can now pick Ovis's built-in browser
+  while it is turned on: a web link you click opens in a tab beside the pane. The default stays the
+  system browser.
+  ([#4915](https://github.com/devswha/ovis/pull/4915))
+- Qwen Code can be installed from Settings → Agents, with Qwen's own install commands for macOS,
+  Linux and Windows; its sign-in opens Qwen Code, where `/auth` signs in.
+  ([#4453](https://github.com/devswha/ovis/pull/4453) by @mckinnon)
+- A PC on a relay of its own that also names an app of its own (`OVIS_RELAY_APP_URL`) now shows a
+  code to type beside the QR code, held on that relay, and says which app to type it in. The app
+  must be built with `OVIS_RELAY_URL` set to that relay, so it looks typed codes up there: a phone's
+  Home Screen app, which cannot open a QR link, then pairs with the code. Such a PC can also be
+  added from another PC over Tailscale, which looks its code up on its relay.
+  ([#4616](https://github.com/devswha/ovis/pull/4616) by @Danipulok)
+
+### Changed
+- The privacy policy and store privacy answers now say that signing in with GitHub or Google keeps
+  a keyed fingerprint of your verified email address, never the address itself, so the account
+  service can tell you when you may already have an account made with another provider.
+  ([#4904](https://github.com/devswha/ovis/pull/4904))
+- Account: a first sign-in with a new method whose verified email your Ovis account already has
+  joins that account instead of making a second one, where the account service has this turned on.
+  The device says which account it signed in to, with **Not my account**; your other devices show
+  the new method in Manage account with **Not me** for 24 hours, during which it cannot change the
+  account's sign-in methods, sign every device out or delete the account. Sign in with Apple on
+  iPhone now shares its email with the account service for this, which keeps only a keyed
+  fingerprint of it.
+  ([#4931](https://github.com/devswha/ovis/pull/4931))
+- Settings → Agents order → Activity orders the agents of every PC together, by when this server
+  saw each one change, so an agent on a later PC moves above an earlier PC's rows when you work
+  with it. The order survives a reload and a restart, and every browser shows the same one. With
+  one PC, nothing changes.
+  ([#4629](https://github.com/devswha/ovis/pull/4629) by @jokkopucko)
+- Desktop app: **Keep Computer Awake → While an Agent Is Working** is on by default while the
+  computer is plugged in, so a PC no longer falls asleep in the middle of an agent's work and drops
+  off for phones and browsers. On battery it still lets the computer sleep unless **Also on
+  Battery** is on, and a choice made in the tray before, off included, is kept.
+  ([#4894](https://github.com/devswha/ovis/pull/4894))
+- The Inbox list beside an open chat on a wide screen shows how long each agent has been in its
+  state at the end of its name, as the phone's list and the Agents list do, not only in its tooltip.
+  ([#4910](https://github.com/devswha/ovis/pull/4910) by @maxdata)
+- A PC that is out of reach is explained by what was seen, not by a list of guesses: "The relay
+  answered, but the PC did not", "This device could not reach the relay" or "The relay turned this
+  device away", with when this device last checked and when the PC was last seen. Opening an
+  offline PC says the same instead of "its relay or power is off, it has no network, or Ovis is not
+  running on it".
+  ([#4909](https://github.com/devswha/ovis/pull/4909))
+- The privacy policy says that Sign in with Apple, when you choose to share your address with Apple, also keeps a keyed
+  fingerprint of that verified address (never the address, and never one Apple hides).
+  ([#4932](https://github.com/devswha/ovis/pull/4932))
+- The privacy policy says the verified-email fingerprint and its masked form keep the ways you sign in with the same address in one account, and that Not me takes one off again.
+  ([#4935](https://github.com/devswha/ovis/pull/4935))
+- Self-hosting a relay and an app: rebuild the app with `OVIS_RELAY_URL` set to your relay. An app
+  built without it looks typed codes up on Ovis's relay, so it finds no PC for the code your PC now
+  shows; the QR code still pairs.
+  ([#4616](https://github.com/devswha/ovis/pull/4616) by @Danipulok)
+- With a mouse and Direct typing, a terminal's password prompt is answered in the terminal
+  itself, as in any terminal: the masked password field no longer covers it. On a touch screen
+  the field still comes up, so the phone keyboard does not learn the password. Settings →
+  Terminal → Password field turns it on or off for each device. The chat view and Input line
+  keep the field, since a prompt puts their text box away.
+  ([#4918](https://github.com/devswha/ovis/pull/4918))
+
+### Fixed
+- Chat: a pasted, picked or dropped image's path goes where it was pasted or picked (a drop: the
+  start), following what is typed while it uploads, instead of always at the start of the message.
+  Focus and the selection stay as they were, files picked together keep their order, and an edit
+  in the box never puts the path inside a word. Erasing or typing over an image's path detaches
+  the image from the message (undo brings both back), and a draft replaced while an image uploads
+  never gets its path.
+  ([#3980](https://github.com/devswha/ovis/pull/3980) by @maslianok)
+- Screen readers no longer announce recycled chat history or individual sidebar badges. They hear
+  new completed replies and know which background agent needs input or has finished.
+  ([#4919](https://github.com/devswha/ovis/pull/4919))
+- The address follows a pane that takes over while Settings is open, also after a menu or a drawer
+  was closed on that page.
+  ([#4906](https://github.com/devswha/ovis/pull/4906))
+- Phone: Back pressed right after a sheet closes goes to the page before it, also when the browser
+  told the app nothing of the sheet's own step back: the address no longer changes alone while the
+  screen stays, and an address change made as the sheet closed is no longer left unwritten.
+  ([#4906](https://github.com/devswha/ovis/pull/4906))
+- File previews opened after a sheet refuses Back use the selected pane's address also in browsers
+  that tell the app nothing of their history entries (Safari and Firefox without the Navigation API).
+  ([#4906](https://github.com/devswha/ovis/pull/4906))
+- Adding an agent's folder to a shell profile no longer requires pressing Check again to find it.
+  ([#4927](https://github.com/devswha/ovis/pull/4927))
+- A focused Ovis window no longer hides an unanswered question or a finished turn indefinitely.
+  If there is still no reply or new turn after five minutes, the alert goes out.
+  ([#4916](https://github.com/devswha/ovis/pull/4916))
+- Settings → Agents says Antigravity is using a Gemini API key instead of showing a keyring
+  warning or sign-in button.
+  ([#4454](https://github.com/devswha/ovis/pull/4454) by @mckinnon)
+- Read Antigravity Starter plan limits from the CLI when the quota service refuses the request.
+  ([#4454](https://github.com/devswha/ovis/pull/4454) by @mckinnon)
+- Subscription usage shows Claude's per-model weekly limit (Fable) again while Claude's status line
+  is fresh: the usage endpoint is still asked once, and again every six hours, for what the status
+  line does not carry. The five-hour and weekly numbers still come from the status line.
+  ([#4940](https://github.com/devswha/ovis/pull/4940))
+- Chat shows Claude Code conversations again when `~/.claude` is a link to a folder you own elsewhere, such as a dotfiles folder.
+  ([#4936](https://github.com/devswha/ovis/pull/4936))
+- A message queued behind one Ovis sent to a Codex it started on herdr-core now waits for Codex's own
+  word that the turn ended. It is no longer typed into a turn that is still running when the pane's
+  status lags, and no longer held as "the next turn did not start in time" when Codex had already
+  taken the turn.
+  ([#4897](https://github.com/devswha/ovis/pull/4897))
+- Chat again shows the native conversation of a Codex TUI on the app server Ovis started beside it
+  on Linux PCs whose `ss` prints socket numbers past 2^31 as negative (iproute2 6.1, as on Ubuntu
+  24.04), instead of the terminal's scrollback.
+  ([#4930](https://github.com/devswha/ovis/pull/4930))
+- Codex chat can read a native conversation through a verified local tmux attachment when the
+  Codex process holds its transcript open, or its own app server holds the transcript and its
+  writer lock. A shared daemon or an unproven attachment keeps the terminal view.
+  ([#3762](https://github.com/devswha/ovis/pull/3762) by @rasperepodvipodvert)
+- File previews opened after a sheet refuses Back use the selected pane's address in Chromium browsers without the Navigation API.
+  ([#4888](https://github.com/devswha/ovis/pull/4888) by @iyuzhang)
+- A Grok background-task notice split across log records no longer ends the turn's wait for its
+  running tasks.
+  ([#4929](https://github.com/devswha/ovis/pull/4929))
+- herdr-core: on a machine the core reaches (`hc machine add`), the Files view, the folder picker and
+  file previews now open that machine's files instead of failing with "The PC could not read the
+  file", up to 8 MB a file.
+  ([#4926](https://github.com/devswha/ovis/pull/4926))
+- A hosted app built with no account service (`OVIS_ACCOUNT_SERVICE_URL=off`) said the device was
+  offline and refused to open a PC whenever the browser said so, even on a working network. It now
+  asks its own address first and opens the PC when that answers.
+  ([#4900](https://github.com/devswha/ovis/pull/4900))
+- Adding a PC that runs two Ovis servers on herdr-core no longer shows two identical "Use Ovis on this
+  PC" buttons: each names its port, and one newer than this app says to update this app first.
+  ([#4880](https://github.com/devswha/ovis/pull/4880))
+- A pane running Qwen Code is named Qwen Code: its own `qwen-code` status report was not
+  matched to the Qwen agent, so the pane showed the raw name and the Qwen draft reading never ran.
+  ([#4453](https://github.com/devswha/ovis/pull/4453) by @mckinnon)
+- Hosted app: a page that went (or a list that closed) before its check of your other PCs opened a
+  connection no longer keeps the next page from checking them for a minute. A check that reached
+  any PC still counts toward the relay's limit as before.
+  ([#4902](https://github.com/devswha/ovis/pull/4902))
+- Keys typed at a sudo prompt that shows a star for each key (pwfeedback) stay out of held
+  drafts while the stars grow.
+  ([#4918](https://github.com/devswha/ovis/pull/4918))
+- With the desktop built-in browser selected for links, localhost links in an SSH pane's terminal
+  or chat open the service on the SSH PC in that browser's separate profile.
+  ([#4923](https://github.com/devswha/ovis/pull/4923))
+
 ## [0.5.12] - 2026-11-27
 
 ### Added
@@ -13935,7 +14131,8 @@ First public version.
 - Installable PWA, a mobile key bar, web push alerts and optional token auth.
 - Distribution as a herdr plugin.
 
-[Unreleased]: https://github.com/devswha/ovis/compare/v0.5.12...HEAD
+[Unreleased]: https://github.com/devswha/ovis/compare/v0.5.13...HEAD
+[0.5.13]: https://github.com/devswha/ovis/compare/v0.5.12...v0.5.13
 [0.5.12]: https://github.com/devswha/ovis/compare/v0.5.11...v0.5.12
 [0.5.11]: https://github.com/devswha/ovis/compare/v0.5.10...v0.5.11
 [0.5.10]: https://github.com/devswha/ovis/compare/v0.5.9...v0.5.10
