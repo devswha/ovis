@@ -146,6 +146,8 @@ export class HeadlessHost implements Host {
 
   timers(): number { return this.timerList.length; }
   hooked(): boolean { return this.hooks !== null; }
+  /** whether the host reads input now (between startReading and stopReading) */
+  reading(): boolean { return this.sink !== null; }
   writeAttempts(): number { return this.attempts; }
   /** raw-mode changes and writes, in order */
   log(): string[] { return [...this.entries]; }

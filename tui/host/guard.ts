@@ -126,10 +126,10 @@ export function guardedHost(port: TerminalPort): Host {
   /** The port is told what is held now: called before a write that turns modes on, and after one that undoes them. */
   const holding = () => port.hold(!modesOn ? "none" : watchingDisplay ? "modes+watch" : "modes");
 
-  const reportGone = (why: "hangup" | "write-failed") => {
-    if (gone) return [];
+  const reportWriteFailed = () => {
+    if (gone) return;
     gone = true;
-    return [...ends].map((listener) => listener({ kind: "gone", why }));
+    for (const listener of ends) void listener({ kind: "gone", why: "write-failed" });
   };
 
   /** One write to the terminal; false when it is gone (reported here, once). */
@@ -140,7 +140,7 @@ export function guardedHost(port: TerminalPort): Host {
       return true;
     } catch (error) {
       if (!isGone(error)) throw error;
-      reportGone("write-failed");
+      reportWriteFailed();
       return false;
     }
   };
@@ -288,7 +288,9 @@ export function guardedHost(port: TerminalPort): Host {
     ending = true;
     // the signal decides the end: a leave write that failed changes neither the restore nor the exit code
     try { leave(); } catch { /* given back all the same: leave throws only after the restore */ }
-    const pending = name === "SIGHUP" ? reportGone("hangup") : [...ends].map((listener) => listener({ kind: "signal", signal: name }));
+    const end: HostEnd = name === "SIGHUP" ? { kind: "gone", why: "hangup" } : { kind: "signal", signal: name };
+    // a listener that throws is done with the end: the others are told, and the signal still ends the process
+    const pending = name === "SIGHUP" && gone ? [] : [...ends].map((listener) => { try { return listener(end); } catch { return undefined; } });
     gone = true;
     const code = 128 + SIGNAL_NUMBERS[name];
     const waits = pending.filter((value): value is Promise<void> => value instanceof Promise);
@@ -314,7 +316,8 @@ export function guardedHost(port: TerminalPort): Host {
         modesOn = true;
         holding();
         send(encoder.encode(ENTER));
-        port.startReading(take);
+        // a terminal gone at ENTER was told to the end listeners, and one of them may have left already
+        if (state === "entered") port.startReading(take);
       } catch (error) {
         entering = false;
         // the first error is the one enter reports; one the restore meets after it is not

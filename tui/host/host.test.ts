@@ -150,6 +150,18 @@ describe("signals", () => {
     expect(host.exitCode).toBe(143);
   });
 
+  for (const [signal, code, end] of [["SIGTERM", 143, { kind: "signal", signal: "SIGTERM" }], ["SIGHUP", 129, { kind: "gone", why: "hangup" }]] as const) {
+    it(`an end listener that throws on ${signal} keeps neither the others from being told nor the process from ending`, () => {
+      const host = new HeadlessHost();
+      const told: unknown[] = [];
+      host.onEnd(() => { throw new Error("the listener broke"); });
+      host.onEnd((how) => { told.push(how); });
+      host.enter();
+      host.signal(signal);
+      expect({ told, exit: host.exitCode, last: host.log().at(-1) }).toEqual({ told: [end], exit: code, last: "raw off" });
+    });
+  }
+
   it("a signal that lands while enter is writing is handled after it: everything is undone once", () => {
     const host = new HeadlessHost();
     host.duringNextWrite(() => host.signal("SIGTERM"));
@@ -207,6 +219,15 @@ describe("gone after hang-up", () => {
     expect(host.writeAttempts()).toBe(2);
     expect(host.log().at(-1)).toBe("raw off");
     expect(host.exitCode).toBeNull();
+  });
+
+  it("an ENTER that finds the terminal gone reads nothing once an end listener gave the terminal back", () => {
+    const host = new HeadlessHost();
+    const ends: unknown[] = [];
+    host.onEnd((end) => { ends.push(end); host.leave(); });
+    host.failWrites("EIO");
+    host.enter();
+    expect({ ends, reading: host.reading(), hooked: host.hooked(), last: host.log().at(-1) }).toEqual({ ends: [{ kind: "gone", why: "write-failed" }], reading: false, hooked: false, last: "raw off" });
   });
 
   it("a hang-up after a failed write ends the process without reporting gone a second time", () => {
