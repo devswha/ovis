@@ -43,7 +43,7 @@ const waiting = new Set<string>();
 /** sheets still up whose way back onto their entry the browser dropped: they wait for the next tap to make one */
 const stranded = new Set<string>();
 let seen: string | null = null;
-let returning: { entry: string; owner: string; href: string } | null = null;
+let returning: { entry: string; owner: string } | null = null;
 interface NavigationApi {
   currentEntry?: { key: string; index: number } | null;
   entries(): Array<{ key: string; index: number }>;
@@ -500,14 +500,15 @@ if (typeof window !== "undefined") {
     const from = seen;
     seen = sheetOf(event.state);
     if (returning !== null) {
-      const { entry, owner, href } = returning;
+      const { entry, owner } = returning;
       returning = null;
       if (seen === entry) {
         steppedOff = true;
         if (!open.has(owner)) stepBack();
         else if (owner !== entry) {
-          window.history.replaceState({ ...(event.state as Record<string, unknown>), [KEY]: owner }, "", href);
-          addresses.set(owner, href);
+          // the entry keeps its own address: the one the jump landed on was another pane's
+          window.history.replaceState({ ...(event.state as Record<string, unknown>), [KEY]: owner }, "");
+          addresses.set(owner, window.location.href);
           seen = owner;
           keep(owner);
         }
@@ -538,7 +539,7 @@ if (typeof window !== "undefined") {
       : (again.find((kept) => kept.refused && kept.id === from) ?? again.find((kept) => kept.under && kept.id === heir))?.id;
     if (owner !== undefined && left !== undefined && from !== null) {
       for (const kept of again) { open.set(kept.id, kept.onBack); if (kept.under && kept.id !== owner) covered.add(kept.id); }
-      returning = { entry: from, owner, href: window.location.href };
+      returning = { entry: from, owner };
       // a traversal the browser drops (another one overtook it) leaves them up with no entry: the next tap makes theirs
       const dropped = (): void => {
         if (returning?.entry !== from) return;
