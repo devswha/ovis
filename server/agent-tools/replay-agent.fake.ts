@@ -76,6 +76,8 @@ for await (const chunk of Bun.stdin.stream()) {
       note({ sessionNew: message.params });
       const result = opened!.result;
       if (startMode !== undefined) {
+        // an agent recorded without modes (Prime Agent) then reports one
+        result.modes ??= { availableModes: [{ id: startMode, name: startMode }] };
         result.modes.currentModeId = startMode;
         const mode = result.configOptions?.find((option: { category?: string }) => option.category === "mode");
         if (mode) mode.currentValue = startMode;

@@ -17,6 +17,7 @@ import { KeeperClient } from "./client.ts";
 import { hasQuestionForms } from "./question-form.ts";
 import { keeperRunning } from "./keeper-process.ts";
 import { acpKeeperBin } from "./keeper-bin.ts";
+import type { OwnDaemon } from "../agent-tools/harnesses.ts";
 
 type AcpHcMethod = "terminal.run" | "terminal.kill" | "terminal.list" | "terminal.label" | "machine.exec";
 /** The hc calls the registry makes (HcConnection, or a test's stand-in). */
@@ -44,6 +45,8 @@ export interface AcpStart {
   mcpServers?: readonly { name: string; command: string; args: readonly string[]; env: readonly { name: string; value: string }[] }[];
   announceSubagents?: boolean;
   askEveryTime?: boolean;
+  /** a daemon of this child's own, on a socket in ROOT, shut down before ROOT goes (HarnessCommand.ownDaemon) */
+  ownDaemon?: OwnDaemon;
 }
 
 export interface AcpChild {
@@ -81,6 +84,8 @@ export interface AcpChildrenOptions {
 
 const LABEL = "ovis.acp";
 const CHILD_FILE = "child.json";
+/** An own daemon's socket in ROOT, no longer than the keeper's `acp.sock` so the same limit holds. */
+const DAEMON_SOCKET = "pa.sock";
 /** Under the shortest limit on a socket's path (104 bytes on macOS), with room for its terminating byte. */
 const SOCKET_PATH_MAX = 100;
 const SOCKET_MS = 10_000;
@@ -154,6 +159,21 @@ function childInfo(root: string): { harness: string; questionHarness?: string } 
   }
 }
 
+function daemonStop(root: string): { argv: string[]; env: Record<string, string> } | null {
+  try {
+    if (!owned(join(root, CHILD_FILE), "file")) return null;
+    const info: unknown = JSON.parse(readFileSync(join(root, CHILD_FILE), "utf8"));
+    const stop = info && typeof info === "object" && "daemonStop" in info ? info.daemonStop : null;
+    if (!stop || typeof stop !== "object" || !("argv" in stop) || !("env" in stop)) return null;
+    const { argv, env } = stop;
+    if (!Array.isArray(argv) || argv.length === 0 || !argv.every(arg => typeof arg === "string") || !env || typeof env !== "object"
+      || !Object.values(env).every(value => typeof value === "string")) return null;
+    return { argv, env: env as Record<string, string> };
+  } catch {
+    return null;
+  }
+}
+
 export class AcpChildren {
   private readonly listeners = new Set<(child: AcpChild) => void>();
 
@@ -195,7 +215,9 @@ export class AcpChildren {
     mkdirSync(root, { mode: 0o700 });
     chmodSync(root, 0o700);
     const questionForms = !!start.runId && hasQuestionForms(start.harness);
-    writeFileSync(join(root, CHILD_FILE), JSON.stringify({ harness: start.harness, ...(questionForms ? { questionForms } : {}) }), { mode: 0o600 });
+    const daemon = start.ownDaemon && join(root, DAEMON_SOCKET);
+    const daemonStop = start.ownDaemon && daemon ? { argv: start.ownDaemon.stop, env: { [start.ownDaemon.socketEnv]: daemon, [start.ownDaemon.folderEnv]: root } } : undefined;
+    writeFileSync(join(root, CHILD_FILE), JSON.stringify({ harness: start.harness, ...(questionForms ? { questionForms } : {}), ...(daemonStop ? { daemonStop } : {}) }), { mode: 0o600 });
     const argv = [
       bin, root, "--cwd", start.cwd, "--name", start.name ?? start.harness,
       ...(start.sessionMeta === undefined ? [] : ["--session-meta", JSON.stringify(start.sessionMeta)]),
@@ -204,7 +226,7 @@ export class AcpChildren {
       ...(start.announceSubagents ? ["--announce-subagents"] : []),
       ...(start.askEveryTime ? ["--ask-every-time"] : []),
       ...(questionForms ? ["--question-forms"] : []),
-      "--", ...start.argv,
+      "--", ...start.argv, ...(start.ownDaemon && daemon ? [start.ownDaemon.socketArg, daemon] : []),
     ];
     this.opening.set(id, start.parentPane);
     try { return await this.open(start, id, root, argv, questionForms); }
@@ -229,7 +251,7 @@ export class AcpChildren {
       if (live !== null) {
         const address = live.get(id);
         if (typeof address === "string") await this.endFailedStart(address, root);
-        else if (address === undefined) rmSync(root, { recursive: true, force: true });
+        else if (address === undefined) await this.removeRoot(root);
       }
       throw error;
     }
@@ -289,7 +311,7 @@ export class AcpChildren {
       if (!child.client.keeperGone) return;
       off();
       this.children.delete(child.id);
-      if (!keeperRunning(child.root)) rmSync(child.root, { recursive: true, force: true });
+      if (!keeperRunning(child.root)) void this.removeRoot(child.root);
     });
     return child;
   }
@@ -335,8 +357,22 @@ export class AcpChildren {
    */
   private async end(terminal: string, root: string): Promise<void> {
     await this.hc().call("terminal.kill", { terminal });
-    if (await keeperEnds(root, KEEPER_END_MS)) rmSync(root, { recursive: true, force: true });
+    if (await keeperEnds(root, KEEPER_END_MS)) await this.removeRoot(root);
     else console.warn(`acp: keeping ${root}: its keeper is still running after its terminal was killed`);
+  }
+
+  /**
+   * Removes the ROOT of a child that has ended, once the daemon of its own (if it has one) is shut down: that daemon
+   * left the keeper's process group and, without the keeper's systemd scope (macOS), outlives it.
+   */
+  private async removeRoot(root: string): Promise<void> {
+    const stop = daemonStop(root);
+    if (stop !== null) {
+      const ran = await this.hc().call("machine.exec", { argv: [...stop.argv], cwd: root, env: stop.env, timeout: 15 })
+        .then(result => result.code === 0 ? null : `exit ${result.code}`, (error: unknown) => error instanceof Error ? error.message : String(error));
+      if (ran !== null) console.warn(`acp: the daemon of ${root} may still run: ${ran}`);
+    }
+    rmSync(root, { recursive: true, force: true });
   }
 
   private async endFailedStart(terminal: string, root: string): Promise<void> {
@@ -376,7 +412,7 @@ export class AcpChildren {
       if (terminal !== undefined) {
         if (!this.children.has(id)) this.add({ id, harness: info.harness, root, terminal, client: new KeeperClient(root, info) });
       } else if (!keeperRunning(root)) {
-        rmSync(root, { recursive: true, force: true });
+        await this.removeRoot(root);
       }
     }
   }

@@ -296,6 +296,9 @@ export const APPROVED_COMMANDS: ReadonlySet<string> = new Set([
   "linux|brew install qwen-code",
   "windows|irm https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.ps1 | iex",
   "windows|npm install -g @qwen-code/qwen-code@latest",
+  "macos|curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh",
+  "linux|curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh",
+  "windows|irm https://app.primeintellect.ai/prime-agent/install.ps1 | iex",
 ]);
 
 /** An allowed address: HTTPS, a host, and a path on it, so a prefix can never stand for a whole host. */
@@ -1100,6 +1103,34 @@ const CATALOG_ENTRIES: readonly AgentCatalogEntry[] = [
     // /usage is local token stats), so it stays out of Subscription usage.
     sign_in: { provider: null, command: null, in_agent: "/auth", api_keys: ["OPENAI_API_KEY", "BAILIAN_CODING_PLAN_API_KEY", "BAILIAN_TOKEN_PLAN_API_KEY"], required: true },
     after_install: ["Open a new terminal after installing Qwen Code so it picks up any PATH changes."],
+    min_version: null,
+  },
+  {
+    id: "prime-agent",
+    name: "Prime Agent",
+    vendor: "Prime Intellect",
+    kind: "harness",
+    description: "Prime Intellect's coding and research agent, which works through a Python REPL.",
+    install: {
+      macos: only(method("posix", "curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh", CURL_SH)),
+      linux: only(method("posix", "curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh", CURL_SH)),
+      windows: only(method("powershell", "irm https://app.primeintellect.ai/prime-agent/install.ps1 | iex", POWERSHELL)),
+    },
+    no_install: {},
+    url_prefixes: [
+      "https://app.primeintellect.ai/prime-agent/install.sh",
+      "https://app.primeintellect.ai/prime-agent/install.ps1",
+    ],
+    packages: [],
+    sources: [{ url: "https://github.com/PrimeIntellect-ai/prime-agent#install", checked: "2026-11-28" }],
+    detect: {
+      binaries: ["prime-agent"],
+      version_args: ["--version"],
+      install_dirs: { macos: ["~/.local/bin"], linux: ["~/.local/bin"], windows: ["~/.local/bin"] },
+    },
+    // No usage provider: Prime Agent reports tokens and cost per session, but no plan-usage source.
+    sign_in: { provider: null, command: null, in_agent: "/login", api_keys: [], required: true },
+    after_install: ["Prime Agent downloads its Python runtime with uv the first time it starts, so that start needs the internet."],
     min_version: null,
   },
   {

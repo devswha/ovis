@@ -78,6 +78,17 @@ describe("Settings > Agents > Let agents call other agents", () => {
     expect(chips().map((chip) => chip.textContent)).toEqual(["agy", "GJC"]);
   });
 
+  it("names Prime Agent as running code unasked and leaves it unselected", async () => {
+    await mount(false, [agent("claude", "Claude Code", true), agent("prime-agent", "Prime Agent", true, "0.10.5")]);
+    expect(chips().map((chip) => [chip.textContent, chip.getAttribute("aria-pressed")])).toEqual([["Claude Code", "true"], ["Prime Agent", "false"]]);
+    expect(page.container.querySelector(".settings-condition")?.textContent).toContain("Prime Agent");
+  });
+
+  it("names no agent when none of those offered runs unasked", async () => {
+    await mount();
+    expect(page.container.querySelector(".settings-condition")).toBeNull();
+  });
+
   it("cannot be changed from a watching device", async () => {
     await mount(true);
     expect(toggle().disabled).toBe(true);

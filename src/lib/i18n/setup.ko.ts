@@ -75,5 +75,6 @@ export const SETUP_KO: Record<string, string> = {
   "Let agents call other agents": "다른 에이전트 부르기",
   "On this PC only. Only you can approve requests.": "이 PC에서만. 승인은 직접 해요.",
   "Agents they may call": "부를 수 있는 에이전트",
+  "{agents} runs code and commands without asking.": "{agents}은(는) 묻지 않고 코드와 명령을 실행해요.",
   "Not saved: this PC did not answer. Try again.": "저장하지 못했습니다: 이 PC가 답하지 않았습니다. 다시 시도하세요.",
 };

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AGENT_CATALOG } from "../../shared/agent-catalog.ts";
 import { ACP_LAUNCH_HARNESSES } from "../../shared/harness-tool.ts";
-import { allowsDelegatedMode, resolveHarness } from "./harnesses.ts";
+import { NO_MODES, allowsDelegatedMode, resolveHarness } from "./harnesses.ts";
 
 let dir: string;
 let oldPath: string | undefined;
@@ -57,6 +57,15 @@ it("keeps native ACP launch hygiene and selects ordinary startup permissions", (
   expect(resolveHarness("kiro")).toEqual({ argv: [join(dir, "kiro-cli"), "acp", "--agent-engine=v3"], env: { KIRO_AGENT_CONFIG_DIR: "/nonexistent/ovis-kiro-agents" } });
   expect(resolveHarness("kimi")).toEqual({ argv: [join(dir, "kimi"), "acp"], setMode: "default" });
   expect(resolveHarness("qwen")).toEqual({ argv: [join(dir, "qwen"), "--acp", "--approval-mode", "default", "--exclude-tools", "agent"] });
+  expect(resolveHarness("prime-agent")).toEqual({
+    argv: [join(dir, "prime-agent"), "--mode", "acp"], env: { PRIME_AGENT_TELEMETRY: "0" },
+    ownDaemon: { socketArg: "--daemon-socket", stop: [join(dir, "prime-agent"), "shutdown", "--force"], socketEnv: "PRIME_AGENT_DAEMON_SOCKET", folderEnv: "PRIME_AGENT_CODING_AGENT_DIR" },
+  });
+});
+
+it("lets a Prime Agent child start only while it reports no mode, and no other harness without one", () => {
+  expect([NO_MODES, "default", "yolo"].filter(mode => allowsDelegatedMode("prime-agent", mode))).toEqual([NO_MODES]);
+  expect(["claude", "codex", "opencode", "qwen"].filter(kind => allowsDelegatedMode(kind, NO_MODES))).toEqual([]);
 });
 
 it("lets a child start only in Gemini CLI's, Kiro's, Kimi Code's and Qwen Code's ordinary modes", () => {
