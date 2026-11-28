@@ -12,7 +12,6 @@ import { commandInvocations, commandOutcome, CommandReservations, dialogSettling
 import { codexTranscriptPath, paneCodexHomePlaced, unansweredCodexQuestions } from "./codex.ts";
 import { HerdrError, paneGet, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo } from "./herdr/client.ts";
 import { isKiroChatProcess, kiroRecordStillOpenInFile } from "./kiro.ts";
-import { isAgyProcessName } from "./agy-store.ts";
 import { kiroRecord } from "./dialogs/kiro-record.ts";
 import { isPiProcess, piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
@@ -917,14 +916,13 @@ async function kiroOwnsInput(paneId: string): Promise<boolean> {
 }
 
 /**
- * Whether Antigravity holds the pane's input (agy is its foreground), not a shell it exited or was suspended to: its
- * last question can stay above a shell row shaped like its model footer, and a key answered there would go to the
- * shell. Windows lists no foreground process group, so agy stays readable there.
+ * Whether the pane's shell holds its input (its process group is in front): Antigravity exited or was suspended, and
+ * its last question can stay above a shell row shaped like its model footer, where a key answered would go to the
+ * shell. herdr names no process group on Windows, and an unknown answer keeps the card.
  */
-async function agyOwnsInput(paneId: string): Promise<boolean> {
-  if (process.platform === "win32") return true;
+async function shellHoldsInput(paneId: string): Promise<boolean> {
   const info = await paneProcessInfo(paneId).catch(() => null);
-  return (info?.foreground_processes ?? []).some((entry) => isAgyProcessName(entry.name));
+  return typeof info?.shell_pid === "number" && info.foreground_process_group_id === info.shell_pid;
 }
 
 /**
@@ -1354,8 +1352,8 @@ async function readKnownPrompt(
   if (agent === "kiro" && prompt !== null && parsedByPublicPrompt.get(prompt)?.responder === "kiro-approval" && !(await kiroOwnsInput(paneId))) {
     return { prompt: null, screen, suppressFallback: true };
   }
-  // Antigravity's question answers by keys too: offered only while agy holds the input
-  if (agent === "agy" && prompt !== null && parsedByPublicPrompt.get(prompt)?.responder === "agy-question" && !(await agyOwnsInput(paneId))) {
+  // Antigravity's question answers by keys too: not offered while the pane's shell holds the input
+  if (agent === "agy" && prompt !== null && parsedByPublicPrompt.get(prompt)?.responder === "agy-question" && (await shellHoldsInput(paneId))) {
     return { prompt: null, screen, suppressFallback: true };
   }
   // Kiro V3's tool approval, with the verbatim command its session record holds when the dialog shows it whole (record-cards.ts)

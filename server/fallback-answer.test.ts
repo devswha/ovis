@@ -8,13 +8,13 @@ import { agentPickerOwnsScreen } from "./dialogs/fallback.ts";
 import { handlePromptRequest, parseFallbackPrompt } from "./prompt.ts";
 import * as recordCards from "./record-cards.ts";
 
-// `foreground`: the name herdr gives the pane's foreground process (agy runs as `agy`)
-interface Pane { agent: string; screen: string; sent: string[]; foreground: string; onRead?: () => void }
+// `shellInFront`: herdr reads the pane's shell as its foreground process group
+interface Pane { agent: string; screen: string; sent: string[]; shellInFront?: boolean; onRead?: () => void }
 
 async function withPane(agent: string, status: string, screen: string, run: (pane: Pane) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "herdr-fallback-answer-"));
   const path = join(root, "herdr.sock");
-  const pane: Pane = { agent, screen, sent: [], foreground: agent };
+  const pane: Pane = { agent, screen, sent: [] };
   const sockets = new Set<Socket>();
   const server = createServer((socket) => {
     sockets.add(socket);
@@ -28,7 +28,7 @@ async function withPane(agent: string, status: string, screen: string, run: (pan
       const answer = (result: unknown) => socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
       if (request.method === "session.snapshot") return answer({ snapshot: { panes: [{ pane_id: "p_1", agent: pane.agent, agent_status: status }], layouts: [] } });
       if (request.method === "pane.read") { pane.onRead?.(); return answer({ read: { text: pane.screen } }); }
-      if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: [{ pid: 4545, name: pane.foreground, argv: [pane.foreground] }] } });
+      if (request.method === "pane.process_info") return answer({ process_info: { shell_pid: 4100, foreground_process_group_id: pane.shellInFront ? 4100 : 4545, foreground_processes: [] } });
       if (request.method === "pane.get") return answer({ pane: { pane_id: "p_1" } });
       if (request.method === "agent.get") return answer({ agent: {} });
       if (request.method !== "pane.send_keys" && request.method !== "pane.send_text") throw new Error(`unexpected fixture RPC: ${request.method}`);
@@ -114,15 +114,14 @@ test("answers agy's question through its reader, as a card of its options", asyn
 });
 
 // agy's last question can stay above a shell row shaped like its model footer once it exits or is suspended: the
-// card is offered only while agy holds the pane's input, or its Enter would go to the shell (#3796)
-test("offers no agy card, and sends no key, while a shell holds the pane under agy's last question", async () => {
+// card is not offered while the pane's shell holds the input, or its Enter would go to the shell (#3796)
+test("offers no agy card, and sends no key, while the shell holds the pane under agy's last question", async () => {
   const ask = recorded("agy-1.5.6-ask");
   const stale = `${ask.trimEnd().split("\n").slice(0, -1).join("\n")}\n${" ".repeat(20)}cat notes \u00b7 high\n`;
   await withPane("agy", "blocked", stale, async (pane) => {
-    pane.foreground = "agy";
     const live = (await card())!;
     expect(live.question).toBe("Which file would you like to create?");
-    pane.foreground = "bash";
+    pane.shellInFront = true;
     expect(await card()).toBeNull();
     expect((await answer(live.id, { option_index: 0 })).status).toBe(409);
     expect(pane.sent).toEqual([]);

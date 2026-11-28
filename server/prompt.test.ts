@@ -4825,7 +4825,6 @@ describe("an answer and the menu it was made for", () => {
           : pane.agent === "omp" ? [pane.ompStopped ? { pid: 4100, argv: ["/bin/bash"] } : { pid: 4242, argv: ["omp"] }]
           : pane.agent === "pi" ? [pane.piGone ? { pid: 4100, argv: ["/bin/bash"] } : { pid: 4343, argv: ["node", "/usr/local/bin/pi"] }]
           : pane.agent === "hermes" ? [pane.hermesStopped ? { pid: 4100, argv: ["/bin/zsh"] } : { pid: 4444, argv: pane.hermesArgv ?? ["/usr/local/bin/hermes"] }]
-          : pane.agent === "agy" ? [{ pid: 4545, name: "agy", argv: ["agy"] }]
           // a Codex pane runs Codex: its rollout is read only while one does
           : pane.agent === "codex" ? [{ pid: 2147483647, argv: ["/usr/bin/codex"] }] : [] } });
         if (request.method === "pane.get") return answer({ pane: { pane_id: "p_1" } });
