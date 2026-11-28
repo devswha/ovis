@@ -1874,4 +1874,50 @@ describe("preferences sync real send path", () => {
     await send();
     expect([bodies.length, store.get().settings.darkTheme, client.settings.darkTheme, client.saveError]).toEqual([2, "kanagawa", "kanagawa", null]);
   });
+
+  it("a pick made as a pending pick is taken back, neither drawn yet, waits a send wait of its own", async () => {
+    store.set({ settings: { darkTheme: "tokyo-night" } });
+    const client = await open();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    await act(async () => { jest.advanceTimersByTime(599); });
+    await act(async () => {
+      client.update({ darkTheme: "tokyo-night" });
+      client.update({ showThinking: !DEFAULT_SETTINGS.showThinking });
+      jest.advanceTimersByTime(1);
+    });
+    expect(bodies).toEqual([]);
+    await windows();
+    expect(bodies.map((body) => body.settings)).toEqual([{ showThinking: !DEFAULT_SETTINGS.showThinking }]);
+  });
+
+  it("a change nobody refused goes when the event stream is lost and then closed before a render", async () => {
+    const client = await open();
+    await act(async () => { client.update({ showThinking: !DEFAULT_SETTINGS.showThinking }); });
+    await act(async () => { client.disconnected(); client.closed(); });
+    await windows(3);
+    expect([bodies.length, store.get().settings.showThinking]).toEqual([1, !DEFAULT_SETTINGS.showThinking]);
+  });
+
+  it.each([["is lost", false], ["is closed with a refused change waiting", true]] as const)("a send wait that ends as the event stream %s sends nothing until the stream reopens", async (_name, refusedFirst) => {
+    const client = await open();
+    if (refusedFirst) refuse = unwritable();
+    await act(async () => { client.update({ showThinking: !DEFAULT_SETTINGS.showThinking }); });
+    if (refusedFirst) {
+      await windows();
+      // the retry wait ends and the send wait after it begins
+      await act(async () => { jest.advanceTimersByTime(5_000); });
+    }
+    const before = bodies.length;
+    await act(async () => { jest.advanceTimersByTime(599); });
+    await act(async () => {
+      if (refusedFirst) client.closed();
+      else client.disconnected();
+      jest.advanceTimersByTime(1);
+    });
+    await windows(3);
+    expect(bodies.length).toBe(before);
+    await act(async () => { client.resubscribed(); });
+    await send();
+    expect([bodies.length, store.get().settings.showThinking]).toEqual([before + 1, !DEFAULT_SETTINGS.showThinking]);
+  });
 });

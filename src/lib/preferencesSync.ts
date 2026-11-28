@@ -223,6 +223,9 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
   const [paused, setPaused] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const retryTimer = useRef<number | undefined>(undefined);
+  // the send wait: what ends it (nothing left unsent, the stream lost) cancels it at once, not at the next render, so a
+  // new edit made before that render waits a send wait of its own
+  const sendTimer = useRef<number | undefined>(undefined);
   // a paused save's longer wait, which ends the pause for one more send; apart from `retryTimer`,
   // since the send effect's cleanup (it runs again as the pause begins) must not cancel it
   const pauseTimer = useRef<number | undefined>(undefined);
@@ -251,6 +254,7 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
   // an edit made after this needs. False while something is unsent.
   const rest = useCallback((): boolean => {
     if (preferencesChange(base.current, here()) !== null) return false;
+    window.clearTimeout(sendTimer.current);
     standDown();
     setAttempt((count) => count + 1);
     return true;
@@ -356,12 +360,16 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
     streamClosed.current = false;
     setStreamLost(true);
     window.clearTimeout(retryTimer.current);
+    if (!userRetry.current) window.clearTimeout(sendTimer.current);
   }, []);
   const closed = useCallback(() => {
     streamLostRef.current = false;
     streamClosed.current = true;
     setStreamLost(false);
     window.clearTimeout(retryTimer.current);
+    if (refused.current !== null && !userRetry.current) window.clearTimeout(sendTimer.current);
+    // nothing refused: what is unsent no longer waits for the stream, and a wait a loss just before ended is set up again
+    else setAttempt((count) => count + 1);
   }, []);
 
   // against this tab's settings as of now, not the ones this render draws: the baseline beside them is as of now too
@@ -483,7 +491,7 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
         }
       });
     };
-    timer = window.setTimeout(() => sendNow(false), SEND_AFTER_MS);
+    timer = sendTimer.current = window.setTimeout(() => sendNow(false), SEND_AFTER_MS);
     const unlisten = listen();
     return () => {
       window.clearTimeout(timer);
