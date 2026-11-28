@@ -43,24 +43,30 @@ export function resolveFilePath(input: string, cwd: string | null, rules: Pick<P
 const TEXT_TYPES = /^(?:text\/|application\/(?:json|javascript|typescript|xml|x-sh|toml|yaml|x-yaml|sql)|image\/svg\+xml)/;
 const SNIFF_BYTES = 8192;
 
-function kindOf(mime: string, path: string, opened: number | null = null): FileKind {
-  if (mime === "image/svg+xml") return "image";
+/** The kind its type names; an untyped file is text unless its first `SNIFF_BYTES` (`head`, null when unread) hold a NUL. */
+export function kindFrom(mime: string, head: () => Uint8Array | null): FileKind {
   if (mime.startsWith("image/")) return "image";
   if (mime.startsWith("video/")) return "video";
   if (mime.startsWith("audio/")) return "audio";
   if (mime === "application/pdf") return "pdf";
   if (TEXT_TYPES.test(mime)) return "text";
-  let fd: number | null = null;
-  try {
-    if (opened === null) fd = openSync(path, "r");
-    const buffer = Buffer.alloc(SNIFF_BYTES);
-    const read = readSync(opened ?? fd!, buffer, 0, SNIFF_BYTES, 0);
-    return buffer.subarray(0, read).includes(0) ? "binary" : "text";
-  } catch {
-    return "binary";
-  } finally {
-    if (fd !== null) closeSync(fd);
-  }
+  const bytes = head();
+  return bytes === null || bytes.includes(0) ? "binary" : "text";
+}
+
+function kindOf(mime: string, path: string, opened: number | null = null): FileKind {
+  return kindFrom(mime, () => {
+    let fd: number | null = null;
+    try {
+      if (opened === null) fd = openSync(path, "r");
+      const buffer = Buffer.alloc(SNIFF_BYTES);
+      return buffer.subarray(0, readSync(opened ?? fd!, buffer, 0, SNIFF_BYTES, 0));
+    } catch {
+      return null;
+    } finally {
+      if (fd !== null) closeSync(fd);
+    }
+  });
 }
 
 const MAX_NAME_MATCHES = 10;
@@ -679,7 +685,8 @@ function pageStreamTarget(ref: string, folder: string, roots: readonly string[])
 
 /** The page's script can read what is put into it, so each element takes only its own kind of
  * file: never a key or a .env named as a picture's source. */
-const mimeOf = (file: string): string => Bun.file(file).type.split(";")[0] || "application/octet-stream";
+/** A file's type by its name alone, so another machine's path is typed as this PC's are. */
+export const mimeOf = (file: string): string => Bun.file(file).type.split(";")[0] || "application/octet-stream";
 const MEDIA = (mime: string) => /^(?:image|video|audio)\//.test(mime);
 const PLAYS = (mime: string) => /^(?:video|audio)\//.test(mime);
 const SCRIPT = (mime: string) => mime === "text/javascript" || mime === "application/javascript";
@@ -927,20 +934,29 @@ const askCollection = () => {
 /** A file that is not a page or a PDF: a document with no origin, no script and nothing from elsewhere. */
 export const FILE_POLICY = "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'";
 
-export async function fileResponse(info: FileInfo, download: boolean, render = false, media: PageMedia | null = null, request: Request | null = null, watched?: ReturnType<typeof watchPageMedia>, within: string | null = null, stream = false): Promise<Response> {
+/**
+ * What every answer with a file carries, and its content type: `pageCsp` is the policy of an HTML page
+ * served as a page (`pagePolicy`); any other file is sandboxed, and text is sent as plain text.
+ */
+export function fileHeaders(info: FileInfo, download: boolean, pageCsp: string | null = null): { headers: Headers; type: string } {
   const name = encodeURIComponent(info.name);
   const headers = new Headers({
     "content-disposition": `${download ? "attachment" : "inline"}; filename*=UTF-8''${name}`,
     "x-content-type-options": "nosniff",
     "cache-control": "private, no-store",
   });
-  const page = render && !download && isHtmlPage(info);
   // a PDF is drawn by the browser's own viewer, which refuses a sandboxed document; its
   // scripts stay inside that viewer, never on this origin
-  if (page) headers.set("content-security-policy", pagePolicy(media?.source ?? null));
+  if (pageCsp !== null) headers.set("content-security-policy", pageCsp);
   else if (info.kind !== "pdf") headers.set("content-security-policy", FILE_POLICY);
   // text shows as text, whatever its extension says it runs as
-  const type = page ? "text/html; charset=utf-8" : info.kind === "text" && info.mime !== "image/svg+xml" ? "text/plain; charset=utf-8" : info.mime;
+  const type = pageCsp !== null ? "text/html; charset=utf-8" : info.kind === "text" && info.mime !== "image/svg+xml" ? "text/plain; charset=utf-8" : info.mime;
+  return { headers, type };
+}
+
+export async function fileResponse(info: FileInfo, download: boolean, render = false, media: PageMedia | null = null, request: Request | null = null, watched?: ReturnType<typeof watchPageMedia>, within: string | null = null, stream = false): Promise<Response> {
+  const page = render && !download && isHtmlPage(info);
+  const { headers, type } = fileHeaders(info, download, page ? pagePolicy(media?.source ?? null) : null);
   const gone = () => jsonResponse({ error: { code: "not_found", message: "no readable file at that path" } }, 404);
   if (page && info.size <= EMBED_PAGE_BYTES) {
     const watch = media === null ? null : (watched ?? watchPageMedia());

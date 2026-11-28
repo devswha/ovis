@@ -334,6 +334,8 @@ export class CompositionHelper {
     this._dictation = false;
     this._compositionView.classList.remove('active');
     this._compositionView.style.display = 'none';
+    // what was composed is sent: the hidden view keeps none of it (a password typed at a prompt included)
+    this._compositionView.textContent = '';
     this._isComposing = false;
 
     if (!waitForPropagation) {

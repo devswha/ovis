@@ -86,7 +86,7 @@ try {
   assert.ok(process.env.HERDR_SOCKET, "the test-herdr preload must select the test socket before any workspace is created");
   console.log(`PWA isolated socket: ${process.env.HERDR_SOCKET}`);
   mkdirSync(app);
-  for (const folder of ["server", "shared", "telemetry"]) {
+  for (const folder of ["server", "shared", "telemetry", "integrations"]) {
     cpSync(join(repo, folder), join(app, folder), { recursive: true, filter: (path) => !path.endsWith(".test.ts") });
   }
   for (const file of ["package.json", "tsconfig.json"]) copyFileSync(join(repo, file), join(app, file));

@@ -34,6 +34,7 @@ import type { PaneContext } from "../../shared/protocol.ts";
 import { settingsFile } from "../claude-settings-file.ts";
 import { COMPILED, projectSafeCommand, ROOT } from "../entries.ts";
 import { readProcessBirth } from "../process-owner.ts";
+import { processAlive, processStartIdentity } from "../process-start.ts";
 import { isNonce, isPid, keyDigest, LINE_MAX, lineObject, seal, unseal } from "./relay.ts";
 
 export type ApprovalDecision = "allow" | "deny";
@@ -62,6 +63,8 @@ export interface ApprovalRequest {
 export interface HeldQuestion {
   readonly text: string;
   readonly options: readonly string[];
+  readonly descriptions?: readonly string[];
+  readonly multiple?: boolean;
 }
 
 /** What a question's card answered, keyed by the question's words, with the input its request was sent with. */
@@ -105,7 +108,7 @@ export interface ToldMode {
 }
 
 /** What an agent's hook says of the session it runs: that session, or that it ended. */
-export type SessionEvent = { readonly session: string } | { readonly ended: string };
+export type SessionEvent = { readonly session: string } | { readonly ended: string | null };
 
 /**
  * The session the agent started in a pane last told it runs, and the process that ran the hook (the agent itself, with
@@ -130,6 +133,8 @@ export interface ApprovalAdapter {
   readonly kind: string;
   /** its hook only tells (turns, the session) and never answers an approval: Copilot's */
   readonly toldOnly?: true;
+  /** The CLI cannot draw its own prompt while its hook waits. No connected client means pass. */
+  readonly chatWaitMs?: number;
   /** whether this version of the agent takes the hook as launchArgs adds it; an unknown version gets none */
   supports(version: string): boolean;
   /**
@@ -163,6 +168,7 @@ interface Launch {
   key: string;
   paneId: string;
   adapter: ApprovalAdapter;
+  owner?: { pid: number; start: number | null; watch: ReturnType<typeof setInterval> };
 }
 
 /** Only the launch whose agent herdr saw in front may keep reporting after that sighting. */
@@ -271,6 +277,7 @@ export class ApprovalHub {
 
   constructor(private readonly dir: string, adapters: readonly ApprovalAdapter[], private readonly options: {
     now?: () => number; heldMs?: number; onHeld?: (paneId: string) => void; onSettled?: (paneId: string) => void; platform?: string;
+    chatConnected?: (paneId: string) => boolean;
     /** a turn of the agent started in `paneId` began or ended, as its hook or app server told */
     onTurn?: (paneId: string, kind: string, turn: TurnEvent) => void;
     /** the agent started in `paneId` ran a command, as its hook told */
@@ -295,9 +302,9 @@ export class ApprovalHub {
   }
 
   /** The session the hook of the agent started in `paneId` last told it runs, with the process that told it, or null. */
-  toldSession(paneId: string): ToldSession | null {
+  toldSession(paneId: string, kind?: string): ToldSession | null {
     const told = this.sessions.get(paneId);
-    return told === undefined ? null : { session: told.session, pid: told.pid, birth: told.birth };
+    return told === undefined || (kind !== undefined && told.launch.adapter.kind !== kind) ? null : { session: told.session, pid: told.pid, birth: told.birth };
   }
 
   /** Only a hook run by the agent itself (its pid named in the sealed request) tells its session. */
@@ -458,6 +465,7 @@ export class ApprovalHub {
     if (pid === null) return void socket.destroy();
     const event = unseal(launch.key, "request", nonce, envelope!["sealed"], pid);
     if (event === null || Buffer.byteLength(event) > EVENT_MAX) return void socket.destroy();
+    if (launch.adapter.kind === "cmd" && (pid === undefined || !this.bindCmdProcess(launch, pid))) return void socket.destroy();
     const reply = (decision: ApprovalDecision | null, answered?: QuestionAnswer) => {
       if (socket.destroyed) return;
       socket.end(`${JSON.stringify({ sealed: seal(launch.key, "answer", nonce, launch.adapter.toAnswer(decision, answered)) })}\n`);
@@ -474,6 +482,7 @@ export class ApprovalHub {
     const context = launch.adapter.context?.(parsed);
     if (context !== undefined || turn !== null || command !== null || session !== null) {
       socket.end(`${JSON.stringify({ sealed: seal(launch.key, "answer", nonce, "") })}\n`);
+      if (launch.adapter.kind === "cmd" && session && "ended" in session) this.dropLaunch(keyDigest(launch.key));
       if (context !== undefined) {
         const report = this.contexts.get(launch.paneId);
         if (report?.launch === launch) {
@@ -488,13 +497,15 @@ export class ApprovalHub {
       else if (command !== null) this.options.onCommand?.(launch.paneId, launch.adapter.kind, command);
       return;
     }
+    const wait = launch.adapter.chatWaitMs;
+    if (wait !== undefined && !this.options.chatConnected?.(launch.paneId)) return reply(null);
     const card = launch.adapter.toCard(parsed);
     // an event the adapter does not take, or a command the card could not show whole or as it is, is the terminal's: a
     // Yes allows only what the card showed
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const entry = card === null ? null : this.add(launch.paneId, card, launch.adapter, false, (decision, answered) => { clearTimeout(timer); reply(decision, answered); });
+    const entry = card === null ? null : this.add(launch.paneId, card, launch.adapter, wait !== undefined, (decision, answered) => { clearTimeout(timer); reply(decision, answered); });
     if (entry === null) return reply(null);
-    timer = setTimeout(() => entry.settle(null), this.options.heldMs ?? HELD_MS);
+    timer = setTimeout(() => entry.settle(null), this.options.heldMs ?? wait ?? HELD_MS);
     // the agent ended its hook (answered in the terminal, or timed out)
     socket.on("close", () => entry.settle(null));
   }
@@ -545,10 +556,19 @@ export class ApprovalHub {
     return (this.pending.get(paneId) ?? []).map(publicOf);
   }
 
+  /** Losing the last viewer hands only Chat-first requests back to the terminal. */
+  releaseUnwatched(): void {
+    for (const [paneId, list] of this.pending) {
+      for (const entry of list) {
+        if (this.adapters.get(entry.adapter.kind)?.chatWaitMs !== undefined && !this.options.chatConnected?.(paneId)) entry.settle(null);
+      }
+    }
+  }
+
   /** Settles the request of `paneId` whose id is `id` (null: no decision). False when no such request is held. */
-  settle(paneId: string, id: string, decision: ApprovalDecision | null): boolean {
+  settle(paneId: string, id: string, decision: ApprovalDecision | null, answered?: QuestionAnswer): boolean {
     const entry = (this.pending.get(paneId) ?? []).find((candidate) => idOf(candidate) === id);
-    entry?.settle(decision);
+    entry?.settle(decision, answered);
     return entry !== undefined;
   }
 
@@ -643,9 +663,27 @@ export class ApprovalHub {
     for (const [digest, launch] of this.launches) if (launch.paneId === paneId) this.dropLaunch(digest);
   }
 
+  /** Replaying a shell history line is another process, even before the old key has been reaped. */
+  private bindCmdProcess(launch: Launch, pid: number): boolean {
+    const start = processStartIdentity(pid);
+    if (launch.owner) return launch.owner.pid === pid && launch.owner.start === start;
+    if (!processAlive(pid)) return false;
+    // An abrupt exit sends no session-end hook and may leave a relay waiting on a card.
+    const watch = setInterval(() => {
+      if (!processAlive(pid) || processStartIdentity(pid) !== start) this.dropLaunch(keyDigest(launch.key));
+    }, 1_000);
+    watch.unref();
+    launch.owner = { pid, start, watch };
+    return true;
+  }
+
   /** A launch no request is taken for any more, and its key file, so its hook finds no key and gives no decision. */
   private dropLaunch(digest: string): void {
     const launch = this.launches.get(digest);
+    if (launch?.owner) {
+      clearInterval(launch.owner.watch);
+      for (const entry of this.pending.get(launch.paneId) ?? []) if (entry.adapter === launch.adapter) entry.settle(null);
+    }
     this.launches.delete(digest);
     this.dropKey(digest);
     // a session told through a key no request is taken for any more could not be told again (its /clear): it goes too
@@ -659,6 +697,7 @@ export class ApprovalHub {
 
   stop(): void {
     this.stopped = true;
+    for (const [digest, launch] of this.launches) if (launch.owner) this.dropLaunch(digest);
     this.contexts.clear();
     this.sessions.clear();
     // each held request gets its answer (no decision, so the terminal's dialog stands) before the listener closes

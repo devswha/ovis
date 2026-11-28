@@ -153,6 +153,18 @@ it("A2: a failed removal leaves the notice in place with a retryable alert", asy
   expect(remove.disabled).toBe(false);
 });
 
+it("a sign-in whose own way in still settles is told from when it may remove the PC, which stays", async () => {
+  service.addedByEmail(ACCOUNT, "google");
+  const token = service.issueToken(ACCOUNT, { twoStep: true, provider: "google" });
+  await store.set("session", { ...(await store.get("session"))!, provider: "google", access_token: token });
+  const root = await mount();
+  const remove = buttons(root).find((node) => text(node) === "I didn't add this");
+  if (remove === undefined) throw new TypeError("Missing removal action");
+  await act(async () => { remove.click(); });
+  expect(page.one('[role="alert"]').textContent).toStartWith("Changes available from ");
+  expect(statuses(root)).toHaveLength(1);
+});
+
 it("PCR-1: a device code's sign-in removes nothing and is told to sign in on this device", async () => {
   // this device joined the account before the PC was added (its first sign-in); the device code's sign-in comes later
   await mount();

@@ -191,6 +191,13 @@ export function decodeClixml(stderr: string): string {
   return message || stderr.replace(/#< CLIXML[\s\S]*/, "").trim() || "PowerShell failed";
 }
 
+export interface SshForward {
+  listening(): boolean;
+  close(): Promise<void>;
+}
+
+class SshCommandInterrupted extends Error {}
+
 /**
  * One SSH destination for a setup or a connected PC.
  *
@@ -461,26 +468,51 @@ export class SshConnection {
     // sftp starts its own build's ssh unless told which
     await this.exec([this.client.sftp, ...(this.client.ssh === "ssh" ? [] : ["-S", this.client.ssh]), ...options, "-b", "-", this.target.destination], put, timeout);
   }
-  async forward(port: number, remotePort: number): Promise<void> {
+  async forward(port: number, remotePort: number, requireReady = false, bind = "127.0.0.1"): Promise<SshForward> {
     if (this.closed) throw new Error("SSH connection closed");
+    // a browser's forward names the remote loopback as localhost, so sshd tries its IPv4 and IPv6 addresses (a dev server
+    // started on localhost often listens on ::1 alone); the bridge's own forward keeps 127.0.0.1
+    const remoteHost = requireReady ? "localhost" : "127.0.0.1";
+    const spec = `${bind}:${port}:${remoteHost}:${remotePort}`;
     if (this.multiplexed) {
       // Mux commands read SSH config too: even a master with ClearAllForwardings
       // would accept those extra tunnels here. -O uses only our existing control
       // socket, so no host config is needed; ClearAllForwardings would erase our -L.
-      await this.exec([this.client.ssh, "-F", "none", "-S", this.control, "-O", "forward", "-L", `127.0.0.1:${port}:127.0.0.1:${remotePort}`, this.target.destination]);
-      return;
+      const control = [this.client.ssh, "-F", "none", "-S", this.control, "-O"];
+      const args = ["-L", spec, this.target.destination];
+      try { await this.exec([...control, "forward", ...args]); }
+      catch (error) {
+        // The master might have bound the port without replying: cancel it once, best effort, rather than end the whole
+        // connection (its terminals and bridge) over a clicked link, or leave an
+        // untracked listener; an ordinary mux refusal (for example a bind collision) is not ambiguous.
+        if (requireReady && error instanceof SshCommandInterrupted) await this.exec([...control, "cancel", ...args]).catch(() => undefined);
+        throw error;
+      }
+      return {
+        listening: () => this.connected(),
+        close: async () => { if (this.connected()) await this.exec([...control, "cancel", ...args]); },
+      };
     }
+    const told = forwardSaysReady(this.client);
+    if (requireReady && !told) throw new Error("This SSH client cannot confirm the port forward is listening");
     // Our -L needs ClearAllForwardings off, which would also open the forwards the account's
     // SSH config names for this host. Those are refused rather than opened on the user's behalf.
     if (CONFIG_FORWARD.test(await this.exec([this.client.ssh, "-G", ...this.options(false), this.target.destination]))) {
       throw new Error(`The SSH config for ${this.target.destination} sets LocalForward, RemoteForward or DynamicForward, which the web UI on Windows cannot switch off. Use a host alias without them.`);
     }
-    const told = forwardSaysReady(this.client);
-    const proc = Bun.spawn([...this.direct(undefined, false), ...(told ? ["-v"] : []), "-N", "-T", "-o", "ExitOnForwardFailure=yes", "-L", `127.0.0.1:${port}:127.0.0.1:${remotePort}`, this.target.destination], { stdin: "ignore", stdout: "ignore", stderr: "pipe", env: this.askEnv() });
+    if (this.closed) throw new Error("SSH connection closed");
+    const proc = Bun.spawn([...this.direct(undefined, false), ...(told ? ["-v"] : []), "-N", "-T", "-o", "ExitOnForwardFailure=yes", "-L", spec, this.target.destination], { stdin: "ignore", stdout: "ignore", stderr: "pipe", env: this.askEnv() });
     this.tunnels.add(proc);
+    const stop = async () => {
+      if (this.tunnels.delete(proc)) proc.kill();
+      await proc.exited;
+    };
+    const forward = {
+      listening: () => !this.closed && this.tunnels.has(proc) && proc.exitCode === null && proc.signalCode === null,
+      close: stop,
+    };
     void proc.exited.then(() => {
-      this.tunnels.delete(proc);
-      if (this.closed) return;
+      if (!this.tunnels.delete(proc) || this.closed || requireReady) return;
       this.broken = true;
       this.onExit?.();
     });
@@ -494,7 +526,7 @@ export class SshConnection {
         if (Date.now() > until) { proc.kill(); throw new Error("SSH port forward timed out"); }
         await Bun.sleep(100);
       }
-      return;
+      return forward;
     }
     // Something listening on the port proves nothing: another process on this PC may have taken it
     // after it was found free, before ssh's own bind, and a request sent there would hand it the
@@ -506,7 +538,8 @@ export class SshConnection {
     // authenticated, and names no forward. A LogVerbose config puts a source location after the
     // level, so the messages are looked for anywhere in a debug line. The rest of stderr is drained
     // and only ssh's own words, not the debug lines, are kept for an error.
-    const own = `Local connections to 127.0.0.1:${port} forwarded to remote address 127.0.0.1:${remotePort}`;
+    const own = `Local connections to ${bind}:${port} forwarded to remote address ${remoteHost}:${remotePort}`;
+    const ownIpv6 = bind === "[::1]" ? own.replace("[::1]", "::1") : own;
     const ready = Promise.withResolvers<void>();
     void (async () => {
       const decoder = new TextDecoder();
@@ -518,7 +551,7 @@ export class SshConnection {
         partial = lines.pop()!.slice(-4096);
         for (const line of lines) {
           if (!sshVerboseLine(line)) said = (said + line.replace(/\r$/, "") + "\n").slice(-8192);
-          else if (line.includes(own)) named = true;
+          else if (line.includes(own) || line.includes(ownIpv6)) named = true;
           else if (named && line.includes("Entering interactive session.")) ready.resolve();
         }
       }
@@ -530,10 +563,12 @@ export class SshConnection {
     this.pending.add(ready.reject);
     try { await ready.promise; }
     catch (error) {
+      if (requireReady) await stop();
       if (this.closed) throw new Error("Connection cancelled");
       if (timedOut) throw new Error("SSH port forward timed out");
       throw error;
     } finally { clearTimeout(timer); this.pending.delete(ready.reject); }
+    return forward;
   }
   /**
    * A Unix socket on the PC (its owner's recovery socket) reached at a socket in this connection's own folder, which only
@@ -633,6 +668,7 @@ export class SshConnection {
       };
       const [out, err, code, fed] = await Promise.all([read(proc.stdout), read(proc.stderr), proc.exited, feed]);
       if (this.closed) throw new Error("Connection cancelled");
+      if (proc.signalCode !== null) throw new SshCommandInterrupted(err.trim().slice(-4096) || `SSH command failed (${code})`);
       if (code !== 0) throw new Error(err.trim().slice(-4096) || `SSH command failed (${code})`);
       if (fed) throw fed instanceof Error ? fed : new Error(String(fed));
       return out;
@@ -646,6 +682,7 @@ export class SshConnection {
     this.master?.kill();
     for (const child of this.children) child.kill();
     for (const tunnel of this.tunnels) tunnel.kill();
+    this.tunnels.clear();
     for (const reject of this.pending) reject(new Error("Connection cancelled"));
     for (const socket of this.askSockets) socket.destroy();
     this.askServer.close();

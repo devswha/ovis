@@ -9,8 +9,8 @@
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { callNative, hasNativePlugin, inAndroidApp } from "../nativeApp.ts";
 import type { SignInCreation } from "./accountHint.ts";
-import { AccountService, requestToken } from "./service.ts";
-import { beginSignIn, finishIssuedSignIn, finishOwnSignIn, takePendingSignIn, type FinishOptions } from "./signin.ts";
+import { AccountService, AccountServiceError, requestToken } from "./service.ts";
+import { beginSignIn, finishIssuedSignIn, finishOwnSignIn, SignInError, takePendingSignIn, type FinishOptions } from "./signin.ts";
 import type { AccountProvider, AccountSession, AccountStore, LinkSignIn } from "./store.ts";
 
 export const AUTH_PLUGIN = "OvisAuth";
@@ -43,9 +43,17 @@ export async function nativeSignIn(provider: AccountProvider, options: {
   if (provider === "apple" && link === undefined && !inAndroidApp()) {
     const generation = await AccountService.signInGeneration(options.store);
     const nonce = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+    // a first sign-in asks to be linked by the email Apple signed into the token, which the app never sends itself
+    const link: Record<string, string> = await options.store.get("session") === undefined ? { link: "auto" } : {};
     const { idToken } = await callNative<{ idToken: string }>(AUTH_PLUGIN, "signInWithApple", { nonce: await sha256Hex(nonce) });
     await AccountService.checkGeneration(options.store, generation);
-    const session = await requestToken(options.service, { grant_type: "apple_id_token", id_token: idToken, nonce });
+    let session: AccountSession;
+    try {
+      session = await requestToken(options.service, { grant_type: "apple_id_token", id_token: idToken, nonce, ...link });
+    } catch (error) {
+      if (error instanceof AccountServiceError && error.code === "email_unavailable") throw new SignInError("email_unavailable", "The account service could not check the email");
+      throw error;
+    }
     return finishIssuedSignIn(session, generation, options);
   }
   const url = await beginSignIn(provider, { store: options.store, service: options.service, redirectUri: NATIVE_REDIRECT,

@@ -2,7 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
-import { agentBrowser, desktopCommand, findProgram, linuxBrowsers, linuxEntries, macBrowsers, parseDesktopEntry, parseRegQuery, readLinkBrowser, runsInterpreter, webAddress, windowsBrowsers, windowsCommand, windowsCommandWords, writeLinkBrowser } from "./browsers.ts";
+import { BUILT_IN_LINK_BROWSER } from "../../../shared/browser-policy.ts";
+import { agentBrowser, choosableLinkBrowser, desktopCommand, linkBrowserChoices, findProgram, linuxBrowsers, linuxEntries, macBrowsers, parseDesktopEntry, parseRegQuery, readLinkBrowser, runsInterpreter, webAddress, windowsBrowsers, windowsCommand, windowsCommandWords, writeLinkBrowser } from "./browsers.ts";
 
 const URL_ = "https://example.com/a b?q=\"x\"&y=%41 'z' $(id)";
 const ADDRESS = webAddress(URL_)!;
@@ -196,6 +197,23 @@ describe("agent-browser", () => {
 
   it("opens the address headed in a session of its own, never an agent's", () => {
     expect(agentBrowser("/bin/agent-browser").command(ADDRESS)).toEqual(["/bin/agent-browser", "--session", "ovis-links", "--headed", "open", ADDRESS]);
+  });
+});
+
+describe("the built-in browser as the browser for links", () => {
+  const found = [agentBrowser("/bin/agent-browser")];
+
+  it("is listed after the found browsers only while its setting is on", () => {
+    expect(linkBrowserChoices(found, true)).toEqual([{ id: "agent-browser", name: "agent-browser" }, { id: BUILT_IN_LINK_BROWSER, name: "Ovis" }]);
+    expect(linkBrowserChoices(found, false)).toEqual([{ id: "agent-browser", name: "agent-browser" }]);
+  });
+
+  it("can be chosen only while its setting is on", () => {
+    expect(choosableLinkBrowser(BUILT_IN_LINK_BROWSER, found, true)).toBe(true);
+    expect(choosableLinkBrowser(BUILT_IN_LINK_BROWSER, found, false)).toBe(false);
+    expect(choosableLinkBrowser("agent-browser", found, false)).toBe(true);
+    expect(choosableLinkBrowser("desktop:gone.desktop", found, true)).toBe(false);
+    expect(choosableLinkBrowser(null, found, false)).toBe(true);
   });
 });
 

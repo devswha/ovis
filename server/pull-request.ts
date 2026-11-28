@@ -73,8 +73,9 @@ async function runGh(cwd: string, args: string[], options: PullRequestOptions, k
   try {
     const [out, err, code] = await Promise.race([Promise.all([readCapped(proc.stdout, keepTail ? LOG_KEEP_BYTES : MAX_JSON_BYTES, keepTail).then((read) => { if (read.overflow && !keepTail) proc.kill(); return read; }), readCapped(proc.stderr, MAX_STDERR_BYTES, true), proc.exited]), deadline]);
     if (out.overflow && !keepTail) throw new PullRequestError("gh_failed", "gh answered more than this view reads", 502);
-    // gh exits 4 when it needs a sign-in; older releases only say so
-    if (code === 4 || /gh auth login/.test(err.text)) throw new PullRequestError("gh_signed_out", "gh on this PC is not signed in to GitHub", 409);
+    // gh exits 4 when it needs a sign-in; older releases only say so. Its advice for a remote on no
+    // GitHub host (a Gitea one) names gh auth login too, though gh is signed in: failure() says that one
+    if (code === 4 || (/gh auth login/.test(err.text) && !NO_GITHUB_REMOTE.test(err.text))) throw new PullRequestError("gh_signed_out", "gh on this PC is not signed in to GitHub", 409);
     return { code, stdout: out.text, stderr: err.text, overflow: out.overflow };
   } finally {
     clearTimeout(timer);
@@ -86,10 +87,12 @@ function firstLine(stderr: string): string {
   return (stderr.split("\n").find((line) => line.trim() !== "") ?? "").replace(/[\u0000-\u001f\u007f]/g, "").replace(/^X\s+/, "").trim().slice(0, 300);
 }
 
+const NO_GITHUB_REMOTE = /none of the git remotes|no git remotes/i;
+
 function failure(stderr: string, fallback: string): PullRequestError {
   if (/no pull requests found/i.test(stderr)) return new PullRequestError("no_pull_request", "This branch has no pull request", 404);
   if (/not a git repository/i.test(stderr)) return new PullRequestError("not_a_repository", "This folder is not inside a git repository", 409);
-  if (/none of the git remotes|no git remotes/i.test(stderr)) return new PullRequestError("no_github_remote", "This repository has no GitHub remote", 409);
+  if (NO_GITHUB_REMOTE.test(stderr)) return new PullRequestError("no_github_remote", "No remote of this repository is on a GitHub host gh knows", 409);
   return new PullRequestError("gh_failed", firstLine(stderr) || fallback, 502);
 }
 

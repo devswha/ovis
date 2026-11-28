@@ -16,6 +16,7 @@ function failureText(t: ReturnType<typeof useT>, error: unknown): string {
     case "unsupported": return t("This account service can't sign in a browser on this PC yet.");
     case "in_use": return t("This sign-in already belongs to another Ovis account. Nothing was changed.");
     case "no_sign_in": return t("The sign-in did not finish. Try again.");
+    case "email_unavailable": return t("Could not check your email. Try again.");
   }
 }
 

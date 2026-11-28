@@ -81,6 +81,8 @@ export interface OfferedProviders {
   readonly listed: AccountProvider[] | null;
   readonly device: DeviceProvider[];
   readonly page: DeviceProvider[];
+  /** the service links a new sign-in that asks it by its verified email: only then does a device or link page start send `link` */
+  readonly emailLink?: true;
 }
 
 export async function offeredProviders(service: string, fallback: readonly AccountProvider[], options: { fetch?: Fetch } = {}): Promise<OfferedProviders> {
@@ -105,6 +107,7 @@ export async function offeredProviders(service: string, fallback: readonly Accou
     listed: providers,
     device: DEVICE_PROVIDERS.filter((provider) => device.has(provider) && named.has(provider)),
     page: DEVICE_PROVIDERS.filter((provider) => page.has(provider) && named.has(provider)),
+    ...(body.email_link === true ? { emailLink: true } : {}),
   };
 }
 
@@ -130,6 +133,8 @@ export class AccountServiceError extends Error {
   index: number | null = null;
   /** The list a `409 list_exists` names, where it names one: only a hint, which the log alone confirms. */
   list: string | null = null;
+  /** When a `403 method_settling` ends (ISO): the way in this sign-in used was just added, and may then reshape the account. */
+  until: string | null = null;
   constructor(readonly status: number, readonly code: string, message: string, readonly retryAfterMs: number | null = null, readonly reason: string | null = null) {
     super(message);
     this.name = "AccountServiceError";
@@ -185,6 +190,14 @@ export class SignedOutError extends Error {
 }
 
 export const UNNAMED_DEVICE = "Device";
+
+export interface JoinedAccount {
+  readonly how: "email" | "fold";
+  readonly at: string;
+  readonly settlesAt: string;
+  readonly methods: readonly AccountProvider[];
+  readonly emailHint: string | null;
+}
 
 export interface Admission extends AccountAsker { readonly key: string; readonly label: string; readonly server_id: string; readonly at: string }
 
@@ -260,6 +273,7 @@ export async function failure(response: Response): Promise<AccountServiceError> 
   let reason: string | null = null;
   let index: number | null = null;
   let list: string | null = null;
+  let until: string | null = null;
   try {
     const body: unknown = await response.json();
     const error = isRecord(body) && isRecord(body.error) ? body.error : null;
@@ -267,12 +281,14 @@ export async function failure(response: Response): Promise<AccountServiceError> 
     if (typeof error?.reason === "string" && /^[a-z_]{1,40}$/.test(error.reason)) reason = error.reason;
     if (typeof error?.index === "number" && Number.isSafeInteger(error.index) && error.index >= 0) index = error.index;
     if (typeof error?.list === "string" && /^[0-9a-f]{64}$/.test(error.list)) list = error.list;
+    if (typeof error?.until === "string" && isIsoTime(error.until)) until = error.until;
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
   }
   const failed = new AccountServiceError(response.status, code, `The account service answered ${response.status} (${code})`, retryAfterMs(response.headers.get("retry-after")), reason);
   failed.index = index;
   failed.list = list;
+  failed.until = until;
   return failed;
 }
 
@@ -549,6 +565,23 @@ export class AccountService {
   async ownSignIn(signal?: AbortSignal): Promise<boolean> {
     const body = await this.call("GET", "/v1/session", undefined, signal);
     return isRecord(body) && body.own_sign_in === true;
+  }
+
+  /**
+   * GET /v1/session `joined`, with its `email_hint`: the way in this sign-in used was just added to the account because it
+   * has the account's email (`how`), and settles at `settlesAt`; `methods`, the account's ways in, oldest first. Null for
+   * any other sign-in, and from a service that does not say.
+   */
+  async joined(signal?: AbortSignal): Promise<JoinedAccount | null> {
+    const body = await this.call("GET", "/v1/session", undefined, signal);
+    const joined = isRecord(body) && isRecord(body.joined) ? body.joined : null;
+    if (joined === null || (joined.how !== "email" && joined.how !== "fold") || typeof joined.at !== "string" || !isIsoTime(joined.at)
+      || typeof joined.settles_at !== "string" || !isIsoTime(joined.settles_at) || !Array.isArray(joined.methods)) return null;
+    return {
+      how: joined.how, at: joined.at, settlesAt: joined.settles_at,
+      methods: (joined.methods as unknown[]).flatMap((method) => ACCOUNT_PROVIDERS.find((provider) => provider === method) ?? []),
+      emailHint: isRecord(body) && typeof body.email_hint === "string" && body.email_hint !== "" ? body.email_hint : null,
+    };
   }
 
   /** When this sign-in was made (GET /v1/session `signed_in_at`, kept by every refresh), in ms; null when the service does not say. */
@@ -847,6 +880,15 @@ export class AccountService {
    */
   async removeIdentity(provider: AccountProvider): Promise<void> {
     await this.call("DELETE", `/v1/identities/${provider}`);
+  }
+
+  /**
+   * Not me: takes back a way in that the service added because it has the account's email, within its 24 hours, from
+   * another settled way in's own sign-in or from that way in's own sessions, which end with it; the provider is never
+   * added to the account by email again. Past the 24 hours the service answers 409 `settled` (removeIdentity then).
+   */
+  async notMe(provider: AccountProvider): Promise<void> {
+    await this.call("POST", `/v1/identities/${provider}/not-me`, undefined, undefined, undefined, 204);
   }
 
   /**

@@ -49,6 +49,8 @@ if (isConnectionScreen) {
     list: (): Promise<unknown> => ipcRenderer.invoke("ovis:browsers"),
     choose: (id: string | null): Promise<void> => ipcRenderer.invoke("ovis:browser-choose", id),
     open: (url: string): void => ipcRenderer.send("ovis:browser-open", url),
+    canForward: (): boolean => ipcRenderer.sendSync("ovis:browser-can-forward") === true,
+    openForwarded: (url: string): Promise<boolean> => ipcRenderer.invoke("ovis:browser-open-forwarded", url),
   });
   // Settings → About → Terminal command (main.ts, terminalCommand.ts): where the `ovis` command is, and adding it
   contextBridge.exposeInMainWorld("ovisCommand", {
@@ -63,6 +65,14 @@ if (isConnectionScreen) {
       const heard = (_event: unknown, browser: unknown) => listener(browser);
       ipcRenderer.on("ovis:tabs", heard);
       return () => { ipcRenderer.removeListener("ovis:tabs", heard); };
+    },
+    // whether the page can show a tab now, so main opens a clicked link there only when it will be seen
+    showable: (showable: boolean): void => ipcRenderer.send("ovis:tabs-showable", showable),
+    // a web link main opened in a tab of the person's own (Settings → Browser for links), for the page to show
+    onOpened: (listener: (id: unknown) => void): (() => void) => {
+      const heard = (_event: unknown, id: unknown) => listener(id);
+      ipcRenderer.on("ovis:tabs-opened", heard);
+      return () => { ipcRenderer.removeListener("ovis:tabs-opened", heard); };
     },
     open: (url: string): Promise<number | null> => ipcRenderer.invoke("ovis:tabs-open", url),
     show: (id: number, bounds: { x: number; y: number; width: number; height: number }): void => ipcRenderer.send("ovis:tabs-show", id, bounds),

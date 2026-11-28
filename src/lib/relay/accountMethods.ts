@@ -8,6 +8,8 @@ export interface MethodsChange {
   readonly provider: AccountProvider;
   readonly error: string | null;
   readonly fromHint?: true;
+  /** for `method_settling`: when this sign-in's own way in has settled, and may change the others (ISO) */
+  readonly until?: string;
 }
 
 type Asked = Omit<MethodsChange, "error">;
@@ -20,8 +22,8 @@ export function accountMethods(account: AccountService, options: Pick<FinishOpti
   readonly register: (session: AccountSession) => Promise<unknown>;
 }) {
   let last: MethodsChange | undefined;
-  const record = async (asked: Asked, error: string | null): Promise<MethodsChange> => {
-    const result = { ...asked, error };
+  const record = async (asked: Asked, error: string | null, until: string | null = null): Promise<MethodsChange> => {
+    const result = { ...asked, error, ...(until === null ? {} : { until }) };
     last = result;
     await options.changed();
     return result;
@@ -29,7 +31,7 @@ export function accountMethods(account: AccountService, options: Pick<FinishOpti
   const refused = async (asked: Asked, error: Error): Promise<MethodsChange> => {
     if (error instanceof SignedOutError) await options.refresh();
     const code = error instanceof SignInError || error instanceof AccountServiceError || error instanceof SignedOutError ? error.code : "failed";
-    return record(asked, code);
+    return record(asked, code, error instanceof AccountServiceError ? error.until : null);
   };
   const change = async (asked: Asked, work: () => Promise<void>): Promise<MethodsChange> => {
     try { await work(); } catch (error) {
@@ -103,6 +105,18 @@ export function accountMethods(account: AccountService, options: Pick<FinishOpti
     async removeMethod(provider: AccountProvider, shown: AccountSession): Promise<void> {
       if (options.service === null) return;
       const result = await change({ account: shown.account, provider }, () => account.forSignIn(shown).removeIdentity(provider));
+      if (result.error === null) await options.refresh();
+    },
+    /** Not me on a way in the service added by its email; once its 24 hours are over (409 `settled`), the ordinary removal. */
+    async notMe(provider: AccountProvider, shown: AccountSession): Promise<void> {
+      if (options.service === null) return;
+      const bound = account.forSignIn(shown);
+      const result = await change({ account: shown.account, provider }, async () => {
+        try { await bound.notMe(provider); } catch (error) {
+          if (!(error instanceof AccountServiceError && error.status === 409 && error.code === "settled")) throw error;
+          await bound.removeIdentity(provider);
+        }
+      });
       if (result.error === null) await options.refresh();
     },
     finish(pending: PendingSignIn & { readonly link: LinkSignIn }, returned: SignInReturn): Promise<MethodsChange> {

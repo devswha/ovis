@@ -139,7 +139,7 @@ describe("the account's PCs in the sidebar", () => {
     expect(admitted).toEqual([DESK.server_id]);
     expect(text(row("Desk"))).toContain("Connecting…");
     // nothing answered through the relay in time: that is all the check knows, so it never says the PC is switched off
-    expect(text(row("Away"))).toContain("Can't reach the PC: it may be off");
+    expect(text(row("Away"))).toContain("The PC is not answering");
     expect(text(row("Away"))).not.toContain("Switched off");
     expect(page.container.querySelectorAll("button")).toHaveLength(0);
   });
