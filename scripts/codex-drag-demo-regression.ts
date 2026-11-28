@@ -13,7 +13,9 @@ interface Frame { type: string; pane_id?: string; text?: string }
 declare global { interface Window { dragFixture: { inputs: Frame[] } } }
 
 function installDragFixture(): void {
-  const core = new URL(location.href).searchParams.get("server") === "core";
+  const params = new URL(location.href).searchParams;
+  const core = params.get("server") === "core";
+  const touch = params.get("touch") === "1";
   // Codex's main screen as it starts: the alternate screen with drag reporting in SGR
   const stream = `\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[H\x1b[2J${Array.from({ length: 20 }, (_, index) => `CODEX-ROW-${index + 1}`).join("\r\n")}`;
   const state = { inputs: [] as Frame[] };
@@ -23,6 +25,7 @@ function installDragFixture(): void {
     const socket = new Demo(url, protocols) as WebSocket & { push(frame: Record<string, unknown>): void };
     const push = socket.push.bind(socket);
     let featured = false;
+    let offset = 0;
     let waiting: (() => void) | null = null;
     socket.push = (frame) => {
       if ((frame.type === "snapshot" || frame.type === "features") && Array.isArray(frame.features) && core) {
@@ -44,6 +47,15 @@ function installDragFixture(): void {
       const frame = JSON.parse(String(raw)) as Frame;
       if (frame.type === "input" || frame.type === "keys") state.inputs.push(frame);
       send(raw);
+      // A fixture for the TUI side of the same SGR path: each wheel-up report moves its transcript
+      // one row, rather than scrolling the browser's own history.
+      if (touch && frame.type === "input" && frame.pane_id) {
+        const steps = (frame.text?.match(/\x1b\[<64;\d+;\d+M/g) ?? []).length;
+        if (steps > 0) {
+          offset += steps;
+          socket.push({ type: "pty-data", fixture: "drag", pane_id: frame.pane_id, data: `\x1b[1;1H\x1b[2KTRANSCRIPT-OFFSET-${offset}` });
+        }
+      }
       if (frame.type === "attach" && frame.pane_id) {
         const paint = () => socket.push({ type: "pty-data", fixture: "drag", pane_id: frame.pane_id, data: stream });
         if (featured) paint();
@@ -60,6 +72,43 @@ const evidence = process.env.UI_EVIDENCE_DIR;
 const sent = (page: Page) => page.evaluate(() => window.dragFixture.inputs.map((frame) => frame.text ?? "").join(""));
 
 await withDemoBrowser({ tempPrefix: "codex-drag-demo-", afterTransport: `\n<script>(${installDragFixture.toString()})()</script>` }, async ({ newContext, baseUrl }) => {
+  for (const { pane, codex, kind } of [
+    { pane: panes.web, codex: true, kind: "herdr" },
+    { pane: panes.web, codex: true, kind: "core" },
+    { pane: panes.shell, codex: false, kind: "herdr" },
+  ]) {
+    const context = await newContext({ viewport: { width: 412, height: 860 }, isMobile: true, hasTouch: true });
+    try {
+      await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({
+        language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false,
+      })));
+      const page = await context.newPage();
+      page.setDefaultTimeout(10000);
+      await page.goto(`${baseUrl}?pane=${encodeURIComponent(pane)}&view=terminal&server=${kind}&touch=1`);
+      await page.locator(".pane-frame.is-current .xterm.enable-mouse-events").waitFor();
+      await page.locator(".pane-frame.is-current .ghostty-row", { hasText: "CODEX-ROW-1" }).first().waitFor();
+      const box = await page.locator(".pane-frame.is-current .xterm-screen").boundingBox();
+      const row = await page.locator(".pane-frame.is-current .ghostty-row").first().boundingBox();
+      assert.ok(box && row);
+      const x = Math.round(box.x + box.width / 2);
+      const y = Math.round(box.y + box.height / 3);
+      const cdp = await context.newCDPSession(page);
+      const reports = async () => ((await sent(page)).match(/\x1b\[<64;\d+;\d+M/g) ?? []).length;
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + Math.ceil(row.height * 1.25) }] });
+      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+      assert.equal(await reports(), codex ? 1 : 0, `${kind}: wheel reports after a slow drag of 1.25 rows (${codex ? "Codex" : "ordinary pane"})`);
+      if (!codex) {
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + Math.ceil(row.height * 3.25) }] });
+      }
+      await page.locator(".pane-frame.is-current .ghostty-row", { hasText: "TRANSCRIPT-OFFSET-1" }).first().waitFor();
+      assert.equal(await reports(), 1);
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+      console.log(`PASS ${kind}: ${codex ? "Codex advances after one row of finger travel" : "ordinary panes retain the three-row report step"}`);
+    } finally {
+      await context.close();
+    }
+  }
   const cases = [{ kind: "herdr", codexDrag: false }, { kind: "core", codexDrag: false }, { kind: "herdr", codexDrag: true }, { kind: "core", codexDrag: true }] as const;
   for (const { kind, codexDrag } of cases) {
     const name = `${kind}, Codex panes ${codexDrag ? "on" : "off"}`;

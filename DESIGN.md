@@ -5753,7 +5753,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   order, with at most 64 waiting: a fast flick that derived up to 24 reports in one frame now spreads
   them over the next few, and a two-screen swipe has drained within 300 ms of the lift. Every step
   the swipe derives (`wheelSteps`, then `finalStep` at the lift) still arrives; only travel beyond
-  64 waiting reports is dropped, and the terminal counts it in `data-touch-wheel-dropped`. A new
+  64 waiting reports is dropped, and the terminal counts it in `data-touch-wheel-dropped`.
+  The normal three-row step matches herdr's default. For a mouse-reporting Codex pane on
+  the alternate screen, one row of touch travel instead sends one report, matching the
+  default of Codex's own transcript (the same wheel input its desktop TUI consumes).
+  The frame limit and cancellation still apply to that touch path. A new
   touch (a second finger anywhere on the page too), a key typed in the terminal, the key bar or the
   input line, a disconnect, another pane, a role acknowledgement, an attach held or released and
   unmount all drop what is left of the swipe, queued reports and unsent travel alike, and each

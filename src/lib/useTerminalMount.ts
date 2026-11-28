@@ -2024,6 +2024,13 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           touchGeneration = outputGeneration;
         }
       };
+      // A mouse-enabled Codex TUI handles the wheel itself: by default one report moves one
+      // transcript row. Classic herdr's own history still moves three rows per report.
+      const touchStepPixels = (): number => cellHeight() * (
+        agentRef.current === "codex" && terminalScreen(term).alternate
+        && term.modes.mouseTrackingMode !== "none" && !scrollableMirror() && !wheelStateRef.current.omoQuestion
+          ? 1 : HERDR_MOUSE_SCROLL_LINES
+      );
       const onTouchMove = (event: TouchEvent): void => {
         if (!pinchStroke && event.touches.length > 1) {
           stopTouchScroll();
@@ -2069,10 +2076,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           return;
         }
         if (scrollableMirror() && !fold.active && across !== 0) host.scrollBy(across, 0);
-        // xterm sends herdr one report per wheel event however far it went, and herdr scrolls a
-        // few lines per report: one line-mode wheel per that many rows of finger travel keeps a
-        // swipe as far as a slow drag, and the text under the finger
-        const { steps, rest } = wheelSteps(touchPixels + delta, cellHeight() * HERDR_MOUSE_SCROLL_LINES);
+        const { steps, rest } = wheelSteps(touchPixels + delta, touchStepPixels());
         touchPixels = rest;
         touchTravel += delta;
         touchVelocity.add(event.timeStamp, touchTravel);
@@ -2130,13 +2134,13 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
               delete host.dataset.touchFling;
               return false;
             }
-            const { steps, rest } = wheelSteps(left + pixels, cellHeight() * HERDR_MOUSE_SCROLL_LINES);
+            const { steps, rest } = wheelSteps(left + pixels, touchStepPixels());
             left = rest;
             sendTouchWheels(steps);
             return true;
           }, () => {
             delete host.dataset.touchFling;
-            if (current()) sendTouchWheels(finalStep(left, cellHeight() * HERDR_MOUSE_SCROLL_LINES));
+            if (current()) sendTouchWheels(finalStep(left, touchStepPixels()));
           });
         }
         touchPixels = 0;
