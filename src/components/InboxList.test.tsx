@@ -300,8 +300,8 @@ describe("InboxList", () => {
       expect(said("w1E:p1", "inbox-topic")).toEqual(["Investigate backup failure"]);
       // a bare command ("agy") or the folder names nothing the row's name does not
       expect(said("w1F:p1", "inbox-topic")).toEqual([]);
-      // a shell prompt for a title names the row by its workspace
-      expect(said("w1F:p1", "inbox-name")).toEqual(["docs-site"]);
+      // and a row with no title of its own keeps the name it has without one
+      expect(said("w1F:p1", "inbox-name")).toEqual(["jimmy@herdr: ~/projects/docs-site"]);
     } finally {
       forgetTabLabelsForTests();
     }
