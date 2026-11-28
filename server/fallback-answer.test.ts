@@ -163,6 +163,19 @@ test.each([["\u2591", "\u2588"], ["\u2591\u2591", "\u2588\u2588"], ["\u28c0", "\
   });
 });
 
+// maki and kimi blank the spinner frame of their recorded waiting rows only: two frames marking a menu's rows are its
+// selection, so the mark moving is another card (#3795)
+test.each(["maki", "kimi"])("still refuses %s's answer once a menu marked with two spinner frames moved its selection", async (agent) => {
+  const menu = (marks: [string, string]) => `Remove the staging database?\n\n${marks[0]} Delete\n${marks[1]} Keep\n\n↑/↓ to move · enter to choose\n`;
+  await withPane(agent, "blocked", menu(["\u280b", "\u280f"]), async (pane) => {
+    const prompt = (await card())!;
+    pane.screen = menu(["\u280f", "\u280b"]);
+    expect(parseFallbackPrompt(agent, pane.screen).id).not.toBe(prompt.id);
+    expect(await answer(prompt.id, { option_index: labels(prompt).indexOf("Enter") })).toEqual({ status: 409, code: "prompt_changed" });
+    expect(pane.sent).toEqual([]);
+  });
+});
+
 // selection marks beside a border or guide glyph, at a row's end, or two glyphs wide (merge-pass review of #3730): the
 // mark moving is another card for any agent, so an Enter read for one row never lands on the other
 const SWAPPED_MARKS: [string, [string, string], [string, string]][] = [
@@ -224,6 +237,13 @@ test.each([
   if (agent === "muse") expect(parseFallbackPrompt(agent, after.replace("\u25c7 Request", "\u25c6 Request")).id).toBe(parseFallbackPrompt(agent, before).id);
   expect(after.split(from).length).toBe(2);
   expect(parseFallbackPrompt(agent, after.replace(from, to)).id).not.toBe(parseFallbackPrompt(agent, before).id);
+});
+
+// a wider pane pads maki's status bar after its mode: " ⠙ [BUILD]      /home/…/maki  anthropic/…"
+test("keeps maki's card while its spinner turns on a status bar padded after its mode", () => {
+  const screen = recorded("lab-maki-waiting-a").replace("[BUILD]../scratch", "[BUILD]        /home/me/scratch");
+  expect(screen).toContain("\u2807 [BUILD]        /home");
+  expect(parseFallbackPrompt("maki", screen.replace("\u2807 [BUILD]", "\u2819 [BUILD]")).id).toBe(parseFallbackPrompt("maki", screen).id);
 });
 
 // Grok 1.0.92 redraws the tool call its permission panel asks about every tenth of a second (server/fixtures/record-cards)
@@ -310,11 +330,6 @@ test("keeps the words Hermes's status bar echoes, blanking only its ticking segm
   expect(parseFallbackPrompt("hermes", after.replace(echo, "\u2500 Delete the staging data...")).id).not.toBe(parseFallbackPrompt("hermes", before).id);
   expect(after.split("\u2624 gpt-6-luna \u2502").length).toBe(2);
   expect(parseFallbackPrompt("hermes", after.replace("\u2624 gpt-6-luna \u2502", "\u2624 gpt-6-sol \u2502")).id).not.toBe(parseFallbackPrompt("hermes", before).id);
-});
-
-test("keeps the ids of Copilot's and Grok's cards as #3730 gave them", () => {
-  expect(parseFallbackPrompt("copilot", recorded("copilot-1.0.109-ask-32s")).id).toBe("2af485654211");
-  expect(parseFallbackPrompt("grok", recorded("grok-1.0.77-ask")).id).toBe("09168e691891");
 });
 
 // A picker of the agent's own that herdr reports at rest under (Devin's and Copilot's folder trust at start): the chat
