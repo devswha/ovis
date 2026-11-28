@@ -325,7 +325,10 @@ export function createAccountController(mount: RelayShellMount, view: {
         else {
           console.warn("Ovis: the account's PCs could not be read", error instanceof Error ? error.name : error);
           const devices = await store.list();
+          // another tab may have stored another sign-in after the service's own check of this one: its heading, not these rows
+          const now = readFor === undefined ? undefined : await account.session().catch(() => undefined);
           if (!live()) return;
+          if (now !== undefined && readFor !== undefined && !sameSignIn(now, readFor)) { await replacedBy(now); return; }
           const kept = current?.kind === "signed-in" && current.pcs !== null && listedFor?.epoch === epoch
             ? myPcs(drawnPcs(directory, listedFor.projection.account, listedFor.at), devices, { now: listedFor.at, ...listedFor.projection, outdated: view.outdated() })
             : current?.kind === "signed-in" && current.pcs !== null ? current.pcs : myPcs([], devices, { now: Date.now(), outdated: view.outdated() });

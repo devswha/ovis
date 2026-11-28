@@ -10,8 +10,10 @@ import { createShellTestPage } from "./shell.test.tsx";
 const SERVICE = "https://account.ovis.sh";
 const session = (account: string): AccountSession => ({ service: SERVICE, account, provider: account === "acct-a" ? "github" : "google", access_token: `access-${account}`, refresh_token: `refresh-${account}`, expires_at: Date.now() + 3_600_000, sign_in_id: `sign-in-${account}` });
 const rowOf = (account: string) => ({ server_id: (account === "acct-a" ? "a1" : "b2").repeat(16), label: `${account}'s PC`, added_at: "2026-11-24T00:00:00.000Z", last_seen_at: null, public_key: null, relay: null });
+// a step the read waits for in the pairings list: lets a test store another sign-in inside a failed read's handling
+let onList: (() => Promise<void>) | undefined;
 const empty: ShellDeviceStore = {
-  get: async () => undefined, list: async () => [], remove: async () => {}, removeRow: async () => false,
+  get: async () => undefined, list: async () => { const step = onList; onList = undefined; await step?.(); return []; }, remove: async () => {}, removeRow: async () => false,
   update: async () => { throw new Error("No pairing is made here"); },
 };
 type Answer = "rows" | "503" | Promise<"rows" | "503">;
@@ -23,7 +25,7 @@ describe("the account's PCs when another tab changes the sign-in between reads",
   let asked: string[];
   let drawn: AccountView[];
   const made: { dispose(): void }[] = [];
-  beforeEach(() => { browser = createShellTestPage(); accountStore = memoryAccountStore(); answers = {}; asked = []; drawn = []; });
+  beforeEach(() => { browser = createShellTestPage(); accountStore = memoryAccountStore(); answers = {}; asked = []; drawn = []; onList = undefined; });
   afterEach(() => { for (const each of made.splice(0)) each.dispose(); browser.dispose(); });
 
   const until = async (holds: () => boolean, what: string): Promise<void> => {
@@ -70,6 +72,19 @@ describe("the account's PCs when another tab changes the sign-in between reads",
     await accountStore.set("session", session("acct-b"));
     answers["acct-b"] = "503";
     await account.refresh(false, true);
+    expect(drawn.at(-1)).toMatchObject({ kind: "signed-in", provider: "google" });
+    expect(names(drawn.at(-1))).not.toContain("acct-a's PC");
+  });
+
+  it("draws none of A's rows under B when another tab signs in as B after A's read failed, while that failure is handled", async () => {
+    const account = await withAsList();
+    answers["acct-a"] = "503";
+    answers["acct-b"] = "503";
+    // the failed read's handling reads the pairings: B is stored there, after the service's own check of the sign-in
+    onList = async () => { await accountStore.set("session", session("acct-b")); };
+    await account.refresh(false, true);
+    await until(() => asked.includes("acct-b"), "B's directory asked");
+    await until(() => { const last = drawn.at(-1); return last?.kind === "signed-in" && last.provider === "google" && last.error !== null; }, "B's failed read drawn");
     expect(drawn.at(-1)).toMatchObject({ kind: "signed-in", provider: "google" });
     expect(names(drawn.at(-1))).not.toContain("acct-a's PC");
   });
