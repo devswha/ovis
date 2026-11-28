@@ -286,7 +286,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
           <span className="inbox-body">
             <span className="inbox-line">
               <span className="inbox-name">{row.title}</span>
-              {!wide && at !== null && <time className="inbox-time" dateTime={at.toISOString()} title={at.toLocaleString(resolvedLanguage)}>{age}</time>}
+              {at !== null && <time className="inbox-time" dateTime={at.toISOString()} title={at.toLocaleString(resolvedLanguage)}>{age}</time>}
             </span>
             {wide ? words : <span className="inbox-sub">{words}{stateMark(row.status, row.failed, row.state)}</span>}
           </span>

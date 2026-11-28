@@ -9,6 +9,7 @@ import { FrameGate } from "./inputRow.ts";
 import { AttachmentTooLargeError, assertAttachable, fetchPaneConversation, fetchPaneScroll, fetchPaneSelection, scrollPane } from "./api.ts";
 import { parseOsc52 } from "./osc52.ts";
 import { reserveOsc52Copy, type Osc52Reservation } from "./osc52Clipboard.ts";
+import { copyText } from "./clipboard.ts";
 import { unwrapAgentRows } from "./agentCopy.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import { createSecretScreen } from "./secretScreen.ts";
@@ -29,10 +30,10 @@ import { fitLineHeight } from "./terminalLineHeight.ts";
 import { keepDeleteRepeatText, keyboardNeedsText, restoreDeleteRepeatCaret } from "./deleteRepeat.ts";
 import { pinchFontSize } from "./pinchFontSize.ts";
 import { finalStep, HERDR_MOUSE_SCROLL_LINES, wheelSteps } from "./wheelSteps.ts";
-import { createTouchFling, createVelocityTracker } from "./touchFling.ts";
+import { createTouchFling, createVelocityTracker, FLING_SLOP_PX } from "./touchFling.ts";
 import { createTouchWheelPacer } from "./touchWheelPacer.ts";
 import { layoutScroll } from "./layoutScroll.ts";
-import { TOUCH_STROKE_CLAIMED } from "./touchClaim.ts";
+import { terminalTouchSelections, TOUCH_STROKE_CLAIMED } from "./touchClaim.ts";
 import { attachTerminalWheel, canPanTerminalGrid } from "./terminalWheel.ts";
 import { createTerminalFold, dimmedColor, wideGridKey, wideGrids } from "./terminalFold.ts";
 import { screenRows, terminalScreen, viewRows } from "./terminalScreen.ts";
@@ -55,6 +56,8 @@ declare const __HERDR_TEST_HOOKS__: boolean;
 /** `automatic`: xterm made the input itself (a query's answer), nobody typed it */
 /** `typedAt`: when it was captured (markTyped): what waited goes only over a link up since then (HerdrSocket.takesKey) */
 type Typed = { input: string; keys: string[] | null; chord: boolean; stop: boolean; secret: boolean; typedAt: number; arrowModeEpoch?: number | null; automatic?: boolean };
+
+export type TerminalSelectionOffer = { pane: string; text: string; range: { start: number; end: number } | null; action?: "copy" };
 
 export interface TerminalMountDeps {
   activeRef: RefObject<boolean>;
@@ -155,7 +158,7 @@ export interface TerminalMountDeps {
   setParsedTarget: Dispatch<SetStateAction<string | undefined>>;
   setReleased: (next: boolean) => void;
   setSecret: Dispatch<SetStateAction<{ pane: string; prompt: string; unchecked: boolean } | null>>;
-  setSelectionQuote: Dispatch<SetStateAction<{ pane: string; text: string; range: { start: number; end: number; } | null; } | null>>;
+  setSelectionQuote: Dispatch<SetStateAction<TerminalSelectionOffer | null>>;
   setTerminal: Dispatch<SetStateAction<GhosttyTerminal | null>>;
   setUnsupported: Dispatch<SetStateAction<boolean>>;
   setWatching: (next: boolean) => void;
@@ -592,7 +595,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // pty and selects only with Shift (Option on macOS) held. Selection lives in herdr's
       // own TUI client, not in `herdr terminal attach`, so a left drag here selects as if the
       // modifier were held, and letting go copies, as the herdr TUI does; a press let go in
-      // place is a click and goes to the program (forwardClick). Touch keeps its drag-to-scroll.
+      // place is a click and goes to the program (forwardClick).
       //
       // xterm keeps no scrollback (herdr owns it), so a drag that outlives one screen is
       // tracked in herdr's history rows: a wheel, or dragging past the top or bottom edge,
@@ -621,7 +624,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
       let drag: Drag | null = null;
       let edgeTimer: number | null = null;
-      const cellAt = (event: MouseEvent): { cell: Cell; edge: -1 | 0 | 1 } => {
+      const cellAt = (event: { clientX: number; clientY: number }): { cell: Cell; edge: -1 | 0 | 1 } => {
         const rect = (term.element?.querySelector(".xterm-screen") ?? host).getBoundingClientRect();
         const col = Math.floor((event.clientX - rect.left) / (rect.width / term.cols));
         const row = Math.floor((event.clientY - rect.top) / (rect.height / term.rows));
@@ -779,6 +782,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         stopEdge();
         drag = null;
         programPress = null;
+        cancelTouchRef.current();
       };
       const onMouseUp = (event: MouseEvent): void => {
         const d = drag;
@@ -1919,6 +1923,29 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       let touchTravel = 0;
       let touchPane: string | null = null;
       let touchGeneration = -1;
+      let touchView = -1;
+      let selectionHold: number | null = null;
+      let touchAnchor: Cell | null = null;
+      const selectionCurrent = (): boolean => !disposed && !chatViewRef.current && !fold.active
+        && viewRef.current.changes === touchView && outputGeneration === touchGeneration;
+      const stopSelectionHold = (): void => {
+        if (selectionHold === null) return;
+        window.clearTimeout(selectionHold);
+        selectionHold = null;
+        terminalTouchSelections.delete(host);
+      };
+      const touchCellAt = (point: { clientX: number; clientY: number }): Cell => {
+        const cell = cellAt(point).cell;
+        const screen = terminalScreen(term);
+        const row = cell.row + screen.viewportY;
+        const col = cell.col > 0 && screen.getLine(row)?.getCell(cell.col)?.getWidth() === 0 ? cell.col - 1 : cell.col;
+        return { row, col };
+      };
+      const paintTouchSelection = (anchor: Cell, point: { clientX: number; clientY: number }): void => {
+        const [from, to] = ordered(anchor, touchCellAt(point));
+        const width = terminalScreen(term).getLine(to.row)?.getCell(to.col)?.getWidth() === 2 ? 2 : 1;
+        term.select(from.col, from.row, (to.row - from.row) * term.cols + to.col - from.col + width);
+      };
       const stopTouchScroll = (): void => {
         touchFling.cancel();
         delete host.dataset.touchFling;
@@ -1926,6 +1953,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       cancelTouchRef.current = () => {
         stopTouchScroll();
+        stopSelectionHold();
+        if (touchAnchor !== null) term.clearSelection();
+        touchAnchor = null;
+        terminalTouchSelections.delete(host);
         touchPixels = 0;
         tracking = false;
       };
@@ -1974,21 +2005,19 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         }
         hidePinchBadge();
       };
-      const claimPinch = (event: Event): void => {
+      const claimTerminalTouch = (event: Event): void => {
         event.preventDefault();
-        // the host listens in the capture phase: xterm's own touch listeners on its element must not
-        // scroll its viewport with the first finger of a pinch
         event.stopPropagation();
       };
       const onTouchStart = (event: TouchEvent): void => {
         if (chatViewRef.current) return;
-        stopTouchScroll();
+        cancelTouchRef.current();
         if (event.touches.length === 1 && pinchStroke) {
           finishPinch(false);
           pinchStroke = false;
         }
         if (pinchStroke) {
-          claimPinch(event);
+          claimTerminalTouch(event);
           return;
         }
         if (event.touches.length >= 2) {
@@ -1996,7 +2025,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           pinchStatusFrame = null;
           tracking = false;
           pinchStroke = true;
-          claimPinch(event);
+          claimTerminalTouch(event);
           const a = event.touches[0];
           const b = event.touches[1];
           if (event.touches.length !== 2 || !a || !b ||
@@ -2022,16 +2051,33 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           touchVelocity.add(event.timeStamp, 0);
           touchPane = paneRef.current;
           touchGeneration = outputGeneration;
+          touchView = viewRef.current.changes;
+          const screen = term.element?.querySelector(".xterm-screen");
+          if (!fold.active && event.target instanceof Node && screen?.contains(event.target)) {
+            const viewport = terminalScreen(term).viewportY;
+            selectionHold = window.setTimeout(() => {
+              stopSelectionHold();
+              if (!tracking || !selectionCurrent() || terminalScreen(term).viewportY !== viewport) return;
+              tracking = false;
+              stopTouchScroll();
+              copiedText = null;
+              selectionGeneration++;
+              setSelectionQuote(null);
+              touchAnchor = touchCellAt(first);
+              terminalTouchSelections.set(host, "selecting");
+              paintTouchSelection(touchAnchor, first);
+            }, 450);
+            terminalTouchSelections.set(host, stopSelectionHold);
+          }
         }
       };
       const onTouchMove = (event: TouchEvent): void => {
         if (!pinchStroke && event.touches.length > 1) {
-          stopTouchScroll();
-          tracking = false;
+          cancelTouchRef.current();
           pinchStroke = true;
         }
         if (pinchStroke) {
-          claimPinch(event);
+          claimTerminalTouch(event);
           if (pinch && event.touches.length === 2) {
             let first: Touch | undefined;
             let second: Touch | undefined;
@@ -2051,10 +2097,23 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           }
           return;
         }
-        if (!tracking || event.touches.length !== 1) return;
-        event.preventDefault();
         const first = event.touches[0];
-        if (!first) return;
+        if (event.touches.length !== 1 || !first) return;
+        if (touchAnchor !== null) {
+          claimTerminalTouch(event);
+          if (selectionCurrent()) paintTouchSelection(touchAnchor, first);
+          else cancelTouchRef.current();
+          return;
+        }
+        if (!tracking) return;
+        if (chatViewRef.current) {
+          cancelTouchRef.current();
+          return;
+        }
+        event.preventDefault();
+        // Small movement while the hold is pending is neither a scroll nor a selection.
+        if (selectionHold !== null && Math.hypot(first.clientX - touchX, first.clientY - touchY) < FLING_SLOP_PX) return;
+        stopSelectionHold();
         const delta = touchY - first.clientY;
         const across = touchX - first.clientX;
         touchX = first.clientX;
@@ -2062,6 +2121,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const edged = scrollableMirror() || (fold.active && !adopted());
         if ((adopted() || fold.active) && (!edged || canPanTerminalGrid(host, delta))) {
           touchPixels = 0;
+          touchTravel = 0;
           touchVelocity.reset();
           stopTouchScroll();
           panned = true;
@@ -2099,7 +2159,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const clientY = touchY;
         touchPacer.push(steps, {
           allowed: () => !disposed && pane !== null && paneRef.current === pane && generation === outputGeneration
-            && !observeRef.current && !heldRef.current && !releasedRef.current && !adopted() && socket.canInput(pane),
+            && !chatViewRef.current && !observeRef.current && !heldRef.current && !releasedRef.current && !adopted() && socket.canInput(pane),
           emit: (sign) => {
             touchWheelDispatching = true;
             try {
@@ -2114,15 +2174,41 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (touchPacer.dropped > 0) host.dataset.touchWheelDropped = String(touchPacer.dropped);
       };
       const onTouchEnd = (event: TouchEvent): void => {
+        stopSelectionHold();
+        if (touchAnchor !== null) {
+          claimTerminalTouch(event);
+          if (event.type !== "touchend" || !selectionCurrent()) {
+            cancelTouchRef.current();
+            return;
+          }
+          touchAnchor = null;
+          terminalTouchSelections.delete(host);
+          const text = visibleSelection();
+          if (!text) return;
+          copiedText = text;
+          if (!copyOnSelect()) {
+            if (touchPane !== null) setSelectionQuote({ pane: touchPane, text, range: null, action: "copy" });
+            return;
+          }
+          const view = touchView;
+          void copyText(text).then((copied) => {
+            if (!disposed && viewRef.current.changes === view) {
+              noteClipboard(copied ? "copied to clipboard" : "clipboard write blocked by the browser");
+            }
+          });
+          return;
+        }
         if (tracking && event.type === "touchend" && !pinchStroke && (!adopted() || scrollableMirror())) {
           const velocity = touchVelocity.release(event.timeStamp);
           const pane = touchPane;
           const generation = touchGeneration;
+          const view = touchView;
           let left = touchPixels;
           // the glide belongs to the pane and attach the touch began on: a switch, a lost attach or a
           // role change, even one before the lift, stops it, as they drop the swipe's queued reports
           // (sendTouchWheels' pacer checks them too)
           const current = (): boolean => !disposed && pane !== null && paneRef.current === pane && generation === outputGeneration
+            && viewRef.current.changes === view && !chatViewRef.current
             && !observeRef.current && !heldRef.current && !releasedRef.current && (!adopted() || scrollableMirror()) && socket.canInput(pane);
           host.dataset.touchFling = "";
           touchFling.start(velocity, (pixels) => {
@@ -2142,12 +2228,16 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         touchPixels = 0;
         tracking = false;
         if (!pinchStroke) return;
-        claimPinch(event);
+        claimTerminalTouch(event);
         if (event.type === "touchcancel" || event.touches.length < 2) finishPinch(event.type === "touchend");
         if (event.touches.length === 0) pinchStroke = false;
       };
+      const onTouchContextMenu = (event: MouseEvent): void => {
+        if (selectionHold !== null || touchAnchor !== null) claimTerminalTouch(event);
+      };
       const onTouchClaimed = (): void => cancelTouchRef.current();
       host.addEventListener(TOUCH_STROKE_CLAIMED, onTouchClaimed, { capture: true, passive: true });
+      host.addEventListener("contextmenu", onTouchContextMenu, { capture: true });
       // Safari zooms inside an overflow region (xterm's viewport) despite touch-action: none
       const onGesture = (event: Event): void => { if (!chatViewRef.current) event.preventDefault(); };
       host.addEventListener("touchstart", onTouchStart, { capture: true, passive: false });
@@ -2559,8 +2649,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         host.removeEventListener("touchend", onTouchEnd, { capture: true });
         host.removeEventListener("touchcancel", onTouchEnd, { capture: true });
         host.removeEventListener(TOUCH_STROKE_CLAIMED, onTouchClaimed, { capture: true });
+        host.removeEventListener("contextmenu", onTouchContextMenu, { capture: true });
+        cancelTouchRef.current();
         touchFling.dispose();
-        delete host.dataset.touchFling;
         touchPacer.dispose();
         cancelTouchRef.current = () => undefined;
         host.removeEventListener("gesturestart", onGesture);
