@@ -5,7 +5,6 @@ import { ssInode } from "./unix-peer.ts";
 
 const exec = promisify(execFile);
 
-
 /** The kernel's one established stream from the TUI to this listener, or no proof. */
 export async function codexUnixPeer({ path, server, tui }: {
   readonly path: string;

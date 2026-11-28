@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -16,6 +16,7 @@ export interface PrimeReaders {
   readonly platform: NodeJS.Platform;
   readonly descriptors: (pid: number) => Map<string, string> | null;
   readonly started: (pid: number) => number | null;
+  readonly argv: (pid: number) => readonly string[] | null;
   readonly sockets: typeof unixSocketTable;
   readonly list: (socket: string) => Promise<PrimeDaemonList | null>;
   readonly header: (path: string) => { readonly id: string; readonly identity: string } | null;
@@ -57,67 +58,84 @@ export async function primeTranscriptPath(paneId: string, options: { processes?:
   const daemons = new Set([...peers].flatMap((inode) => table.names.get(inode) ?? []).filter((name) => !WORKER_SOCKET.test(name)));
   if (daemons.size !== 1) return null;
   const [daemon] = daemons as Set<string>;
-  const owns = (pid: number) => {
-    const targets = read.descriptors(pid);
-    return targets !== null && [...socketInodes(targets)].some((inode) => peers.has(inode));
+  // a Prime Agent process in that role (`--mode daemon`, `worker`) owning one end of the TUI's streams
+  const owns = (pid: number, role: "daemon" | "worker") => {
+    const argv = read.argv(pid), targets = read.descriptors(pid);
+    return argv !== null && basename(argv[0] ?? "") === "prime-agent" && (role === "worker" ? argv[1] === "worker" : argv.includes("daemon"))
+      && targets !== null && [...socketInodes(targets)].some((inode) => peers.has(inode));
   };
   const listed = await read.list(daemon!);
   // the daemon that answered is the TUI's: its supervisor owns one end of the TUI's streams
-  if (listed === null || !owns(listed.supervisorPid)) return null;
-  const linked = listed.sessions.filter(({ workerPid }) => workerPid !== null && owns(workerPid));
+  if (listed === null || !owns(listed.supervisorPid, "daemon")) return null;
+  const linked = listed.sessions.filter(({ workerPid }) => workerPid !== null && owns(workerPid, "worker"));
   // none: a picker (the agents view) is in front, or no direct link; several: not one conversation
   if (linked.length !== 1) return null;
   const [session] = linked as [PrimeLiveSession];
-  if (session.sessionFile === null) return null;
+  const supervisorBorn = read.started(listed.supervisorPid), workerBorn = read.started(session.workerPid!);
+  if (session.sessionFile === null || supervisorBorn === null || workerBorn === null) return null;
   const header = read.header(session.sessionFile);
   if (header === null || header.id !== session.sessionId) return null;
   const again = await read.list(daemon!);
   const still = again?.sessions.find(({ activeSessionId }) => activeSessionId === session.activeSessionId);
-  if (!sameDescriptors(before, read.descriptors(tui)) || read.started(tui) !== born
-    || still?.workerPid !== session.workerPid || still?.sessionFile !== session.sessionFile) return null;
+  // pids are checked by their start too: one reused since would own none of these streams, but is not trusted to
+  if (!sameDescriptors(before, read.descriptors(tui)) || read.started(tui) !== born || again?.supervisorPid !== listed.supervisorPid
+    || read.started(listed.supervisorPid) !== supervisorBorn || read.started(session.workerPid!) !== workerBorn
+    || still?.workerPid !== session.workerPid || still?.sessionFile !== session.sessionFile || still?.sessionId !== session.sessionId) return null;
   const store = dirname(session.sessionFile);
   return { path: session.sessionFile, identity: header.identity, agentDir: basename(store) === "sessions" ? dirname(store) : null };
 }
 
 const text = (value: unknown): string | null => typeof value === "string" && value.length > 0 ? value : null;
 const pid = (value: unknown): number | null => typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+const object = (value: unknown): Record<string, unknown> | null => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 
 /** The daemon's `list`, asked under an id of Ovis's own: a TUI's id would make the daemon count this connection as that TUI's. */
 export async function listPrimeDaemon(socket: string): Promise<PrimeDaemonList | null> {
   const id = `ovis-${randomBytes(6).toString("hex")}`;
   const { promise, resolve } = Promise.withResolvers<PrimeDaemonList | null>();
-  let buffer = "", supervisorPid: number | null = null;
+  // the whole exchange, connecting included, is bounded in time and bytes
   const timer = setTimeout(() => resolve(null), LIST_MS);
-  const connection = await Bun.connect({ unix: socket, socket: {
+  let buffer = Buffer.alloc(0), supervisorPid: number | null = null;
+  const answer = (link: { write(data: string): number }, line: string) => {
+    let frame: Record<string, unknown> | null;
+    try { frame = object(JSON.parse(line)); } catch { return; }
+    if (frame === null) return;
+    const protocol = object(frame.protocol);
+    if (frame.type === "daemon_hello" && protocol?.name === DAEMON_PROTOCOL && pid(protocol.version) !== null) {
+      supervisorPid = pid(frame.supervisorPid);
+      link.write(`${JSON.stringify({ type: "command", id, protocol, clientId: id, command: { type: "list", id } })}\n`);
+    } else if (frame.type === "response" && frame.id === id) {
+      const rows = object(frame.data)?.sessions;
+      if (frame.success !== true || supervisorPid === null || !Array.isArray(rows)) return resolve(null);
+      const sessions = rows.flatMap((value: unknown) => {
+        const row = object(value);
+        const activeSessionId = text(row?.activeSessionId), sessionId = text(row?.sessionId);
+        return row === null || activeSessionId === null || sessionId === null ? []
+          : [{ activeSessionId, sessionId, sessionFile: text(row.sessionFile), workerPid: pid(row.workerPid) }];
+      });
+      resolve({ supervisorPid, sessions });
+    }
+  };
+  const connecting = Bun.connect({ unix: socket, socket: {
     data(link, chunk) {
-      buffer += chunk.toString();
+      buffer = Buffer.concat([buffer, chunk]);
       if (buffer.length > LIST_BYTES) return resolve(null);
-      for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
-        const line = buffer.slice(0, end);
-        buffer = buffer.slice(end + 1);
-        let frame: Record<string, unknown>;
-        try { frame = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
-        const protocol = frame.protocol as Record<string, unknown> | undefined;
-        if (frame.type === "daemon_hello" && protocol?.name === DAEMON_PROTOCOL) {
-          supervisorPid = pid(frame.supervisorPid);
-          link.write(`${JSON.stringify({ type: "command", id, protocol, clientId: id, command: { type: "list", id } })}\n`);
-        } else if (frame.type === "response" && frame.id === id) {
-          const data = frame.data as { sessions?: unknown } | undefined;
-          if (frame.success !== true || supervisorPid === null || !Array.isArray(data?.sessions)) return resolve(null);
-          const sessions = data.sessions.flatMap((row: Record<string, unknown>) => {
-            const activeSessionId = text(row.activeSessionId), sessionId = text(row.sessionId);
-            return activeSessionId === null || sessionId === null ? []
-              : [{ activeSessionId, sessionId, sessionFile: text(row.sessionFile), workerPid: pid(row.workerPid) }];
-          });
-          return resolve({ supervisorPid, sessions });
-        }
+      for (let end = buffer.indexOf(0x0a); end >= 0; end = buffer.indexOf(0x0a)) {
+        const line = buffer.subarray(0, end).toString("utf8");
+        buffer = buffer.subarray(end + 1);
+        answer(link, line);
       }
     },
     close() { resolve(null); },
     error() { resolve(null); },
   } }).catch(() => null);
-  if (connection === null) { clearTimeout(timer); return null; }
-  try { return await promise; } finally { clearTimeout(timer); connection.end(); }
+  void connecting.then((link) => { if (link === null) resolve(null); });
+  try { return await promise; }
+  finally { clearTimeout(timer); void connecting.then((link) => link?.end()); }
+}
+
+function processArgv(pid: number): readonly string[] | null {
+  try { return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter((arg) => arg.length > 0); } catch { return null; }
 }
 
 /** The id a session file's first line names and the file's identity: a regular file of this user, not through a link. */
@@ -136,5 +154,5 @@ function sessionHeader(path: string): { id: string; identity: string } | null {
 }
 
 const PRIME_READERS: PrimeReaders = {
-  platform: process.platform, descriptors: descriptorTargets, started: processStartIdentity, sockets: unixSocketTable, list: listPrimeDaemon, header: sessionHeader,
+  platform: process.platform, descriptors: descriptorTargets, started: processStartIdentity, argv: processArgv, sockets: unixSocketTable, list: listPrimeDaemon, header: sessionHeader,
 };

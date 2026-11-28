@@ -20,6 +20,7 @@ function machine(overrides: Partial<PrimeReaders> & { lists?: (PrimeDaemonList |
     platform: "linux",
     descriptors: (pid) => fds[pid] ? new Map(fds[pid].map((target, fd) => [String(fd), target])) : null,
     started: () => 4242,
+    argv: (pid) => pid === 200 ? ["/opt/prime/prime-agent", "--mode", "daemon", "--daemon-socket", DAEMON] : pid === 300 || pid === 301 ? ["/opt/prime/prime-agent", "worker"] : ["prime-agent"],
     sockets: async () => ({ peers: new Map([["1", "11"], ["2", "12"]]), names: new Map([["11", DAEMON], ["12", "/run/user/1000/prime-agent-1000/worker-ab12-cd34.sock"], ["13", "/run/user/1000/prime-agent-1000/worker-ab12-ef56.sock"]]) }),
     list: async () => lists[Math.min(asked++, lists.length - 1)] ?? null,
     header: (path) => ({ id: path.slice(STORE.length + 1, -".jsonl".length), identity: `9:${path.length}` }),
@@ -41,8 +42,10 @@ describe("the Prime Agent session a pane shows", () => {
   it("proves nothing while the TUI is linked to no worker (its agents view) or to two", async () => {
     const view = machine({ sockets: async () => ({ peers: new Map([["1", "11"]]), names: new Map([["11", DAEMON]]) }) });
     expect(await primeTranscriptPath("p1", { processes: tui, readers: view })).toBeNull();
-    const both = machine({ descriptors: (pid) => new Map([[String(pid), pid === 200 ? "socket:[11]" : pid === 100 ? "socket:[1]" : "socket:[12]"]]) });
+    // both workers own one end of the TUI's streams
+    const both = machine({ descriptors: (pid) => new Map(pid === 100 ? [["0", "socket:[1]"], ["1", "socket:[2]"]] : [["0", pid === 200 ? "socket:[11]" : "socket:[12]"]]) });
     expect(await primeTranscriptPath("p1", { processes: tui, readers: both })).toBeNull();
+    expect((await primeTranscriptPath("p1", { processes: tui, readers: machine({ descriptors: both.descriptors, lists: [{ supervisorPid: 200, sessions: [session(1, 300)] }] }) }))?.path).toBe(`${STORE}/s1.jsonl`);
   });
 
   it("proves nothing when the daemon that answers is not the one the TUI is on, or the TUI is on two", async () => {
@@ -58,6 +61,18 @@ describe("the Prime Agent session a pane shows", () => {
     expect(await primeTranscriptPath("p1", { processes: tui, readers: moved })).toBeNull();
     let birth = 1;
     expect(await primeTranscriptPath("p1", { processes: tui, readers: machine({ started: () => birth++ }) })).toBeNull();
+    for (const changed of [100, 200, 300]) {
+      let reads = 0;
+      expect(await primeTranscriptPath("p1", { processes: tui, readers: machine({ started: (pid) => pid === changed && reads++ > 0 ? 9 : 4242 }) })).toBeNull();
+    }
+    let descriptorReads = 0;
+    const replaced = machine({ descriptors: (pid) => pid === 100 && descriptorReads++ > 0 ? new Map([["0", "socket:[1]"], ["1", "socket:[99]"]]) : machine().descriptors(pid) });
+    expect(await primeTranscriptPath("p1", { processes: tui, readers: replaced })).toBeNull();
+  });
+
+  it("takes no process in another role for the daemon or a worker", async () => {
+    expect(await primeTranscriptPath("p1", { processes: tui, readers: machine({ argv: (pid) => pid === 300 ? ["/opt/prime/prime-agent"] : machine().argv(pid) }) })).toBeNull();
+    expect(await primeTranscriptPath("p1", { processes: tui, readers: machine({ argv: (pid) => pid === 200 ? ["/usr/bin/socat", "daemon"] : machine().argv(pid) }) })).toBeNull();
   });
 
   it("proves nothing off Linux, for a session without a file, or for a pane with two Prime Agent TUIs", async () => {
@@ -75,10 +90,14 @@ describe("asking Prime Agent's daemon for its live sessions", () => {
     dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pa-"));
     const socket = join(dir, "daemon.sock");
     const commands: Record<string, any>[] = [];
+    let received = "";
     const server = Bun.listen({ unix: socket, socket: {
       open(client) { client.write(`${JSON.stringify({ type: "daemon_hello", supervisorPid: 4321, protocol: { name, version: 7 } })}\n`); },
       data(client, chunk) {
-        for (const line of chunk.toString().split("\n").filter(Boolean)) {
+        received += chunk.toString();
+        const lines = received.split("\n");
+        received = lines.pop()!;
+        for (const line of lines.filter(Boolean)) {
           const command = JSON.parse(line) as Record<string, any>;
           commands.push(command);
           client.write(`${JSON.stringify(answer(command))}\n`);
@@ -104,7 +123,14 @@ describe("asking Prime Agent's daemon for its live sessions", () => {
       expect(other.commands).toEqual([]);
     } finally { other.server.stop(true); rmSync(dir!, { recursive: true, force: true }); }
     const failed = await daemon((command) => ({ type: "response", id: command.id, success: false, error: "no" }));
-    try { expect(await listPrimeDaemon(failed.socket)).toBeNull(); } finally { failed.server.stop(true); }
+    try { expect(await listPrimeDaemon(failed.socket)).toBeNull(); } finally { failed.server.stop(true); rmSync(dir!, { recursive: true, force: true }); }
+  });
+
+  it("skips malformed frames and rows instead of failing on them", async () => {
+    const { socket, server } = await daemon((command) => ({ type: "response", id: command.id, success: true, data: { sessions: [null, 7, { activeSessionId: "a1", sessionId: "s1", workerPid: 5 }] } }));
+    try {
+      expect(await listPrimeDaemon(socket)).toEqual({ supervisorPid: 4321, sessions: [{ activeSessionId: "a1", sessionId: "s1", sessionFile: null, workerPid: 5 }] });
+    } finally { server.stop(true); }
   });
 });
 
