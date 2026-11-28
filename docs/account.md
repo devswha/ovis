@@ -577,7 +577,9 @@ making them members of the destination):
   the service, and answers `200 { "state": "prepare", "pc": { "server_id", "public_key", "relay",
   "name"? } }`: what the window lists in the destination (`PUT /v1/pcs/{server_id}`) before it
   admits it (`POST /v1/pcs/{server_id}/admit`) with its own sign-in. `provider` is how that sign-in
-  was made; the PC names it for its relay pass once it is in the destination.
+  was made; the PC names it for its relay pass once it is in the destination. `from`, sent by the
+  automatic move out of a gone account, is the account it saw gone: a PC no longer in it answers
+  `409 source_changed` and starts nothing.
 - `{ "into" }` takes the destination's admission, asks for a relay pass under it, and switches the
   binding in one write: `200 { "state": "moved", "account" }`. `200 { "state": "sign_in", "account" }`
   when no admission waits yet (the window lists and admits the PC first); `202 { "state": "pending" }`

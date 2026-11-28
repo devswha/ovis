@@ -64,6 +64,8 @@ export class AccountMove {
     if (stage === "cancel") return held === null ? { state: "aborted", account: into, reason: "cancelled" } : this.cancel(held);
     const binding = devices.standingAccountBinding();
     const pc = relay.publicFields();
+    // an automatic move names the account it saw gone: from any other account (moved meanwhile) it starts nothing
+    if (request.from !== undefined && (held?.from.account ?? binding?.account) !== request.from) return refuse("source_changed", "This PC is no longer in the account it was to move out of");
     // a move under way is finished, or given up, by the journal it wrote: what stands now is the journal's to judge
     if (held !== null) {
       if (stage === "prepare" && !this.committed(held) && pc && binding?.bind_id === held.from.bind_id && pc.server_id === held.server_id) {

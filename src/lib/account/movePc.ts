@@ -32,10 +32,10 @@ export function cancelPcMove(into: string): Promise<AccountMoveAnswer> {
 }
 
 /** The PC keeps the journal, and only the window that owns the destination sign-in exercises it. */
-export function moveThisPc(into: string, signal: AbortSignal, resuming: boolean, service: AccountService = indexedAccountService): Promise<AccountMoveAnswer> {
+export function moveThisPc(into: string, signal: AbortSignal, resuming: boolean, service: AccountService = indexedAccountService, from?: string): Promise<AccountMoveAnswer> {
   if (active?.into === into) return active.run;
   const stop = new AbortController();
-  const run = execute(into, AbortSignal.any([signal, stop.signal]), resuming, service)
+  const run = execute(into, AbortSignal.any([signal, stop.signal]), resuming, service, from)
     .finally(() => { if (active?.stop === stop) active = null; });
   active = { into, stop, run };
   return run;
@@ -53,25 +53,26 @@ export const GONE_CHECK_MS = 60_000;
  * A PC whose account no longer exists (deleted, or folded into the account of its verified email) moves, with no question,
  * into the account its own window is signed in to. A PC in an account that still exists is never moved this way.
  */
-export async function moveFromGoneAccount(signal: AbortSignal, service: AccountService = indexedAccountService): Promise<AccountMoveAnswer | null> {
-  const status = await pcAccountStatus((input) => apiFetch(input, { signal }));
+/** `fresh`: the PC reads the service first (after a sign-in here), else its last read answers (the periodic look). */
+export async function moveFromGoneAccount(signal: AbortSignal, { fresh = false }: { readonly fresh?: boolean } = {}, service: AccountService = indexedAccountService): Promise<AccountMoveAnswer | null> {
+  const status = await pcAccountStatus((input) => apiFetch(input, { signal }), { fresh });
   if (status.accountGone !== true || status.account === null || signal.aborted) return null;
   const session = await service.session();
   if (session === undefined || session.account === status.account || signal.aborted) return null;
   // a move into that account given up (no relay slot there, say) is not tried again by itself: the window says why
   const { aborted } = await pcMoveStatus(signal);
   if (aborted?.account === session.account || signal.aborted) return null;
-  return await moveThisPc(session.account, signal, false, service);
+  return await moveThisPc(session.account, signal, false, service, status.account);
 }
 
-async function execute(into: string, signal: AbortSignal, resuming: boolean, service: AccountService): Promise<AccountMoveAnswer> {
+async function execute(into: string, signal: AbortSignal, resuming: boolean, service: AccountService, from?: string): Promise<AccountMoveAnswer> {
   const session = await service.session();
   signal.throwIfAborted();
   if (session?.account !== into) {
     if (resuming) return move({ into, stage: "cancel" });
     throw new SignedOutError();
   }
-  const preparation = await move({ into, provider: session.provider, stage: "prepare" }, signal);
+  const preparation = await move({ into, provider: session.provider, stage: "prepare", ...(from === undefined ? {} : { from }) }, signal);
   if (preparation.state !== "prepare") return preparation;
   const { pc } = preparation;
   const directory = service.forSignIn(session);

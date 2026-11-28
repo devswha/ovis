@@ -161,6 +161,14 @@ test("a PC its living account removed leaves it, and is not said to be in a gone
   expect((await f.pc.local("/api/account/status")).body).not.toHaveProperty("account_gone");
 });
 
+test("an automatic move out of an account the PC is no longer in starts nothing", async () => {
+  const f = await fixture();
+  expect(await f.pc.local("/api/account/move", { method: "POST", headers, body: { into: INTO, stage: "prepare", from: "acct_seen_gone" } }))
+    .toMatchObject({ status: 409, body: { error: { code: "source_changed" } } });
+  expect(f.journal()).toBe(false);
+  expect((await f.pc.local("/api/account/move", { method: "POST", headers, body: { into: INTO, stage: "prepare", from: FROM } })).status).toBe(200);
+});
+
 test("a drive device cannot start a move through the relay", async () => {
   const f = await fixture();
   const link = await relayConnection(f.pc, { serverId: f.identity.server_id });

@@ -39,6 +39,8 @@ export interface AccountMoveRequest {
   readonly into: string;
   readonly stage?: "prepare" | "cancel";
   readonly provider?: SignInMethod;
+  /** an automatic move names the account it saw gone: it moves the PC out of that account alone */
+  readonly from?: string;
 }
 export type AccountMoveAnswer =
   | { readonly state: "prepare"; readonly pc: { readonly server_id: string; readonly public_key: string; readonly relay: string; readonly name?: string } }

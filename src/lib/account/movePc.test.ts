@@ -23,14 +23,14 @@ async function asked(status: Record<string, unknown>, moveStatus: Record<string,
   const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(answer as typeof fetch);
   const service = { session: async () => signedIn === undefined ? undefined : { account: signedIn, provider: "github" } } as unknown as AccountService;
   try {
-    await moveFromGoneAccount(new AbortController().signal, service);
+    await moveFromGoneAccount(new AbortController().signal, {}, service);
   } finally { fetchSpy.mockRestore(); }
   return moves;
 }
 
 test("a PC whose account is gone is moved into the account its own window is signed in to", async () => {
   expect(await asked({ account: "acct_gone", account_gone: true }, { into: null }, "acct_now"))
-    .toEqual([{ into: "acct_now", provider: "github", stage: "prepare" }]);
+    .toEqual([{ into: "acct_now", provider: "github", stage: "prepare", from: "acct_gone" }]);
 });
 
 test("a PC in an account that still exists, or in the window's own, or signed out of, is not moved", async () => {
