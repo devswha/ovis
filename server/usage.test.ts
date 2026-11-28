@@ -435,6 +435,23 @@ describe("providers", () => {
     expect(requests).toHaveLength(2);
   });
 
+  it("drops a model's own week the endpoint gave beside a fresh status line once that week starts over", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + 24 * HOUR } });
+    write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
+    const path = join(home, ".herdr", "statusline-last.json");
+    write(path, { _herdr: { account: { id: "a" } }, rate_limits: {
+      five_hour: { used_percentage: 17, resets_at: (NOW + HOUR) / 1000 }, seven_day: { used_percentage: 64, resets_at: (NOW + 96 * HOUR) / 1000 },
+    } });
+    utimesSync(path, new Date(NOW), new Date(NOW));
+    replies.set(CLAUDE_USAGE, { body: { limits: [{ kind: "weekly_scoped", percent: 99, resets_at: new Date(NOW + 60_000).toISOString(), scope: { model: { display_name: "Fable" } } }] } });
+    const service = new UsageService(context(), only("claude"));
+    const scopes = async () => (await service.report()).providers[0]!.windows.map((window) => window.scope);
+    expect(await scopes()).toEqual([null, null, "Fable"]);
+    now += 60_000;
+    expect(await scopes()).toEqual([null, null]);
+    expect(requests).toHaveLength(1);
+  });
+
   it("names what a failed Claude read ran into, and offers the status line for it and for a 429", async () => {
     write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + HOUR } });
     const read = async (reply: Reply) => {

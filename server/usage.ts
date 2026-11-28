@@ -1511,11 +1511,11 @@ export class UsageService {
     const signIn: SignIn = found;
     const local = provider.readLocal?.(this.ctx, signIn) ?? null;
     const fromLocal = (reading: Reading, endpoint: { windows: readonly UsageWindow[]; resets?: UsageResets | null; credits?: UsageCredits | null } | null = kept): Entry => {
-      const resets = reading.windows.flatMap((window) => window.resets_at === null ? [] : [Date.parse(window.resets_at)]);
       // what the status line is not handed (a model's own week, extra usage) is as the endpoint last gave it
       const named = (window: UsageWindow) => reading.windows.some((own) => own.kind === window.kind && own.scope === window.scope);
       const others = (endpoint?.windows ?? []).filter((window) => !named(window) && (window.resets_at === null || Date.parse(window.resets_at) > now));
-      // read again by the time the reading is too old to count (STALE_MS) or a window it names starts over
+      const resets = [...reading.windows, ...others].flatMap((window) => window.resets_at === null ? [] : [Date.parse(window.resets_at)]);
+      // read again by the time the reading is too old to count (STALE_MS) or a window it shows starts over
       const until = [...resets, (reading.checkedAt ?? now) + STALE_MS].map((at) => at - now);
       return settle({ id: provider.id, ...identity(reading.account), plan: reading.plan ?? signIn.plan ?? null,
         windows: [...reading.windows, ...others], ...extras(endpoint ?? {}), problem: null, checked_at: new Date(reading.checkedAt ?? now).toISOString() }, Math.min(FRESH_MS, ...until));
