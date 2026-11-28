@@ -576,14 +576,12 @@ export async function omoTranscriptForPane(paneId: string, cwd: string, panes: H
  * pane, regardless of its child agent label, shared by all panes of a folder; the folder each
  * pane counts toward is the one its own processes resolve.
  */
-export async function omoPanes(panes: HerdrPane[], home = userHome()): Promise<Map<string, { path: string | null; startedAt: number | null } | null>> {
+export async function omoPanes(panes: HerdrPane[], home = userHome()): Promise<Map<string, { path: string | null; startedAt: number | null }>> {
   const candidates = panes;
   const infos = new Map(await Promise.all(candidates.map(async (pane) => [pane.pane_id, await processInfo(pane.pane_id)] as const)));
   const startOf = await processStarts(infos.values());
   const resolved = candidates.map((pane) => resolvePaneRuntime(pane, infos.get(pane.pane_id) ?? null, home, processEnviron, startOf));
-  const found = new Map<string, { path: string | null; startedAt: number | null } | null>();
-  // a pane whose processes herdr could not tell says nothing of OmO there: null, not a pane read and found without it
-  for (const entry of resolved) if (!entry.informed) found.set(entry.pane.pane_id, null);
+  const found = new Map<string, { path: string | null; startedAt: number | null }>();
   const cwds = new Set(resolved.flatMap((entry) => entry.omos.length === 0 ? [] : entry.ambiguous ? entry.omos.map((omo) => omo.cwd) : [entry.cwd]));
   for (const cwd of cwds) {
     const transcripts = cwd ? omoTranscriptsResolved(cwd, resolved, home, startOf) : new Map<string, { path: string | null; pending: string | null; startedAt: number | null }>();

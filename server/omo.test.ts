@@ -568,21 +568,3 @@ it("reads OmO panes' process starts from the kernel on macOS, with no ps child",
     rmSync(home, { recursive: true, force: true });
   }
 });
-
-it("tells a pane whose processes herdr could not tell from one read and found without OmO", async () => {
-  const home = mkdtempSync(join(tmpdir(), "omo-unread-"));
-  const pane = { pane_id: "omo-unread", workspace_id: "w", tab_id: "t", terminal_id: "term", focused: false, revision: 0,
-    agent: "pi", agent_status: "idle", cwd: home } as HerdrPane;
-  const rpc = spyOn(client, "herdrRpc");
-  try {
-    // herdr does not answer for the pane's processes: nothing is known of OmO there
-    rpc.mockRejectedValue(new Error("herdr is busy"));
-    expect((await omoPanes([pane], home)).get(pane.pane_id)).toBeNull();
-    // it answers, and a shell is all that runs there: the pane is not among those found
-    rpc.mockResolvedValue({ process_info: { pane_id: pane.pane_id, foreground_processes: [{ pid: 4_190_000, name: "zsh", argv: ["zsh"], cwd: home }] } } as never);
-    expect((await omoPanes([pane], home)).has(pane.pane_id)).toBe(false);
-  } finally {
-    rpc.mockRestore();
-    rmSync(home, { recursive: true, force: true });
-  }
-});
