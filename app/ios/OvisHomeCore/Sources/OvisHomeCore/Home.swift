@@ -310,10 +310,23 @@ public enum Home {
 
     /// The kind of a page's failure the error page tells apart by its words: "offline" when the system says this phone is
     /// not connected to the internet (NSURLErrorNotConnectedToInternet), so the page says so instead of blaming the PC;
-    /// nil for any other, which the error page explains from the address.
-    public static func failureKind(domain: String, code: Int) -> String? {
-        domain == NSURLErrorDomain && code == NSURLErrorNotConnectedToInternet ? "offline" : nil
+    /// "refused" when nothing listens at the address, which the page explains as it does Chromium's
+    /// ERR_CONNECTION_REFUSED: NSURLErrorCannotConnectToHost whose stream error (`streamDomain`, `streamCode`: the
+    /// error's `_kCFStreamErrorDomainKey` and `_kCFStreamErrorCodeKey`) is POSIX's ECONNREFUSED. The same code also
+    /// stands for a host that is asleep or unreachable, which is no refusal. nil for any other, which the error page
+    /// explains from the address.
+    public static func failureKind(domain: String, code: Int, streamDomain: Int? = nil, streamCode: Int? = nil) -> String? {
+        guard domain == NSURLErrorDomain else { return nil }
+        switch code {
+        case NSURLErrorNotConnectedToInternet: return "offline"
+        case NSURLErrorCannotConnectToHost:
+            return streamDomain == posixStreamDomain && streamCode == Int(ECONNREFUSED) ? "refused" : nil
+        default: return nil
+        }
     }
+
+    /// CFStreamErrorDomain's kCFStreamErrorDomainPOSIX: the stream error's code is an errno.
+    static let posixStreamDomain = 1
 
     /// Whether `text` is what the word "demo" becomes in the hosted screen's address field (`https://demo/`): the
     /// bundled demo, as that word opens it on the bundled page. No PC answers there: a one-word name has no certificate.

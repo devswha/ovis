@@ -309,6 +309,16 @@ final class PCStore {
 
     static final long PAGE_FLOOR_MS = 5000;
 
+    /**
+     * How long the opening cover gives the PC's first page at `now`: what is left of the connect screen's check's
+     * deadline `by` (answerBy, 0 for none), at least PAGE_FLOOR_MS, else ANSWER_SECONDS. A deadline that passed more
+     * than ANSWER_SECONDS ago is a check's whose opening never came up (it ended while the app was away), not this one's.
+     */
+    static long answerDelay(long by, long now) {
+        if (by == 0 || now - by > ANSWER_SECONDS * 1000L) return ANSWER_SECONDS * 1000L;
+        return Math.max(PAGE_FLOOR_MS, by - now);
+    }
+
     /** Redirects in a row that made another origin the PC (MainActivity), so two servers that redirect to each other stop. */
     static volatile int redirects;
 

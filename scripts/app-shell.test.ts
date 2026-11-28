@@ -342,6 +342,30 @@ describe("why an address did not open", () => {
       expect([code, openFailure(url, code, "x").length > 0]).toEqual([code, true]);
     }
   });
+
+  it("tells each refusal apart, and adds to it where the address says more", () => {
+    // the words with the address taken out, so two addresses compare by what is said of them
+    const said = (address: string, code: string | undefined, message = "x") => {
+      const url = parseAddress(address)!;
+      return openFailure(url, code, message).replaceAll(url.host, "HOST").replaceAll(url.hostname, "HOST");
+    };
+    const codes = ["not-ovis", "refused", "timeout", "unknown-host", "no-answer"];
+    expect(new Set(codes.map((code) => said("192.168.77.20:7317", code))).size).toBe(codes.length);
+    // an address of the phone itself: the plain refusal, then that it is not the PC (127.0.0.2, as the words name 127.0.0.1)
+    const plain = said("192.168.77.20:7317", "refused");
+    const loopback = said("127.0.0.2:7317", "refused");
+    expect([loopback.startsWith(plain), loopback.length > plain.length]).toEqual([true, true]);
+    // a Tailscale address: what a home network address gets, then Tailscale's hint
+    for (const code of ["timeout", "unknown-host", "no-answer"]) {
+      const home = said("http://desk.lan:7317", code);
+      const tailnet = said("http://desk.tail1234.ts.net:7317", code);
+      expect([code, tailnet.startsWith(home), tailnet.length > home.length]).toEqual([code, true, true]);
+    }
+    // what only the failure itself tells: an unknown one's message, a not-Ovis answer's status (and nothing else)
+    expect(said("192.168.77.20:7317", undefined, "socket hang up")).toContain("socket hang up");
+    expect(said("192.168.77.20:7317", "not-ovis", "HTTP 404")).toContain("HTTP 404");
+    expect(said("192.168.77.20:7317", "not-ovis", "socket hang up")).not.toContain("socket hang up");
+  });
 });
 
 describe("the PCs an SSH PC knows", () => {

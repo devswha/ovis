@@ -170,13 +170,13 @@
     }
     // why it failed, when the app or WebView says: not Ovis, nothing listening, or no answer
     const notOvis = state.kind === "not-ovis";
-    const refused = !relay && !sshPc && /ERR_CONNECTION_REFUSED/.test(failure);
+    // Chromium's refusal, or the iPhone's kind "refused" (Home.failureKind), whose words are WebKit's own
+    const refused = !relay && !sshPc && (state.kind === "refused" || /ERR_CONNECTION_REFUSED/.test(failure));
     const unreached = !relay && (state.kind === "timeout" || /ERR_(CONNECTION_TIMED_OUT|TIMED_OUT|ADDRESS_UNREACHABLE)/.test(failure));
     if (notOvis) document.getElementById("title").textContent = korean ? "Ovis가 아니에요" : "This is not Ovis";
     document.getElementById("not-ovis").hidden = !notOvis;
     document.getElementById("refused").hidden = !refused;
-    // whatever the reason (iOS reports a refusal in its own words, with no kind): on a phone, an
-    // address of the phone itself never reaches the PC
+    // whatever the reason: on a phone, an address of the phone itself never reaches the PC
     document.getElementById("loopback").hidden = relay || sshPc || !(host === "localhost" || host.endsWith(".localhost") || /^127\.\d+\.\d+\.\d+$/.test(host) || host === "::1");
     // a home network or tailnet address: only there do the PC, the home network and its firewall
     // explain no answer; a public server is down or out of the phone's reach (an SSH PC says its own)

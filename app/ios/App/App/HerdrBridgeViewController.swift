@@ -153,7 +153,8 @@ enum PCStore {
         didSet { if failure == nil { failureKind = nil; failureCommand = nil } }
     }
 
-    /// An SSH PC's failure kind (`ssh-<kind>`, SshFailure) and the command that fixes it there, for error.html.
+    /// The failure's kind for error.html (an SSH PC's `ssh-<kind>`, SshFailure, or Home.failureKind's) and the command
+    /// that fixes it there.
     static var failureKind: String?
     static var failureCommand: String?
 
@@ -1292,7 +1293,8 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     }
 
     /// `reason` nil keeps the reason an SSH PC's tunnel gave (its 503 says less); `kind` "offline" when the system says
-    /// this phone has no internet (Home.failureKind), which error.html says instead of blaming the PC.
+    /// this phone has no internet, which error.html says instead of blaming the PC, "refused" when nothing listens at
+    /// the address (Home.failureKind).
     private func showFailure(in webView: WKWebView, reason: String?, kind: String? = nil) {
         // the hosted screen's failures went to Home first (homeSignal): never the error page of a PC over it
         guard !replaced, phase == nil || phase == .pc, let local = bridge?.config.localURL else { return }
@@ -1512,7 +1514,9 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
 
     private static func kind(_ error: Error) -> String? {
         let nsError = error as NSError
-        return Home.failureKind(domain: nsError.domain, code: nsError.code)
+        let info = nsError.userInfo
+        return Home.failureKind(domain: nsError.domain, code: nsError.code,
+                                streamDomain: info["_kCFStreamErrorDomainKey"] as? Int, streamCode: info["_kCFStreamErrorCodeKey"] as? Int)
     }
 
     private var provisional = false

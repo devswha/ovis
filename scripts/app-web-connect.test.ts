@@ -379,6 +379,18 @@ describe("the error page", () => {
     expect(text).not.toContain("Tailscale");
   });
 
+  test.skipIf(noBrowser)("says nothing listens there on the iPhone's word that the PC refused (kind refused), as on Chromium's", async () => {
+    const refusedShown = async (state: Record<string, unknown>) => {
+      await errorPage({ last: "http://192.168.77.20:7317", current: "http://192.168.77.20:7317", app: HOSTED, ...state });
+      const shown = await page.locator("#refused").isVisible();
+      await page.close();
+      return shown;
+    };
+    expect(await refusedShown({ failure: "net::ERR_CONNECTION_REFUSED", kind: "" })).toBe(true);
+    expect(await refusedShown({ failure: "Could not connect to the server.", kind: "refused" })).toBe(true);
+    expect(await refusedShown({ failure: "Could not connect to the server.", kind: "" })).toBe(false);
+  });
+
   test.skipIf(noBrowser)("says what a raw network error means instead of showing it", async () => {
     for (const [failure, said] of [
       ["net::ERR_NAME_NOT_RESOLVED", "desk.example.com was not found."],
