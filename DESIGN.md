@@ -4901,7 +4901,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   text, which only the key's path does. The choice has its own storage key (`ovis:voice-engine`),
   so an older tab's save keeps it, and open tabs follow it at once. Two rows, no new composer
   control: macOS's Dictation settings likewise keep the language and the source beside the switch,
-  not on the input.
+  not on the input. Latin American Spanish (`es-419`) and European Spanish (`es-ES`) are separate
+  choices on the existing language row. The choice is stored in `ovis:voice-language`; the older
+  record and telemetry keep their supported values (Auto for `es-419`). This is a speech
+  recognition language, not an app locale.
 - A mouse holds the mic to talk (release finishes) or taps it to toggle. A touch on the browser's
   speech recognition (no key) taps to start and taps to finish, from the click: iOS starts it only
   from a user activation, which a touch's pointerdown is not (#2343). With a key, a touch holds too.

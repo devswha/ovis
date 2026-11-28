@@ -91,6 +91,8 @@ bun run test:ui            # builds, then browser regression on `ovis-test`; sto
                            # herdr --session ovis-test server stop
 bun scripts/browser-checks.ts   # lists the CI browser scripts covering your changed files
                                 # (`--surfaces` lists every feature surface; `--run` runs them)
+bun scripts/verify-ui.ts        # probes desktop/phone x dark/light on the disposable demo
+                                # (`.claude/skills/verify-ui/SKILL.md` covers independent UI QA)
 ```
 
 `bun test` runs the unit and integration suites together. Remote-PC changes also have

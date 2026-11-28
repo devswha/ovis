@@ -21,7 +21,8 @@ const INDEXED_SOURCE = /^(?:src|server|shared|site\/demo)\/.*\.(?:[cm]?[jt]sx?|c
 const TEST_SOURCE = /\.(?:test|contract\.test)\.[cm]?[jt]sx?$/;
 /** CI's own script filters, which would narrow or empty the set this tool picked, and a reused check directory, whose herdr sessions the runner stops. */
 const CI_SELECTION = ["BROWSER_SHARD", "BROWSER_EXCLUDE", "BROWSER_LIVE_ONLY", "CHECK_DIR"];
-const LIVE_HERDR = ["HERDR_SOCKET", "HERDR_SOCKET_PATH", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID", "HERDR_CONFIG_PATH", "HERDR_TEST_LIVE"];
+/** A live herdr or herdr-core session's variables, which a check must never inherit. */
+export const LIVE_HERDR: readonly string[] = ["HERDR_SOCKET", "HERDR_SOCKET_PATH", "HERDR_SESSION", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID", "HERDR_CONFIG_PATH", "HERDR_TEST_LIVE", "HC_SOCKET", "HC_SESSION", "OVIS_ALLOW_LIVE_HERDR"];
 
 /** Shared script helpers that nearly every browser script loads; importing one does not tie a script to one feature. */
 const SHARED_HARNESS_SCRIPTS = new Set([
