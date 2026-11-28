@@ -16,8 +16,11 @@ function installDragFixture(): void {
   const params = new URL(location.href).searchParams;
   const core = params.get("server") === "core";
   const touch = params.get("touch") === "1";
-  // Codex's main screen as it starts: the alternate screen with drag reporting in SGR
-  const stream = `\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[H\x1b[2J${Array.from({ length: 20 }, (_, index) => `CODEX-ROW-${index + 1}`).join("\r\n")}`;
+  const local = params.get("buffer") === "main";
+  // Fullscreen apps use an alternate screen with SGR mouse reporting, unlike local history.
+  const stream = local
+    ? Array.from({ length: 120 }, (_, i) => `LOCAL-ROW-${i + 1}\r\n`).join("")
+    : `\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[H\x1b[2J${Array.from({ length: 20 }, (_, index) => `CODEX-ROW-${index + 1}`).join("\r\n")}`;
   const state = { inputs: [] as Frame[] };
   window.dragFixture = state;
   const Demo = window.WebSocket;
@@ -72,10 +75,14 @@ const evidence = process.env.UI_EVIDENCE_DIR;
 const sent = (page: Page) => page.evaluate(() => window.dragFixture.inputs.map((frame) => frame.text ?? "").join(""));
 
 await withDemoBrowser({ tempPrefix: "codex-drag-demo-", afterTransport: `\n<script>(${installDragFixture.toString()})()</script>` }, async ({ newContext, baseUrl }) => {
-  for (const { pane, codex, kind } of [
-    { pane: panes.web, codex: true, kind: "herdr" },
-    { pane: panes.web, codex: true, kind: "core" },
-    { pane: panes.shell, codex: false, kind: "herdr" },
+  for (const { pane, name, kind, local = false, oneRow = false } of [
+    { pane: panes.web, name: "Codex fullscreen", oneRow: true, kind: "herdr" },
+    { pane: panes.web, name: "Codex fullscreen", oneRow: true, kind: "core" },
+    { pane: panes.api, name: "Claude fullscreen", oneRow: true, kind: "herdr" },
+    { pane: panes.api, name: "Claude fullscreen", oneRow: true, kind: "core" },
+    { pane: panes.api, name: "Claude main screen", local: true, kind: "core" },
+    { pane: panes.shell, name: "Shell local history", local: true, kind: "core" },
+    { pane: panes.shell, name: "Generic mouse app", kind: "herdr" },
   ]) {
     const context = await newContext({ viewport: { width: 412, height: 860 }, isMobile: true, hasTouch: true });
     try {
@@ -84,9 +91,13 @@ await withDemoBrowser({ tempPrefix: "codex-drag-demo-", afterTransport: `\n<scri
       })));
       const page = await context.newPage();
       page.setDefaultTimeout(10000);
-      await page.goto(`${baseUrl}?pane=${encodeURIComponent(pane)}&view=terminal&server=${kind}&touch=1`);
-      await page.locator(".pane-frame.is-current .xterm.enable-mouse-events").waitFor();
-      await page.locator(".pane-frame.is-current .ghostty-row", { hasText: "CODEX-ROW-1" }).first().waitFor();
+      await page.goto(`${baseUrl}?pane=${encodeURIComponent(pane)}&view=terminal&server=${kind}&touch=1&buffer=${local ? "main" : "alternate"}`);
+      const rows = page.locator(".pane-frame.is-current .ghostty-row");
+      if (!local) await page.locator(".pane-frame.is-current .xterm.enable-mouse-events").waitFor();
+      await rows.filter({ hasText: local ? "LOCAL-ROW-120" : "CODEX-ROW-1" }).first().waitFor();
+      const rowNumber = async () => Number((await rows.first().textContent())?.match(/LOCAL-ROW-(\d+)/)?.[1]);
+      const before = local ? await rowNumber() : 0;
+      if (local) assert.ok(before > 2);
       const box = await page.locator(".pane-frame.is-current .xterm-screen").boundingBox();
       const row = await page.locator(".pane-frame.is-current .ghostty-row").first().boundingBox();
       assert.ok(box && row);
@@ -97,14 +108,21 @@ await withDemoBrowser({ tempPrefix: "codex-drag-demo-", afterTransport: `\n<scri
       await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
       await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + Math.ceil(row.height * 1.25) }] });
       await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-      assert.equal(await reports(), codex ? 1 : 0, `${kind}: wheel reports after a slow drag of 1.25 rows (${codex ? "Codex" : "ordinary pane"})`);
-      if (!codex) {
+      assert.equal(await reports(), oneRow ? 1 : 0, `${kind}: wheel reports after a slow drag of 1.25 rows (${name})`);
+      if (local) {
+        assert.equal(await rowNumber(), before - 1, `${name}: local scrolling advances one row`);
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+        assert.equal(await sent(page), "", `${name}: no remote input`);
+        console.log(`PASS ${kind}: ${name} advances locally without wheel reports`);
+        continue;
+      }
+      if (!oneRow) {
         await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + Math.ceil(row.height * 3.25) }] });
       }
       await page.locator(".pane-frame.is-current .ghostty-row", { hasText: "TRANSCRIPT-OFFSET-1" }).first().waitFor();
       assert.equal(await reports(), 1);
       await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
-      if (codex) {
+      if (oneRow) {
         const started = await page.evaluate(({ x, y, rowHeight }) => {
           const target = document.elementFromPoint(x, y)!;
           const now = performance.now();
@@ -122,10 +140,10 @@ await withDemoBrowser({ tempPrefix: "codex-drag-demo-", afterTransport: `\n<scri
         await page.locator(".pane-frame.is-current [data-touch-fling]").waitFor({ state: "attached" });
         await page.locator(".pane-frame.is-current [data-touch-fling]").waitFor({ state: "detached" });
         const elapsed = await page.evaluate((started) => performance.now() - started, started);
-        assert.ok(elapsed < 1250, `${kind}: a Codex flick stops before a sparse tail (${elapsed.toFixed()} ms)`);
+        assert.ok(elapsed < 1250, `${kind}: a ${name} flick stops before a sparse tail (${elapsed.toFixed()} ms)`);
         assert.ok(await reports() > 5, `${kind}: a flick still coasts after the finger lifts`);
       }
-      console.log(`PASS ${kind}: ${codex ? "Codex advances after one row of finger travel" : "ordinary panes retain the three-row report step"}`);
+      console.log(`PASS ${kind}: ${name} uses the ${oneRow ? "one" : "three"}-row wheel report step`);
     } finally {
       await context.close();
     }

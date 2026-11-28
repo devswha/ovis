@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  CODEX_GLIDE_ROW_INTERVAL_MS, createTouchFling, createVelocityTracker, FLING_DECELERATION, FLING_HORIZON_MS, FLING_MAX_VELOCITY, FLING_MIN_VELOCITY,
+  TOUCH_GLIDE_STEP_INTERVAL_MS, createTouchFling, createVelocityTracker, FLING_DECELERATION, FLING_HORIZON_MS, FLING_MAX_VELOCITY, FLING_MIN_VELOCITY,
   FLING_SLOP_PX, FLING_STOP_VELOCITY, FLING_STOPPED_MS, flingStep,
 } from "./touchFling.ts";
 import type { FrameClock } from "./touchWheelPacer.ts";
@@ -147,12 +147,12 @@ describe("the glide", () => {
       return { travel, reports, duration: frames.now() };
     };
     const normal = run();
-    const codex = run(row / CODEX_GLIDE_ROW_INTERVAL_MS);
+    const codex = run(row / TOUCH_GLIDE_STEP_INTERVAL_MS);
     const longestGap = (reports: number[]) => Math.max(...reports.slice(1).map((at, i) => at - reports[i]!));
     expect(normal.duration).toBeGreaterThan(1500);
     expect(longestGap(normal.reports)).toBeGreaterThan(300);
     expect(codex.duration).toBeLessThan(850);
-    expect(longestGap(codex.reports)).toBeLessThan(CODEX_GLIDE_ROW_INTERVAL_MS + FRAME_MS + 1);
+    expect(longestGap(codex.reports)).toBeLessThan(TOUCH_GLIDE_STEP_INTERVAL_MS + FRAME_MS + 1);
     expect(codex.travel.slice(0, 20)).toEqual(normal.travel.slice(0, 20));
   });
 

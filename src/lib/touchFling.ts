@@ -10,8 +10,8 @@ export const FLING_SLOP_PX = 8;
 /** Fastest fling, in CSS pixels per millisecond (Android's maximum fling velocity, 8000 dp/s). */
 export const FLING_MAX_VELOCITY = 8;
 export const FLING_STOP_VELOCITY = 0.02;
-/** A Codex glide sends discrete row reports: stop when even a row at the current speed takes this long. */
-export const CODEX_GLIDE_ROW_INTERVAL_MS = 90;
+/** Terminal touch glides move in discrete steps. Stop before the remaining steps become isolated jumps. */
+export const TOUCH_GLIDE_STEP_INTERVAL_MS = 90;
 /** The speed a fling keeps per millisecond (UIScrollView's normal deceleration rate). */
 export const FLING_DECELERATION = 0.998;
 /** The longest frame a fling advances by: a frame after the tab was hidden does not jump the whole glide. */

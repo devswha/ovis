@@ -1,4 +1,4 @@
 ### Fixed
 
-- A slow drag in the Codex terminal on a phone now sends a wheel report after one row of finger travel, matching Codex’s default scroll distance. Other panes keep their existing behavior.
-- A quick swipe in the Codex terminal eases to a stop without isolated late row jumps.
+- On phones, slow drags follow individual rows in locally held terminal history and send wheel reports sooner to fullscreen Codex and Claude Code. herdr and other remote apps keep their existing wheel step.
+- Terminal flings stop before their last few discrete steps become isolated jumps.
