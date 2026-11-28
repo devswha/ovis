@@ -1,5 +1,6 @@
 import type { InteractivePrompt } from "../shared/protocol.ts";
-import { paneTranscript, type NativeTranscript } from "./conversation.ts";
+import { lstatSync } from "node:fs";
+import { copilotHistoryIdentity, paneTranscript, type NativeTranscript } from "./conversation.ts";
 import { ConversationUnavailable } from "./conversation-shared.ts";
 import { lettaMessagesPath } from "./letta-store.ts";
 import { grokHeldTranscript } from "./grok-store.ts";
@@ -14,7 +15,7 @@ import { parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
 import { gjcRecord } from "./dialogs/gjc-record.ts";
 import { lettaRecord } from "./dialogs/letta-record.ts";
 import { grokRecord } from "./dialogs/grok-record.ts";
-import { copilotRecord } from "./dialogs/copilot-record.ts";
+import { copilotAskRecord, copilotRecord } from "./dialogs/copilot-record.ts";
 import { museRecord } from "./dialogs/muse-record.ts";
 import { agyRecord } from "./dialogs/agy-record.ts";
 import { hermesRecord } from "./dialogs/hermes-record.ts";
@@ -56,6 +57,20 @@ const RECORDS: Readonly<Record<string, RecordSource>> = {
   gjc: sessionFile(gjcRecord, (found) => found.source === "gjc-transcript" ? found.path : null),
   muse: sessionFile(museRecord, (found) => found.source === "muse-transcript" ? found.path : null),
   copilot: sessionFile(copilotRecord, (found) => found.source === "copilot-transcript" ? found.path : null),
+  "copilot-question": { record: copilotAskRecord, read: async paneId => {
+    const found = await paneTranscript(paneId);
+    if (found.source !== "copilot-transcript") return undefined;
+    const identity = `${found.path}\0${found.binding}\0${copilotHistoryIdentity(found.path)}`;
+    const stat = () => lstatSync(found.path, { bigint: true, throwIfNoEntry: false });
+    const before = stat();
+    if (!before?.isFile()) return null;
+    const unchanged = () => {
+      const after = stat();
+      return after?.dev === before.dev && after.ino === before.ino && after.ctimeNs === before.ctimeNs && after.size === before.size;
+    };
+    const call = within(identity, copilotAskRecord.pending(await tail(found.path)));
+    return call && unchanged() ? { ...call, unchanged } : null;
+  } },
   // the local backend's messages, which Letta appends to as the turn goes; its transcript waits for the turn's end
   letta: sessionFile(lettaRecord, (found) => found.source === "letta-transcript" && found.letta ? lettaMessagesPath(found.letta.store, found.letta.agent, found.letta.conversation) : null),
   grok: { record: grokRecord, read: async (paneId) => { const path = await grokSessionFile(paneId); return path === null ? undefined : within(path, grokRecord.pending(await tail(path))); } },

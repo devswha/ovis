@@ -9,6 +9,7 @@ import { ANSI_RE, CARD_BODY_MAX, cleanLine, isDivider, type ParsedPrompt } from 
 export interface RecordRequest {
   readonly id: string;
   readonly command: string;
+  unchanged?: () => boolean;
 }
 
 /**

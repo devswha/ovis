@@ -16,8 +16,8 @@ function Fixture() {
   const [dock, setDock] = useState<HTMLDivElement | null>(null);
   controls.setChat = (next) => setProps((current) => ({ ...current, ...next }));
   return <main style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
-    <div style={{ flex: 1, minHeight: 0 }}>
-      {props.mounted && <ChatView paneId={PANE} refreshKey={0} connected={props.connected} ended={false} agent="claude" agentStatus={props.agentStatus} agentSession={props.agentSession} promptDock={dock} />}
+    <div style={{ flex: 1, minHeight: 0, position: "relative", overflow: "hidden" }}>
+      {props.mounted && <ChatView paneId={PANE} refreshKey={0} connected={props.connected} ended={false} agent={new URLSearchParams(location.search).get("agent") === "copilot" ? "copilot" : "claude"} agentStatus={props.agentStatus} agentSession={props.agentSession} promptDock={dock} />}
     </div>
     <div ref={setDock} />
   </main>;

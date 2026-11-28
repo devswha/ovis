@@ -5,7 +5,7 @@ import type { AgentRecord } from "./record.ts";
 import { commandCut, withRecord } from "./record.ts";
 import { parseFallbackPrompt } from "./fallback.ts";
 import { parsedByPublicPrompt } from "./shared.ts";
-import { copilotRecord } from "./copilot-record.ts";
+import { copilotAskRecord, copilotRecord } from "./copilot-record.ts";
 import { gjcRecord } from "./gjc-record.ts";
 import { grokRecord } from "./grok-record.ts";
 import { lettaRecord } from "./letta-record.ts";
@@ -28,6 +28,23 @@ const AGENTS: { agent: string; record: AgentRecord; whole: string[] }[] = [
   { agent: "letta", record: lettaRecord, whole: ["short-a1", "short-d"] },
   { agent: "muse", record: museRecord, whole: ["short-a1", "long-a1", "multi-a1", "quote-a1", "phone-a1", "short-d"] },
 ];
+
+test("only the unambiguous root Copilot question remains answerable", () => {
+  const fields = { pick: { type: "string", enum: ["Alpha", "Beta"] } };
+  const start = (id: string, properties: object = fields, agent?: string) => JSON.stringify({
+    type: "tool.execution_start", agentId: agent, data: { toolName: "ask_user", toolCallId: id,
+      arguments: { message: " Choose ", requestedSchema: { type: "object", properties } } },
+  });
+  const read = (...lines: string[]) => copilotAskRecord.pending(lines.join("\n"));
+  const root = start("root");
+  expect(read(root, start("child", fields, "nested"))).toEqual({ id: "root", command: JSON.stringify(["Choose", ["Alpha", "Beta"]]) });
+  expect(read(start("child", fields, "nested"))).toBeNull();
+  expect(read(root, start("another"))).toBeNull();
+  expect(read(start("multi", { ...fields, other: fields.pick }))).toBeNull();
+  for (const type of ["tool.execution_complete", "human_response.recorded", "session.resume", "session.abort", "user.message"]) {
+    expect(read(root, JSON.stringify({ type, data: { toolCallId: "root" } }))).toBeNull();
+  }
+});
 
 for (const { agent, record, whole } of AGENTS) {
   const { turns } = JSON.parse(readFileSync(join(import.meta.dir, "../fixtures/record-cards", `${agent}.json`), "utf8")) as { turns: Turn[] };

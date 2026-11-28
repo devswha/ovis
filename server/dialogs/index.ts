@@ -1,6 +1,7 @@
 import type { DialogReader } from "./registry.ts";
 import { readers as claude } from "./claude.ts";
 import { readers as codex } from "./codex.ts";
+import { readers as copilot } from "./copilot-question.ts";
 import { readers as omp } from "./omp.ts";
 import { readers as ompForm } from "./omp-form.ts";
 import { readers as omo } from "./omo.ts";
@@ -17,4 +18,4 @@ import { readers as dsh } from "./dsh.ts";
 import { readers as kiro } from "./kiro.ts";
 import { readers as fallback } from "./fallback.ts";
 
-export const readers: readonly DialogReader[] = [...claude, ...codex, ...omp, ...ompForm, ...omo, ...pi, ...piQuestionnaire, ...piAsk, ...piAskUser, ...hermes, ...opencode, ...agy, ...cmd, ...letta, ...dsh, ...kiro, ...fallback];
+export const readers: readonly DialogReader[] = [...claude, ...codex, ...copilot, ...omp, ...ompForm, ...omo, ...pi, ...piQuestionnaire, ...piAsk, ...piAskUser, ...hermes, ...opencode, ...agy, ...cmd, ...letta, ...dsh, ...kiro, ...fallback];

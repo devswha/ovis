@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { describe, expect, spyOn, test } from "bun:test";
+import { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agyRecord } from "./dialogs/agy-record.ts";
 import { copilotRecord } from "./dialogs/copilot-record.ts";
@@ -9,7 +10,34 @@ import { grokRecord } from "./dialogs/grok-record.ts";
 import { lettaRecord } from "./dialogs/letta-record.ts";
 import { museRecord } from "./dialogs/muse-record.ts";
 import type { AgentRecord, RecordRequest } from "./dialogs/record.ts";
-import { recordSettled } from "./record-cards.ts";
+import * as conversation from "./conversation.ts";
+import { recordRequest, recordSettled } from "./record-cards.ts";
+
+test("a Copilot question follows its foreground binding and file generation, not just its call id", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-copilot-ask-"));
+  const path = join(dir, "events.jsonl");
+  const start = JSON.stringify({ type: "tool.execution_start", data: { toolCallId: "pick", toolName: "ask_user",
+    arguments: { message: "Pick", requestedSchema: { properties: { color: { type: "string", enum: ["red", "blue"] } } } } } }) + "\n";
+  let binding = "first-pid";
+  const lookup = spyOn(conversation, "paneTranscript").mockImplementation(async () => ({ source: "copilot-transcript", path, binding, peerClaims: new Set<string>() }));
+  try {
+    writeFileSync(path, start);
+    const read = () => recordRequest("pane", "copilot-question");
+    const first = (await read())!;
+    expect(first.unchanged?.()).toBe(true);
+    binding = "second-pid";
+    const next = (await read())!;
+    expect(next.id).not.toBe(first.id);
+    writeFileSync(join(dir, "replacement"), start);
+    renameSync(join(dir, "replacement"), path);
+    expect(next.unchanged?.()).toBe(false);
+    const replaced = (await read())!;
+    expect(replaced.id).not.toBe(next.id);
+    appendFileSync(path, JSON.stringify({ type: "human_response.recorded", data: { toolCallId: "pick" } }) + "\n");
+    expect(replaced.unchanged?.()).toBe(false);
+    expect(await read()).toBeNull();
+  } finally { lookup.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
+});
 
 interface Turn { turn: string; decision: "allow" | "deny"; record: unknown; after: unknown }
 

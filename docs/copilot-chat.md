@@ -2,8 +2,11 @@
 
 On Linux, Chat reads Copilot CLI's native `events.jsonl`: user and assistant text,
 tool activity, recorded model/effort, recorded `ask_user` choices and Autopilot completion
-summaries. Reading Chat makes no model calls. Live questions and approvals stay in Terminal;
-the bridge never sends guessed selection keys. macOS and Windows use Terminal.
+summaries. Reading Chat makes no model calls. When a live single-choice question matches the
+foreground session's pending `ask_user` call, Chat lets you choose a named option or type a
+single-line answer under **Other**, if offered. If you already started typing in Terminal,
+finish there. Multi-field forms and approvals are not handled by this question card.
+macOS and Windows use Terminal.
 This reader supports existing panes; it does not add Copilot to the launch picker.
 
 ## Setup and session identity

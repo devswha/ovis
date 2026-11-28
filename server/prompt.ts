@@ -31,6 +31,7 @@ import { opencodeSessionId } from "./opencode.ts";
 import { agentPickerWaits, registry, SCREEN_READ_AGENTS } from "./dialogs/registry.ts";
 import { ANSI_RE, type AnswerStep, KEY, type OmoAsk, type ParsedPrompt, type PromptDraft, cleanLine, findLastIndex, finishPrompt, isDivider, keySteps, navigationKeys, own, parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
 import { executeInteractionPlan } from "./dialogs/interaction-plan.ts";
+import { copilotPlaceholder, copilotQuestion } from "./dialogs/copilot-question.ts";
 import { liveScreen, parsePrompt, promptTailIsActive } from "./dialogs/live.ts";
 import { LETTA_SEARCH_MAX, lettaPick, lettaSearchShown } from "./dialogs/letta.ts";
 import { agyCustomEditorMatches, agySameQuestion, parseAgyQuestion } from "./dialogs/agy.ts";
@@ -505,6 +506,9 @@ export function parseInteractivePrompt(agent: string, screen: string, omoAsk: Om
 
 class InvalidAnswer extends Error {}
 
+const singleLineInlineEditor = (responder: ParsedPrompt["responder"]): boolean =>
+  responder === "pi-ask-question" || responder === "pi-questionnaire-question" || responder === "copilot-question";
+
 export function answerKeys(prompt: InteractivePrompt, answer: Pick<PromptAnswer, "option_index" | "option_indices" | "custom_text">): AnswerStep[] {
   const parsed = parsedByPublicPrompt.get(prompt);
   if (!parsed) throw new InvalidAnswer("The prompt was not produced by parseInteractivePrompt.");
@@ -515,10 +519,13 @@ export function answerKeys(prompt: InteractivePrompt, answer: Pick<PromptAnswer,
 
   if (answer.custom_text !== undefined) {
     if (typeof answer.custom_text !== "string") throw new InvalidAnswer("Custom text must be a string.");
+    if (parsed.responder === "copilot-question" && answer.custom_text.trim() === copilotPlaceholder) {
+      throw new InvalidAnswer("Use a single line of plain text for this Copilot question.");
+    }
     // A raw newline/control in rpiv's inline input can submit it and type into the next
     // question, review, or composer. Validate before trimming and before any navigation.
-    if ((parsed.responder === "pi-ask-question" || parsed.responder === "pi-questionnaire-question") && /[\u0000-\u001f\u007f-\u009f]/.test(answer.custom_text)) {
-      throw new InvalidAnswer("Pi custom answers must be one line without control characters.");
+    if (singleLineInlineEditor(parsed.responder) && /[\u0000-\u001f\u007f-\u009f]/.test(answer.custom_text)) {
+      throw new InvalidAnswer("Custom answers must be one line without control characters.");
     }
     // dsh-tui reads a control byte inside the typed run as its key (measured on 0.20.0): ESC [B moves to an option the
     // answer then carries, Ctrl+C or a lone ESC cancels the question
@@ -561,7 +568,7 @@ export function answerKeys(prompt: InteractivePrompt, answer: Pick<PromptAnswer,
     // dialog is the same but for a worse reason: its `>` line already owns the input, so an
     // enter typed before the answer submits the dialog empty and leaves the answer behind to
     // be typed into the agent's own prompt.
-    if (!["claude-question", "claude-plan", "codex-question", "codex-async-question", "pi-input"].includes(parsed.responder)) navigation.push(KEY.enter);
+    if (!["claude-question", "claude-plan", "codex-question", "codex-async-question", "copilot-question", "pi-input"].includes(parsed.responder)) navigation.push(KEY.enter);
     if (parsed.responder === "codex-question") navigation.push(KEY.tab);
     // what was typed into pi's line in the terminal would stay around the answer: the line is
     // emptied first, after the cursor and before it (pi's editor keys, measured on 0.87.1)
@@ -1220,7 +1227,7 @@ async function readKnownPrompt(
   // they are named here and not in SCREEN_READ_AGENTS; dsh-tui's ask_user_question has a reader too (dialogs/dsh.ts),
   // read only while herdr says the pane waits on the user, as its fallback card is: a panel's text on the screen of a
   // dsh that is not asking takes no Enter
-  if (!SCREEN_READ_AGENTS.has(agent) && agent !== "agy" && agent !== "kiro" && !(agent === "dsh-tui" && pane.agent_status === "blocked")) return { prompt: null };
+  if (!SCREEN_READ_AGENTS.has(agent) && agent !== "agy" && agent !== "kiro" && !((agent === "dsh-tui" || agent === "copilot") && pane.agent_status === "blocked")) return { prompt: null };
   const piTranscript = agent === "pi" ? await piTranscriptPath(paneId).catch(() => null) : null;
   // pi-ask's ask_user form, as the web UI's pi extension reports it: answered through pi-ask, never keys
   if (piTranscript && "path" in piTranscript) {
@@ -1228,6 +1235,9 @@ async function readKnownPrompt(
     if (card) return { prompt: publicPrompt(piAskUserPrompt(paneId, piTranscript.path, card)) };
   }
   let screen = await liveScreen(paneId);
+  const copilotCall = agent === "copilot" && copilotQuestion(screen, "") ? await recordRequest(paneId, "copilot-question") : null;
+  if (agent === "copilot" && !copilotCall) return { prompt: null };
+  if (copilotCall) screen = await liveScreen(paneId);
   const questionnaire = agent === "pi" && isPiQuestionnaireScreen(screen);
   const piTabs = agent === "pi" && (questionnaire && /[□■]/.test(screen)
     || /^\s*←.*✓ Submit\s*→$/m.test(screen) && /Enter to select · ↑\/↓ to navigate/.test(screen));
@@ -1292,6 +1302,12 @@ async function readKnownPrompt(
   }
   const held = agent === "claude" ? heldCandidate(paneId) : null;
   const parseDrawn = (drawn: string): InteractivePrompt | null => {
+    if (agent === "copilot") {
+      if (!copilotCall) return null;
+      const card = copilotQuestion(drawn, copilotCall.id);
+      return card && JSON.stringify([card.question, card.options.map(o => o.label)]) === copilotCall.command
+        ? publicPrompt({ ...card, copilotAsk: copilotCall }) : null;
+    }
     if (piNativeAgain) {
       const again = piNativeAgain(drawn);
       return again ? publicPrompt(again) : null;
@@ -1528,7 +1544,7 @@ export type AnswerWay = "native" | "record" | "screen";
 
 /** A card whose text was read from the agent's session record (the call it waits on: omo's, omp's, pi's questionnaire, or a recorded request), not off the screen alone. */
 const readFromRecord = (parsed: ParsedPrompt): boolean =>
-  parsed.omoQuestion !== undefined || parsed.ompCall !== undefined || parsed.record !== undefined || parsed.responder.startsWith("pi-questionnaire-");
+  parsed.omoQuestion !== undefined || parsed.ompCall !== undefined || parsed.copilotAsk !== undefined || parsed.record !== undefined || parsed.responder.startsWith("pi-questionnaire-");
 
 function promptChanged(): Response {
   return jsonResponse({ error: { code: "prompt_changed", message: "The interactive prompt changed; reopen it and try again." } }, 409);
@@ -1811,6 +1827,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       waitedOn = waitingKindOf(prompt) !== undefined;
 
       const parsedPrompt = parsedByPublicPrompt.get(prompt);
+      if (parsedPrompt?.copilotDraft) return promptChanged();
       // before each key: the look the key needs (beforeKey), then, for an omp card read under an open ask call, that
       // call is still the pane's one open call: omp asking again since the last read takes none of this card's keys
       const ompCall = agent === "omp" ? parsedPrompt?.ompCall : undefined;
@@ -1861,6 +1878,17 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         if (readsLive && request.signal.aborted) throw new KeyRefused();
         if (!read || read.inputUnverified || ((screenOnly === "editor" || refreshGjcScreen) && (!screen || read.suppressFallback))
           || Date.now() > readUntil || !same(shown, screen ?? "", settled)) throw new KeyRefused();
+        if (shown?.copilotAsk) {
+          // A foreground switch can leave both the old file and the drawn question unchanged.
+          const signal = AbortSignal.any([request.signal, AbortSignal.timeout(Math.max(0, readUntil - Date.now()))]);
+          const current = await untilAborted(recordRequest(body.pane_id, "copilot-question"), signal);
+          if (current?.id !== shown.copilotAsk.id || !shown.copilotAsk.unchanged?.()
+            || request.signal.aborted || Date.now() > readUntil) throw new KeyRefused();
+          const frame = await untilAborted(liveScreen(body.pane_id), signal);
+          const final = frame === undefined ? null : copilotQuestion(frame, current.id);
+          if (!final || final.id !== shown.id || final.selectedIndex !== shown.selectedIndex
+            || final.copilotDraft !== shown.copilotDraft || signal.aborted || !current.unchanged?.()) throw new KeyRefused();
+        }
         // a card showing its record's command goes to that request only: after the screen's last read, the record must
         // still hold it open, so another request that opened meanwhile with the same command takes none of its keys
         if (parsedPrompt?.record !== undefined && (await recordRequest(body.pane_id, agent))?.id !== parsedPrompt.record.id) throw new RecordChanged();
@@ -2331,8 +2359,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const responder = parsed.responder;
         const reader = registry.readerFor(responder);
         const interaction = body.custom_text === undefined ? reader?.interaction?.(parsed) : undefined;
-        const checkBeforeText = responder === "fallback-gjc-menu" || responder === "pi-ask-question"
-          || responder === "pi-questionnaire-question" || responder === "agy-question";
+        const checkBeforeText = singleLineInlineEditor(responder) || responder === "fallback-gjc-menu" || responder === "agy-question";
         const codexTyped = responder === "codex-question" || responder === "codex-async-question";
         const editorAnswer = body.custom_text !== undefined && (checkBeforeText || responder === "dsh-question" || codexTyped
           || responder === "claude-question" || responder === "omp-question" || responder === "omo-question" || responder === "omo-review" || responder === "hermes-question"
@@ -2401,6 +2428,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             return dialog?.id === parsed.id && (!onCursor || dialog.selectedIndex === cursor);
           }
           if (responder.startsWith("fallback")) {
+            if (shown?.copilotAsk) return false;
             if (!asks()) return false;
             const drawn = parsedByPublicPrompt.get(parseFallbackPrompt(agent, screen));
             // a card with its record's command is that request's: the screen must still show it, with nothing else changed
@@ -2427,6 +2455,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         }
         const inlineEditorMatches = (shown: ParsedPrompt | null, screen: string, draft: string): boolean => {
           switch (responder) {
+            case "copilot-question":
+              return shown?.id === parsed.id && shown.copilotDraft === draft;
             case "pi-questionnaire-question":
               return shown?.id === parsed.id && shown.selectedIndex === parsed.customMenuIndex && piQuestionnaireInputMatches(shown, draft);
             case "pi-ask-question":
@@ -2446,8 +2476,9 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             // asked again right before herdr writes: a question known to have ended since the last read takes no committing
             // key (a move keeps its own cancellation boundaries)
             const asked = (): boolean => asks() && !request.signal.aborted
+              && (!parsed.copilotAsk || parsed.copilotAsk.unchanged?.() === true)
               && (parsed.gjcCall === undefined || gjcCallStillOpenInFile(parsed.gjcCall));
-            const guard = move ? undefined : asked;
+            const guard = move && !parsed.copilotAsk ? undefined : asked;
             try {
               if (step.keys) await paneSendKeys(body.pane_id, step.keys, undefined, guard);
               else if (step.text !== undefined) await paneSendText(body.pane_id, step.text, undefined, guard);
@@ -2455,7 +2486,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
               // herdr was never reached, or the write was cancelled, so nothing was pressed: the card is still to be answered
               if (first && error instanceof HerdrError && (error.code === "connect_failed" || error.code === "cancelled")) committed = false;
               // the question ended while the write was on its way: nothing was pressed, and the card has changed
-              if (!move && error instanceof HerdrError && error.code === "cancelled" && !asked()) throw new KeyRefused();
+              if (guard && error instanceof HerdrError && error.code === "cancelled" && !asked()) throw new KeyRefused();
               throw error;
             }
           };
@@ -2467,7 +2498,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           const codexNotesPaste = committed && responder === "codex-question" && step.text !== undefined;
           const typedEditor = customTyped && step.keys?.length === 1 && (step.keys[0] === KEY.enter || claudeDown) ? editorAnswer : undefined;
           const ompEnter = responder === "omp-form" && step.keys?.[0] === KEY.enter;
-          if (!committed || responder === "omp-form" || togglesInPlace() || lettaTyping || typedEditor || gjcEditorPaste || codexNotesPaste) {
+          if (!committed || responder === "copilot-question" || responder === "omp-form" || togglesInPlace() || lettaTyping || typedEditor || gjcEditorPaste || codexNotesPaste) {
             const onCursor = !move && (step.keys?.every((key) => key === KEY.enter || key === KEY.space) ?? false);
             const { written } = await verifyThenSend(look, guardUntil, Date.now() + SETTLE_MS,
               (shown, screen, settled) => {
@@ -2488,6 +2519,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
                   if (responder === "omp-question") return ompCustomEditorMatches(screen, typedEditor);
                   if (responder === "opencode-v1-question") return openCodeV1CustomEditorMatches(screen, typedEditor);
                   return shown?.agent === parsed.agent && shown.customEditorMatches?.(typedEditor, claudeDown ? "editor" : "submit") === true;
+                }
+                if (responder === "copilot-question") {
+                  if (shown?.id !== parsed.id || shown.selectedIndex !== cursor || settled?.selectedIndex !== cursor || settled.copilotDraft !== shown.copilotDraft) return false;
+                  return step.text !== undefined ? shown.copilotDraft === "" : !shown.copilotDraft;
                 }
                 // The open call only identifies the form: Tab or Esc in the terminal can hand focus elsewhere mid-answer.
                 if (responder === "omp-form" && (committed || ompEnter && ompChecks !== null)) {
@@ -2519,7 +2554,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         let lettaSearch = parsed.lettaSearch ?? "";
         const customEditorReady = async (draft: string): Promise<boolean> => {
           const deadline = Date.now() + SETTLE_MS;
-          if (responder === "pi-ask-question" || responder === "pi-questionnaire-question") {
+          if (singleLineInlineEditor(responder)) {
             while (asks() && !request.signal.aborted && Date.now() < deadline) {
               const reading = readKnownPrompt(body.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir);
               const read = await Promise.race([reading, Bun.sleep(Math.max(0, deadline - Date.now())).then(() => null)]);

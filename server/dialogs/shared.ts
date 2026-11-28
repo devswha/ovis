@@ -63,6 +63,7 @@ export const KEY = {
 } as const;
 
 type Responder =
+  | "copilot-question"
   | "codex-question"
   | "codex-async-question"
   | "codex-queued-question"
@@ -186,6 +187,8 @@ export type ParsedPrompt = InteractivePrompt & {
   approvalHeldOnly?: true;
   /** the pending request in the agent's own record whose command the card shows (dialogs/record.ts), checked again before each key */
   record?: RecordRequest;
+  copilotAsk?: RecordRequest;
+  copilotDraft?: string;
   /** the JSON-RPC id of the question the pane's own Codex server waits on that the card shows (codex-question.ts) */
   servedAsk?: string;
   lettaSearch?: string;

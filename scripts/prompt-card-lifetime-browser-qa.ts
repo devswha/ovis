@@ -6,6 +6,8 @@ import { chromium, type Page } from "playwright-core";
 import { build as viteBuild } from "vite";
 import { CONTENT_SECURITY_POLICY } from "../server/static.ts";
 import { chromePath } from "./chrome-path.ts";
+import { copilotQuestion } from "../server/dialogs/copilot-question.ts";
+import { publicPrompt } from "../server/dialogs/shared.ts";
 import type { InteractivePrompt } from "../shared/protocol.ts";
 
 const question = (id: string, text: string): InteractivePrompt => ({
@@ -37,7 +39,7 @@ try {
       queueMicrotask(() => { for (const wake of waiters) wake(at); });
       return response;
     }
-    if (url.pathname === "/api/pane/conversation") return Response.json({ source: "claude-transcript", cursor: null, turns });
+    if (url.pathname === "/api/pane/conversation") return Response.json({ source: request.headers.get("referer")?.includes("agent=copilot") ? "copilot-transcript" : "claude-transcript", cursor: null, turns });
     if (url.pathname === "/api/pane/prompt/answer" && heldAnswer !== null) {
       const held = heldAnswer; heldAnswer = null; held.arrived();
       return held.release.then(() => held.refuse ? Response.json({ error: { code: "prompt_changed", message: "changed" } }, { status: 409 }) : Response.json({ ok: true }));
@@ -64,8 +66,62 @@ try {
   const unmount = async (page: Page): Promise<void> => { await setChat(page, { mounted: false }); await card(page).waitFor({ state: "detached" }); };
   const failed: string[] = [];
   const scenario = async (name: string, run: () => Promise<void>): Promise<void> => {
+    if (process.argv.includes("--copilot-questions") && name !== "Copilot live questions") return;
     try { await run(); } catch (error) { failed.push(`${name}: ${error instanceof Error ? error.message : String(error)}`); console.log(`FAIL ${name}`); }
   };
+
+  await scenario("Copilot live questions", async () => {
+    const project = (id: string, text: string, editing = false) => {
+      const rule = "─".repeat(60);
+      const screen = [rule, " Copilot needs information.", ` ${text}`, "", " Choose one:",
+        editing ? "   Blue" : " ❯ Blue", "   Green", editing ? " ❯ Other (type your answer below)" : "   Other (type your answer)", "",
+        " ↑/↓ select · enter accept · ctrl+d decline · esc cancel", rule,
+        ...(editing ? [rule, "❯ Type your answer...", rule] : [])].join("\n");
+      const parsed = copilotQuestion(screen, id);
+      assert.ok(parsed, "real reader recognizes the synthetic native panel");
+      return publicPrompt(parsed);
+    };
+    const first = project("call-1", "Which color?");
+    const stale = project("call-2", "Which old color?");
+    const replacement = project("call-3", "Which replacement color?", true);
+    answer = { prompt: first };
+    const { page, close, errors } = await open("?agent=copilot");
+    try {
+      const posts: unknown[] = [];
+      await page.route("**/api/pane/prompt/answer", async route => {
+        posts.push(route.request().postDataJSON());
+        if (posts.length === 2) {
+          answer = { prompt: replacement };
+          await route.fulfill({ status: 409, json: { error: { code: "prompt_changed", message: "changed" } } });
+        } else {
+          answer = { prompt: posts.length === 1 ? stale : null };
+          await route.fulfill({ json: { ok: true } });
+        }
+      });
+      const shown = card(page), green = shown.getByRole("button", { name: /Green/ });
+      const custom = shown.locator(".prompt-card-custom input");
+      await shown.getByText(first.question!).waitFor();
+      await green.click();
+      await shown.getByText(stale.question!).waitFor();
+      await green.click();
+      await shown.getByText(replacement.question!).waitFor();
+      assert.equal(await custom.inputValue(), "");
+      await custom.fill("violet with gold");
+      await custom.press("Enter");
+      await shown.waitFor({ state: "detached" });
+      await unmount(page);
+      await setChat(page, { mounted: true });
+      await nextRead().then(nextRead);
+      assert.equal(await shown.count(), 0, "answered card stays gone after remount and polling");
+      assert.deepEqual(posts, [
+        { pane_id: "w1:p1", prompt_id: first.id, option_index: 1 },
+        { pane_id: "w1:p1", prompt_id: stale.id, option_index: 1 },
+        { pane_id: "w1:p1", prompt_id: replacement.id, custom_text: "violet with gold" },
+      ], "only explicit card actions POST; no answer replay on replacement or remount");
+      assert.deepEqual(errors, []);
+      console.log("PASS Copilot Chat card: Green (index 1), stale answer refused, custom text on replacement; exactly 3 POSTs after remount and polling");
+    } finally { await close(); }
+  });
 
   await scenario("another session's card", async () => {
     answer = { prompt: question("a", "SESSION-A: deploy the old branch?") };

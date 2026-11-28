@@ -52,9 +52,9 @@ async function card(): Promise<InteractivePrompt | null> {
   return ((await (await handlePromptRequest(new Request(url), url, {}))!.json()) as { prompt: InteractivePrompt | null }).prompt;
 }
 
-async function answer(promptId: string, choice: { option_index: number }, signal?: AbortSignal): Promise<{ status: number; code?: string }> {
+async function answer(promptId: string, choice: { option_index: number } | { custom_text: string }, signal?: AbortSignal, beforeKey?: () => Promise<void>): Promise<{ status: number; code?: string }> {
   const url = new URL("http://127.0.0.1/api/pane/prompt/answer");
-  const response = (await handlePromptRequest(new Request(url, { method: "POST", signal, body: JSON.stringify({ pane_id: "p_1", prompt_id: promptId, ...choice }) }), url, {}))!;
+  const response = (await handlePromptRequest(new Request(url, { method: "POST", signal, body: JSON.stringify({ pane_id: "p_1", prompt_id: promptId, ...choice }) }), url, { beforeKey }))!;
   const body = await response.json() as { error?: { code: string } };
   return { status: response.status, code: body.error?.code };
 }
@@ -66,6 +66,86 @@ const labels = (prompt: InteractivePrompt) => prompt.options.map((option) => opt
 // (Copilot's logo and timer, Grok's status line) changed the id every second. Recorded on Copilot 1.0.109, Grok
 // 1.0.77 and Antigravity 1.5.6.
 const recorded = (name: string): string => readFileSync(new URL(`./fixtures/${name}.txt`, import.meta.url), "utf8");
+
+test.each([false, true])("answers a Copilot option only while the same ask_user call is live (replaced: %p)", async replaced => {
+  const screen = recorded("copilot-1.0.109-ask-32s");
+  let id = "session\0first";
+  const calls = spyOn(recordCards, "recordRequest").mockImplementation(async (_pane, source) =>
+    source === "copilot-question" ? { id, command: JSON.stringify(["Which color?", ["red", "blue"]]), unchanged: () => !replaced || id.endsWith("first") } : null);
+  try {
+    await withPane("copilot", "blocked", screen, async pane => {
+      const prompt = (await card())!;
+      expect(labels(prompt)).toEqual(["red", "blue"]);
+      pane.onRead = () => {
+        if (pane.sent.includes("down")) {
+          pane.screen = screen.replace(" ❯ red", "   red").replace("   blue", " ❯ blue");
+          if (replaced) id = "session\0second";
+        }
+      };
+      expect((await answer(prompt.id, { option_index: 1 })).status).toBe(replaced ? 409 : 200);
+      expect(pane.sent).toEqual(replaced ? ["down"] : ["down", "enter"]);
+    });
+  } finally { calls.mockRestore(); }
+});
+
+test.each(["cursor", "completion", "foreground", "post-lookup-cursor"] as const)("rejects a Copilot %s change during the last screen read before Enter", async change => {
+  const screen = recorded("copilot-1.0.109-ask-32s");
+  let open = true;
+  let binding = "first";
+  const calls = spyOn(recordCards, "recordRequest").mockImplementation(async (_pane, source) =>
+    source === "copilot-question" && open ? { id: `${binding}\0ask`, command: JSON.stringify(["Which color?", ["red", "blue"]]), unchanged: () => open } : null);
+  try {
+    await withPane("copilot", "blocked", screen, async pane => {
+      const prompt = (await card())!;
+      let reads = 0;
+      const beforeKey = async () => {
+        pane.onRead = () => {
+          if (++reads !== (change === "post-lookup-cursor" ? 4 : 3)) return;
+          if (change === "completion") open = false;
+          else if (change === "foreground") binding = "second";
+          else pane.screen = screen.replace(" ❯ red", "   red").replace("   blue", " ❯ blue");
+        };
+      };
+      expect((await answer(prompt.id, { option_index: 0 }, undefined, beforeKey)).status).toBe(409);
+      expect(reads).toBeGreaterThanOrEqual(3);
+      expect(pane.sent).toEqual([]);
+    });
+  } finally { calls.mockRestore(); }
+});
+
+test.each(["submit", "dismiss", "replace", "terminal-draft", "late-draft"] as const)("checks the Copilot Other editor before committing its text: %s", async outcome => {
+  const screen = recorded("copilot-1.0.109-ask-32s");
+  let open = true;
+  const calls = spyOn(recordCards, "recordRequest").mockImplementation(async (_pane, source) =>
+    source === "copilot-question" && open ? { id: "session\0ask", command: JSON.stringify(["Which color?", ["red", "blue"]]), unchanged: () => open } : null);
+  try {
+    await withPane("copilot", "blocked", screen, async pane => {
+      const prompt = (await card())!;
+      expect(prompt.custom_option_index).toBe(2);
+      let pasteReads = 0;
+      const beforeKey = async () => {
+        if (pane.sent.join(",") === "down,down") pasteReads = 1;
+      };
+      pane.onRead = () => {
+        const moves = pane.sent.filter(key => key === "down").length;
+        if (moves === 1) pane.screen = screen.replace(" ❯ red", "   red").replace("   blue", " ❯ blue");
+        if (moves !== 2) return;
+        const typed = pane.sent.includes("text:violet");
+        if (typed && outcome === "replace") open = false;
+        const rule = "─".repeat(100);
+        const lateDraft = outcome === "late-draft" && pasteReads > 0 && pasteReads++ >= 3;
+        const draft = outcome === "terminal-draft" || lateDraft ? "half finished" : typed ? "violet" : "Type your answer...";
+        pane.screen = typed && outcome === "dismiss" ? "❯ ordinary composer" : screen.trimEnd()
+          .replace(" ❯ red", "   red").replace("   Other (type your answer)", " ❯ Other (type your answer below)")
+          + `\n${rule}\n❯ ${draft}\n${rule}`;
+      };
+      expect((await answer(prompt.id, { custom_text: "violet\nother" })).status).toBe(400);
+      expect(pane.sent).toEqual([]);
+      expect((await answer(prompt.id, { custom_text: "violet" }, undefined, beforeKey)).status).toBe(outcome === "submit" ? 200 : 409);
+      expect(pane.sent).toEqual(["down", "down", ...(outcome.endsWith("draft") ? [] : ["text:violet"]), ...(outcome === "submit" ? ["enter"] : [])]);
+    });
+  } finally { calls.mockRestore(); }
+});
 
 test.each([
   ["copilot", "copilot-1.0.109-trust-logo-a", "Do you trust the files in this folder?"],
