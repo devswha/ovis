@@ -44,8 +44,11 @@ export function stripComments(text: string, { strings = false } = {}): string {
 
 export const lineOf = (text: string, index: number): number => text.slice(0, index).split("\n").length;
 
-/** Each literal relative import or re-export, as the repository path it names and its line. */
-export function relativeImports(file: string, code: string): { target: string; line: number; specifier: string; typeOnly: boolean }[] {
+/**
+ * Each literal relative import or re-export, as the repository path it names and its line.
+ * `typeExpression` marks an `import("./y.ts")` used in a type, which compiles away.
+ */
+export function relativeImports(file: string, code: string): { target: string; line: number; specifier: string; typeOnly: boolean; typeExpression: boolean }[] {
   const source = ts.createSourceFile(file, code, ts.ScriptTarget.Latest);
   // SourceFile carries parser diagnostics at runtime, but its public type omits them.
   const diagnostic = (source as ts.SourceFile & { readonly parseDiagnostics: readonly ts.DiagnosticWithLocation[] }).parseDiagnostics[0];
@@ -53,10 +56,11 @@ export function relativeImports(file: string, code: string): { target: string; l
     const line = source.getLineAndCharacterOfPosition(diagnostic.start).line + 1;
     throw new Error(`${file}:${line}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")}`);
   }
-  const imports: { target: string; line: number; specifier: string; typeOnly: boolean }[] = [];
+  const imports: { target: string; line: number; specifier: string; typeOnly: boolean; typeExpression: boolean }[] = [];
   function visit(node: ts.Node): void {
     let module: ts.Node | undefined;
     let typeOnly = false;
+    const typeExpression = ts.isImportTypeNode(node);
     if (ts.isImportDeclaration(node)) {
       module = node.moduleSpecifier;
       const clause = node.importClause;
@@ -74,7 +78,7 @@ export function relativeImports(file: string, code: string): { target: string; l
       const specifier = module.text;
       const target = posix.normalize(posix.join(posix.dirname(file), specifier.replace(/\?.*$/, "")));
       const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
-      imports.push({ target, line, specifier, typeOnly });
+      imports.push({ target, line, specifier, typeOnly, typeExpression });
     }
     ts.forEachChild(node, visit);
   }
@@ -83,25 +87,27 @@ export function relativeImports(file: string, code: string): { target: string; l
 }
 
 /**
- * The repository files `entry` reaches through relative imports, followed transitively through
- * every code file `follow` accepts, and each import of a file it does not accept. A file that
- * `source` cannot read is not followed: a listed file its row has not written yet is simply not reached.
- * `ignoreTypeOnly` can omit specific declaration-level type edges from this walk.
+ * The repository files `entry` (one file or several) reaches through relative imports, followed
+ * transitively through every code file `follow` accepts, and each import of a file it does not
+ * accept. A file that `source` cannot read is not followed: a listed file its row has not written
+ * yet is simply not reached. `ignoreTypeOnly` can omit specific declaration-level type edges from
+ * this walk, and type expressions when it accepts them (`expression` is true for those).
  */
 export function importClosure(
-  entry: string,
+  entry: string | readonly string[],
   source: (path: string) => string | undefined,
   follow: (path: string) => boolean = () => true,
-  ignoreTypeOnly?: (from: string, to: string) => boolean,
+  ignoreTypeOnly?: (from: string, to: string, expression: boolean) => boolean,
 ): { reached: string[]; offenders: string[] } {
-  const reached = new Set([entry]);
+  const entries = typeof entry === "string" ? [entry] : entry;
+  const reached = new Set(entries);
   const offenders: string[] = [];
-  for (const queue = [entry]; queue.length;) {
+  for (const queue = [...entries]; queue.length;) {
     const file = queue.shift()!;
     const text = /\.(?:ts|tsx|mjs|js)$/.test(file) ? source(file) : undefined;
     if (text === undefined) continue;
-    for (const { target, line, specifier, typeOnly } of relativeImports(file, text)) {
-      if (typeOnly && ignoreTypeOnly?.(file, target)) continue;
+    for (const { target, line, specifier, typeOnly, typeExpression } of relativeImports(file, text)) {
+      if ((typeOnly || typeExpression) && ignoreTypeOnly?.(file, target, typeExpression)) continue;
       if (!follow(target)) offenders.push(`${file}:${line}: ${specifier} (${target})`);
       else if (!reached.has(target)) {
         reached.add(target);

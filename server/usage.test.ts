@@ -7,6 +7,7 @@ import { delimiter, join } from "node:path";
 import type { UsageReport } from "../shared/protocol.ts";
 import { FRESH_MS, handleStatuslineRequest, handleUsageRequest, MAX_READ_BYTES, MIN_REFRESH_MS, RETRY_MS, runCommand, USAGE_PROVIDERS, UsageHttpError, UsageService, type KeychainRead, type UsageContext, type UsageProvider } from "./usage.ts";
 import { installStatusline } from "./statusline-install.ts";
+import { STALE_MS } from "./statusline.ts";
 import { UsageLoginService } from "./usage-login.ts";
 
 const NOW = Date.parse("2026-09-29T12:00:00Z");
@@ -233,7 +234,7 @@ describe("providers", () => {
     }
   });
 
-  it("reads Claude's windows from the status line Claude's own payload keeps, without a request", async () => {
+  it("reads Claude's windows from the status line Claude's own payload keeps, asking an endpoint that refuses only once", async () => {
     keychain.set("Claude Code-credentials|me", { status: "found", value: JSON.stringify({ claudeAiOauth: { accessToken: "k", expiresAt: NOW + HOUR, subscriptionType: "max" } }) });
     write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "uuid-1" } });
     const path = join(home, ".herdr", "statusline-last.json");
@@ -242,9 +243,14 @@ describe("providers", () => {
       seven_day: { used_percentage: 64, resets_at: (NOW + 48 * HOUR) / 1000 },
     } });
     utimesSync(path, new Date(NOW), new Date(NOW));
-    const [usage] = (await new UsageService(context("darwin"), only("claude")).report()).providers;
-    // the endpoint answers 403 from some networks; nothing is asked of it when the line has the numbers
-    expect(requests).toEqual([]);
+    // the endpoint answers 403 from some networks: the line's numbers stand, and it is not asked again for STALE_MS
+    replies.set(CLAUDE_USAGE, { status: 403, body: { error: { message: "Request not allowed" } } });
+    const service = new UsageService(context("darwin"), only("claude"));
+    const [usage] = (await service.report()).providers;
+    expect(requests).toHaveLength(1);
+    now += FRESH_MS;
+    expect((await service.report()).providers[0]).toMatchObject({ problem: null, windows: [{ used_percent: 17 }, { used_percent: 64 }] });
+    expect(requests).toHaveLength(1);
     expect(usage!.problem).toBeNull();
     expect(usage!.plan).toBe("max");
     expect(usage!.windows).toEqual([
@@ -264,7 +270,8 @@ describe("providers", () => {
     replies.set(CLAUDE_USAGE, { body: { five_hour: { utilization: 42 } } });
     const report = await new UsageService(context(), only("claude")).report();
     expect(report.providers.map((usage) => [usage.key, usage.windows[0]?.used_percent])).toEqual([["claude:personal", 42], ["claude:work", 17]]);
-    expect(requests.map((request) => (request.init.headers as Record<string, string>)["authorization"])).toEqual(["Bearer personal"]);
+    // the work account is asked too, for what its line is not handed, and its line's numbers win
+    expect(requests.map((request) => (request.init.headers as Record<string, string>)["authorization"])).toEqual(["Bearer personal", "Bearer work"]);
     requests.length = 0;
     write(path, { rate_limits: { five_hour: { used_percentage: 99 } } });
     utimesSync(path, new Date(NOW), new Date(NOW));
@@ -293,10 +300,10 @@ describe("providers", () => {
     replies.set(CLAUDE_USAGE, { body: { five_hour: { utilization: 1 } } });
     const service = new UsageService(context(), only("claude"));
     expect((await service.report()).providers[0]?.windows[0]?.used_percent).toBe(99);
-    expect(requests).toHaveLength(0);
+    expect(requests).toHaveLength(1);
     now += 60_000;
     expect((await service.report()).providers[0]?.windows[0]?.used_percent).toBe(1);
-    expect(requests).toHaveLength(1);
+    expect(requests).toHaveLength(2);
   });
 
   it("accepts matched local Claude limits with an expired token but never sends that token", async () => {
@@ -328,23 +335,24 @@ describe("providers", () => {
     capture(NOW + HOUR);
     replies.set(CLAUDE_USAGE, { body: { five_hour: { utilization: 42 } } });
     const [standing] = (await new UsageService(context(), only("claude")).report()).providers;
+    // the endpoint is asked beside it, for what the line is not handed, and the line's numbers win
     expect(standing).toMatchObject({ problem: null, checked_at: new Date(taken).toISOString(), windows: [{ used_percent: 17 }, { used_percent: 30 }] });
-    expect(requests).toEqual([]);
+    expect(requests).toHaveLength(1);
     // its five hours have started over: the endpoint is asked, and refused, the week the capture still holds stands in
     capture(NOW - 60_000);
     const [answered] = (await new UsageService(context(), only("claude")).report()).providers;
     expect(answered).toMatchObject({ problem: null, checked_at: new Date(NOW).toISOString(), windows: [{ used_percent: 42 }] });
-    expect(requests).toHaveLength(1);
+    expect(requests).toHaveLength(2);
     replies.set(CLAUDE_USAGE, { status: 403, body: { error: { message: "Request not allowed" } } });
     const [refused] = (await new UsageService(context(), only("claude")).report()).providers;
     expect(refused).toMatchObject({ problem: null, checked_at: new Date(taken).toISOString(), windows: [{ used_percent: 30 }] });
-    expect(requests).toHaveLength(2);
+    expect(requests).toHaveLength(3);
     // even a capture a minute old is not taken once a window it named has started over
     replies.set(CLAUDE_USAGE, { body: { five_hour: { utilization: 42 } } });
     write(path, { _herdr: { account: { id: "a" } }, rate_limits: { five_hour: { used_percentage: 17, resets_at: (NOW - 1000) / 1000 }, seven_day: { used_percentage: 30, resets_at: (NOW + 48 * HOUR) / 1000 } } });
     utimesSync(path, new Date(NOW - 60_000), new Date(NOW - 60_000));
     expect((await new UsageService(context(), only("claude")).report()).providers[0]?.windows[0]?.used_percent).toBe(42);
-    expect(requests).toHaveLength(3);
+    expect(requests).toHaveLength(4);
   });
 
   it("shows a status-line reading that comes during a 429's backoff, without asking the endpoint, and keeps the offer meanwhile", async () => {
@@ -394,6 +402,54 @@ describe("providers", () => {
     now += 61_000;
     expect((await service.report()).providers[0]!.windows[0]!.used_percent).toBe(20);
     expect(requests).toHaveLength(2);
+  });
+
+  it("asks the endpoint beside a fresh status line for a model's own week, once and again once STALE_MS has passed (#4908)", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + 24 * HOUR } });
+    write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
+    const path = join(home, ".herdr", "statusline-last.json");
+    // a session Ovis started keeps the status line fresh, from the server's start on
+    const capture = (fiveHour: number) => {
+      write(path, { _herdr: { account: { id: "a" } }, rate_limits: {
+        five_hour: { used_percentage: fiveHour, resets_at: (now + HOUR) / 1000 }, seven_day: { used_percentage: 64, resets_at: (NOW + 96 * HOUR) / 1000 },
+      } });
+      utimesSync(path, new Date(now), new Date(now));
+    };
+    const fable = (percent: number): Reply => ({ body: { five_hour: { utilization: 99 }, seven_day: { utilization: 99 },
+      limits: [{ kind: "weekly_scoped", percent, resets_at: new Date(NOW + 96 * HOUR).toISOString(), scope: { model: { display_name: "Fable" } } }] } });
+    replies.set(CLAUDE_USAGE, fable(79));
+    capture(17);
+    const service = new UsageService(context(), only("claude"));
+    const windows = async () => (await service.report()).providers[0]!.windows.map((window) => [window.scope, window.used_percent]);
+    // the line's numbers win for the five hours and the week; the endpoint gives the model's own week
+    expect(await windows()).toEqual([[null, 17], [null, 64], ["Fable", 79]]);
+    expect(requests).toHaveLength(1);
+    now += FRESH_MS;
+    capture(18);
+    expect(await windows()).toEqual([[null, 18], [null, 64], ["Fable", 79]]);
+    expect(requests).toHaveLength(1);
+    now = NOW + STALE_MS;
+    capture(19);
+    replies.set(CLAUDE_USAGE, fable(81));
+    expect(await windows()).toEqual([[null, 19], [null, 64], ["Fable", 81]]);
+    expect(requests).toHaveLength(2);
+  });
+
+  it("drops a model's own week the endpoint gave beside a fresh status line once that week starts over", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + 24 * HOUR } });
+    write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
+    const path = join(home, ".herdr", "statusline-last.json");
+    write(path, { _herdr: { account: { id: "a" } }, rate_limits: {
+      five_hour: { used_percentage: 17, resets_at: (NOW + HOUR) / 1000 }, seven_day: { used_percentage: 64, resets_at: (NOW + 96 * HOUR) / 1000 },
+    } });
+    utimesSync(path, new Date(NOW), new Date(NOW));
+    replies.set(CLAUDE_USAGE, { body: { limits: [{ kind: "weekly_scoped", percent: 99, resets_at: new Date(NOW + 60_000).toISOString(), scope: { model: { display_name: "Fable" } } }] } });
+    const service = new UsageService(context(), only("claude"));
+    const scopes = async () => (await service.report()).providers[0]!.windows.map((window) => window.scope);
+    expect(await scopes()).toEqual([null, null, "Fable"]);
+    now += 60_000;
+    expect(await scopes()).toEqual([null, null]);
+    expect(requests).toHaveLength(1);
   });
 
   it("names what a failed Claude read ran into, and offers the status line for it and for a 429", async () => {

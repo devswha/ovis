@@ -1263,6 +1263,8 @@ interface Entry {
   readAt: number;
   nextAt: number;
   holder: string;
+  /** when the endpoint was last asked for this account: beside a status line that stands in, once per STALE_MS (#4908) */
+  askedAt: number | null;
   gone?: true;
 }
 
@@ -1443,7 +1445,7 @@ export class UsageService {
     const read = await Promise.all(found.map(async (signIn): Promise<[string, Entry]> => {
       const source = `${provider.id}|${signIn.source}`;
       const kept = keptFor(signIn);
-      if (kept) return [source, { usage: kept.usage, readAt: kept.readAt, nextAt: kept.nextAt, holder: kept.holder }];
+      if (kept) return [source, { usage: kept.usage, readAt: kept.readAt, nextAt: kept.nextAt, holder: kept.holder, askedAt: kept.askedAt }];
       const entry = this.entries.get(source);
       // Reuse a reading only for the same holder, including during its Retry-After.
       // Hidden or removed accounts keep their last reading without using their credentials (#3333).
@@ -1453,14 +1455,14 @@ export class UsageService {
         // a forced refresh reads a rate-limited one again too: its backoff keeps the endpoint unasked, and a status-line
         // reading that came meanwhile can stand in
         (hidden || (now < entry.nextAt && !forced));
-      if (current) return [source, { usage: entry.usage, readAt: entry.readAt, nextAt: entry.nextAt, holder: entry.holder }];
+      if (current) return [source, { usage: entry.usage, readAt: entry.readAt, nextAt: entry.nextAt, holder: entry.holder, askedAt: entry.askedAt }];
       if (hidden && entry?.usage) this.dropped.set(entry.usage.key, { provider: provider.id, holder: entry.holder, account: entry.usage.account });
       // a hidden account with no reading kept (evicted, or never read by this server) is listed unread, never read
       const as = hiddenAs(signIn);
       if (as !== undefined) {
-        return [source, { usage: { id: provider.id, key: as.key, account: as.account, plan: "locked" in signIn ? null : signIn.plan ?? null, windows: [], problem: null, checked_at: null }, readAt: now, nextAt: now, holder: holderOf(signIn) }];
+        return [source, { usage: { id: provider.id, key: as.key, account: as.account, plan: "locked" in signIn ? null : signIn.plan ?? null, windows: [], problem: null, checked_at: null }, readAt: now, nextAt: now, holder: holderOf(signIn), askedAt: null }];
       }
-      return [source, await this.read(provider, signIn, hidden ? null : entry?.usage ?? null, now)];
+      return [source, await this.read(provider, signIn, hidden ? null : entry?.usage ?? null, hidden ? null : entry?.askedAt ?? null, now)];
     }));
     // only a search that completed drops the places it did not find, a hidden one kept past invalidate (no search) included;
     // a hidden account it did not name (gone, or a lookup that failed) keeps one reading for one such search, so it is not
@@ -1489,8 +1491,7 @@ export class UsageService {
     return usages(sources);
   }
 
-  private async read(provider: UsageProvider, found: Found, previous: ProviderUsage | null, now: number): Promise<Entry> {
-    const settle = (usage: ProviderUsage | null, wait: number): Entry => ({ usage, readAt: now, nextAt: now + wait, holder: holderOf(found) });
+  private async read(provider: UsageProvider, found: Found, previous: ProviderUsage | null, previousAskedAt: number | null, now: number): Promise<Entry> {
     // an account is known by its id; one the sign-in does not name, by where it was found (hashed:
     // the key reaches the browser, the credential's path must not)
     const identity = (account: Account | null | undefined) => {
@@ -1500,6 +1501,8 @@ export class UsageService {
     // the last numbers stay, named by what went wrong since - unless the place now holds another
     // account's sign-in: those numbers and that name were someone else's
     const kept = previous !== null && (!found.account || previous.key === identity(null).key) ? previous : null;
+    let askedAt = kept ? previousAskedAt : null;
+    const settle = (usage: ProviderUsage | null, wait: number): Entry => ({ usage, readAt: now, nextAt: now + wait, holder: holderOf(found), askedAt });
     const keep = (problem: UsageProblem, plan: string | null, wait: number, more: Pick<ProviderUsage, "failure" | "statusline_offer"> = {}) => settle({
       id: provider.id, ...(kept ? { key: kept.key, account: kept.account } : identity(null)),
       plan: kept?.plan ?? plan, windows: kept?.windows ?? [], ...extras(kept ?? {}), problem, ...more, checked_at: kept?.checked_at ?? null,
@@ -1507,18 +1510,20 @@ export class UsageService {
     if ("locked" in found) return keep("locked", null, FRESH_MS);
     const signIn: SignIn = found;
     const local = provider.readLocal?.(this.ctx, signIn) ?? null;
-    const fromLocal = (reading: Reading): Entry => {
-      const resets = reading.windows.flatMap((window) => window.resets_at === null ? [] : [Date.parse(window.resets_at)]);
-      // what the status line is not handed (a model's own week, extra usage) stays as the endpoint last gave it
+    const fromLocal = (reading: Reading, endpoint: { windows: readonly UsageWindow[]; resets?: UsageResets | null; credits?: UsageCredits | null } | null = kept): Entry => {
+      // what the status line is not handed (a model's own week, extra usage) is as the endpoint last gave it
       const named = (window: UsageWindow) => reading.windows.some((own) => own.kind === window.kind && own.scope === window.scope);
-      const others = (kept?.windows ?? []).filter((window) => !named(window) && (window.resets_at === null || Date.parse(window.resets_at) > now));
-      // read again by the time the reading is too old to count (STALE_MS) or a window it names starts over
+      const others = (endpoint?.windows ?? []).filter((window) => !named(window) && (window.resets_at === null || Date.parse(window.resets_at) > now));
+      const resets = [...reading.windows, ...others].flatMap((window) => window.resets_at === null ? [] : [Date.parse(window.resets_at)]);
+      // read again by the time the reading is too old to count (STALE_MS) or a window it shows starts over
       const until = [...resets, (reading.checkedAt ?? now) + STALE_MS].map((at) => at - now);
       return settle({ id: provider.id, ...identity(reading.account), plan: reading.plan ?? signIn.plan ?? null,
-        windows: [...reading.windows, ...others], ...extras(kept ?? {}), problem: null, checked_at: new Date(reading.checkedAt ?? now).toISOString() }, Math.min(FRESH_MS, ...until));
+        windows: [...reading.windows, ...others], ...extras(endpoint ?? {}), problem: null, checked_at: new Date(reading.checkedAt ?? now).toISOString() }, Math.min(FRESH_MS, ...until));
     };
-    // the numbers Claude's own status line drew, while they still describe every window: no request, no token
-    if (local?.current) return fromLocal(local);
+    // the numbers Claude's own status line drew, while they still describe every window, win; the endpoint is asked beside
+    // them only once per STALE_MS, for what the line is not handed (a model's own week, extra usage: #4908)
+    const current = local?.current ? local : null;
+    if (current && askedAt !== null && now - askedAt < STALE_MS) return fromLocal(current);
     // Claude's endpoint could not give the limits but its status line can stand in: offered only where it can be turned
     // on (never on Windows, never once it is on), and only for the sign-in in the config directory the switch changes:
     // another one's status line is not wrapped
@@ -1527,7 +1532,7 @@ export class UsageService {
       const statusline = this.statusline();
       return statusline.supported && !statusline.installed && this.switchesConfigOf(found.source) ? { statusline_offer: true } : {};
     };
-    const fallback = local !== null && !(kept?.checked_at && Date.parse(kept.checked_at) > (local.checkedAt ?? now)) ? local : null;
+    const fallback = current ?? (local !== null && !(kept?.checked_at && Date.parse(kept.checked_at) > (local.checkedAt ?? now)) ? local : null);
     if (signIn.expiresAt !== null && signIn.expiresAt <= now) return fallback ? fromLocal(fallback) : keep("expired", signIn.plan ?? null, RETRY_MS);
     const backoff = found.account ? `${provider.id}:${found.account.id}` : `${provider.id}#${createHash("sha256").update(signIn.token).digest("hex")}`;
     const until = this.backoffs.get(backoff);
@@ -1535,8 +1540,10 @@ export class UsageService {
     // backoff still keeps the endpoint unasked
     if (until !== undefined && now < until) return fallback ? fromLocal(fallback) : keep("rate_limited", signIn.plan ?? null, Math.min(until - now, FRESH_MS), offer());
     this.backoffs.delete(backoff);
+    askedAt = now;
     try {
       const reading = await provider.read(this.ctx, signIn);
+      if (current) return fromLocal(current, reading ?? kept);
       if (reading === null) return settle(null, FRESH_MS);
       return settle({
         id: provider.id, ...identity(reading.account), plan: reading.plan ?? signIn.plan ?? null, windows: reading.windows, ...extras(reading), problem: null, checked_at: new Date(now).toISOString(),
