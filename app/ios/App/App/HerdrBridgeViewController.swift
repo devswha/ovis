@@ -1292,7 +1292,8 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     }
 
     /// `reason` nil keeps the reason an SSH PC's tunnel gave (its 503 says less); `kind` "offline" when the system says
-    /// this phone has no internet (Home.failureKind), which error.html says instead of blaming the PC.
+    /// this phone has no internet, which error.html says instead of blaming the PC, "refused" when nothing listens at
+    /// the address (Home.failureKind).
     private func showFailure(in webView: WKWebView, reason: String?, kind: String? = nil) {
         // the hosted screen's failures went to Home first (homeSignal): never the error page of a PC over it
         guard !replaced, phase == nil || phase == .pc, let local = bridge?.config.localURL else { return }

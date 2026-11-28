@@ -213,7 +213,9 @@ What is there:
   on Android, so `build-web.ts` puts `shell.css` and the sheep into it. When the phone's own connection failed, as its
   platform says (Android's WebView error `net::ERR_INTERNET_DISCONNECTED`, the iPhone's `NSURLErrorNotConnectedToInternet`,
   passed as the failure's kind `offline`, `Home.failureKind`), it says "Can't connect to the internet" with Try again and
-  Change PC, and nothing about the PC. A raw `net::ERR_…` is never shown: the common ones are said in words, any other
+  Change PC, and nothing about the PC. A refusal (Android's `net::ERR_CONNECTION_REFUSED`, the iPhone's
+  `NSURLErrorCannotConnectToHost`, passed as the kind `refused`) adds that nothing listens there and Ovis has to run on
+  the PC. A raw `net::ERR_…` is never shown: the common ones are said in words, any other
   as "could not be opened". A failure of the hosted app itself (the current PC is its origin, `app` in the page's state)
   is "Can't reach Ovis", never "this PC". Every page sets its `theme-color` to its own
   colour, light or dark (`barsFor` in `shell.js`, copied into `error.html`), which both apps' bars follow; a PC still

@@ -649,6 +649,20 @@ public class PCStoreTest {
     }
 
     @Test
+    public void theCoverTakesWhatIsLeftOfACheckJustDoneButNotADeadlineLeftFromLongAgo() {
+        long full = PCStore.ANSWER_SECONDS * 1000L, now = 1_000_000L;
+        assertEquals(full, PCStore.answerDelay(0, now));
+        assertEquals(12_000L, PCStore.answerDelay(now + 12_000L, now));
+        // a check that took nearly all of its time, or ran out a moment ago, still leaves the page its floor
+        assertEquals(PCStore.PAGE_FLOOR_MS, PCStore.answerDelay(now + 1_000L, now));
+        assertEquals(PCStore.PAGE_FLOOR_MS, PCStore.answerDelay(now - 2_000L, now));
+        assertEquals(PCStore.PAGE_FLOOR_MS, PCStore.answerDelay(now - full, now));
+        // a check that ended while the app was away, its opening never shown: a later opening gets the whole time
+        assertEquals(full, PCStore.answerDelay(now - full - 1, now));
+        assertEquals(full, PCStore.answerDelay(now - 10 * 60_000L, now));
+    }
+
+    @Test
     public void anotherPortOnThePcsHostIsAnotherOrigin() {
         String pc = "https://pc.example.ts.net";
         assertTrue(PCStore.sameOrigin(pc + "/files?x=1#top", pc));

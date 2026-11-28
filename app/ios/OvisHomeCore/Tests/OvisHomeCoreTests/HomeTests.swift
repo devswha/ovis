@@ -6,10 +6,15 @@ final class HomeTests: XCTestCase {
 
     func testTheErrorPageHearsThatThisPhoneIsOfflineOnlyFromTheSystem() {
         XCTAssertEqual(Home.failureKind(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet), "offline")
-        for code in [NSURLErrorCannotFindHost, NSURLErrorTimedOut, NSURLErrorCannotConnectToHost, NSURLErrorNetworkConnectionLost, NSURLErrorSecureConnectionFailed] {
+        for code in [NSURLErrorCannotFindHost, NSURLErrorTimedOut, NSURLErrorNetworkConnectionLost, NSURLErrorSecureConnectionFailed] {
             XCTAssertNil(Home.failureKind(domain: NSURLErrorDomain, code: code), "\(code)")
         }
         XCTAssertNil(Home.failureKind(domain: "WebKitErrorDomain", code: NSURLErrorNotConnectedToInternet))
+    }
+
+    func testTheErrorPageHearsThatNothingListensAtTheAddress() {
+        XCTAssertEqual(Home.failureKind(domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost), "refused")
+        XCTAssertNil(Home.failureKind(domain: "WebKitErrorDomain", code: NSURLErrorCannotConnectToHost))
     }
 
     func testASavedPcOpensDirectlyWhateverElseHolds() {

@@ -997,8 +997,7 @@ public class MainActivity extends BridgeActivity {
     private static long answerDelay() {
         long by = PCStore.answerBy;
         PCStore.answerBy = 0;
-        if (by == 0) return PCStore.ANSWER_SECONDS * 1000L;
-        return Math.max(PCStore.PAGE_FLOOR_MS, by - android.os.SystemClock.elapsedRealtime());
+        return PCStore.answerDelay(by, android.os.SystemClock.elapsedRealtime());
     }
 
     private void hideOpening() {

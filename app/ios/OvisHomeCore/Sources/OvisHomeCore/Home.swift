@@ -310,9 +310,15 @@ public enum Home {
 
     /// The kind of a page's failure the error page tells apart by its words: "offline" when the system says this phone is
     /// not connected to the internet (NSURLErrorNotConnectedToInternet), so the page says so instead of blaming the PC;
-    /// nil for any other, which the error page explains from the address.
+    /// "refused" when nothing listens at the address (NSURLErrorCannotConnectToHost), which the page explains as it
+    /// does Chromium's ERR_CONNECTION_REFUSED; nil for any other, which the error page explains from the address.
     public static func failureKind(domain: String, code: Int) -> String? {
-        domain == NSURLErrorDomain && code == NSURLErrorNotConnectedToInternet ? "offline" : nil
+        guard domain == NSURLErrorDomain else { return nil }
+        switch code {
+        case NSURLErrorNotConnectedToInternet: return "offline"
+        case NSURLErrorCannotConnectToHost: return "refused"
+        default: return nil
+        }
     }
 
     /// Whether `text` is what the word "demo" becomes in the hosted screen's address field (`https://demo/`): the
