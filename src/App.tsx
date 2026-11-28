@@ -112,6 +112,7 @@ import { FileViewer } from "./components/FileViewer.tsx";
 import { WebPanel } from "./components/WebPanel.tsx";
 import { BrowserSidePanel } from "./components/BrowserSidePanel.tsx";
 import { useBrowserLinkTabs, useDesktopBrowser, useShownBrowserTab } from "./lib/desktopBrowser.ts";
+import { attachPickedElement } from "./lib/browserPick.ts";
 import { BrowserPanel } from "./components/BrowserPanel.tsx";
 import { BrowserTabsGroup } from "./components/BrowserTabsGroup.tsx";
 import { WebPanelContext } from "./lib/webPanel.ts";
@@ -1416,6 +1417,13 @@ export function App() {
             onOpen={openBrowserTab} />
         </MachineContext.Provider>}
         {browserShown && <BrowserPanel tab={shownBrowserTab} covered={dialogCover || webDialogCover} onOpened={setOpeningTab} onClose={() => setBrowserTab(null)}
+          canPick={selectedPane !== null && auth?.role !== "watch"}
+          onPicked={(picked) => {
+            if (selectedPane === null) return false;
+            const attached = attachPickedElement(paneStorageId(selectedMachineId, selectedPane.pane_id), picked);
+            if (attached && view !== "chat") setView("chat", null);
+            return attached;
+          }}
           panelStart={<FilePanelResizer width={filePanelWidth} onResize={setFilePanelWidth} />} />}
       </div>
       </PanePressContext.Provider>

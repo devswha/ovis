@@ -47,6 +47,19 @@ export interface BrowserBounds {
   height: number;
 }
 
+export interface PickedBrowserElement {
+  address: string;
+  title: string;
+  tag: string;
+  role: string;
+  id: string;
+  classes: string[];
+  name: string;
+  text: string;
+  rect: BrowserBounds;
+  imageDataUrl: string | null;
+}
+
 interface Bridge {
   current(): Promise<unknown>;
   onChange(listener: (browser: unknown) => void): () => void;
@@ -59,6 +72,8 @@ interface Bridge {
   navigate?(id: number, url: string): Promise<boolean>;
   go?(id: number, step: "back" | "forward" | "reload" | "stop"): void;
   hold?(id: number, held: boolean): void;
+  pick?(id: number): Promise<unknown>;
+  cancelPick?(id?: number): void;
   onOpened?(listener: (id: unknown) => void): () => void;
   showable?(showable: boolean): void;
 }
@@ -210,6 +225,47 @@ export function goBrowserTab(id: number, step: "back" | "forward" | "reload" | "
 /** a person takes an agent's tab (the agent waits) or hands it back */
 export function holdBrowserTab(id: number, held: boolean): void {
   bridge()?.hold?.(id, held);
+}
+
+function pickedElement(value: unknown): PickedBrowserElement | null {
+  const row = record(value);
+  const rectRow = record(row?.["rect"]);
+  if (!row || !rectRow || typeof row["address"] !== "string" || typeof row["tag"] !== "string" || row["tag"] === "") return null;
+  const x = rectRow["x"], y = rectRow["y"], width = rectRow["width"], height = rectRow["height"];
+  if (typeof x !== "number" || typeof y !== "number" || typeof width !== "number" || typeof height !== "number") return null;
+  if (![x, y, width, height].every((n) => Number.isFinite(n) && n >= 0)) return null;
+  const rawClasses = row["classes"];
+  const classes = Array.isArray(rawClasses) ? rawClasses.filter((item): item is string => typeof item === "string" && item !== "") : [];
+  const rawImage = row["imageDataUrl"];
+  const imageDataUrl = typeof rawImage === "string" && rawImage.startsWith("data:image/png;base64,") ? rawImage : null;
+  return {
+    address: row["address"],
+    title: typeof row["title"] === "string" ? row["title"] : "",
+    tag: row["tag"],
+    role: typeof row["role"] === "string" ? row["role"] : "",
+    id: typeof row["id"] === "string" ? row["id"] : "",
+    classes,
+    name: typeof row["name"] === "string" ? row["name"] : "",
+    text: typeof row["text"] === "string" ? row["text"] : "",
+    rect: { x, y, width, height },
+    imageDataUrl,
+  };
+}
+
+/** Whether the desktop bridge supports one-shot element picking. */
+export function canPickBrowserElement(): boolean {
+  return typeof bridge()?.pick === "function";
+}
+
+/** Starts a one-shot element pick on the shown tab `id`; null when cancelled or unavailable. */
+export async function pickBrowserElement(id: number): Promise<PickedBrowserElement | null> {
+  const pick = bridge()?.pick;
+  if (typeof pick !== "function") return null;
+  return pickedElement(await pick(id).catch(() => null));
+}
+
+export function cancelBrowserPick(id?: number): void {
+  bridge()?.cancelPick?.(id);
 }
 
 /**

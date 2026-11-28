@@ -3557,6 +3557,19 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Empty sections say what will show there in one dim line. The panel never polls the browser:
   it follows main's change events.
 
+### Browser element picker (`.browser-panel-pick`)
+- In the desktop app's built-in browser panel (`BrowserPanel.tsx`), a single **Pick element**
+  button (`MousePointerClick`, right beside the address input) lets the person click an element
+  on a page they control (`mine` tabs, or `agent` tabs while held) and attach a cropped PNG
+  screenshot plus safe element metadata (allowed address without query, tag/id/classes selector,
+  role, accessible label, dimensions and visible text) to the chat composer draft without sending.
+- Follows Orca's Design Mode and T3 Code's preview Annotate flow, narrowed to Ovis's security
+  boundary: tabs still carry no preload and no app bridge; picking injects a one-shot script into
+  an isolated world (`PICK_WORLD`, inline element styles so strict page CSP holds) only while
+  active, skips `<input>`, `<textarea>`, `<select>` and `[contenteditable]` values (passwords
+  included), removes the overlay before `capturePage`, and cleans up on Escape, Cancel, tab
+  switch, dialog cover or navigation. No new button is added to the composer.
+
 ### Header context and connection
 - A selected pane shows agent mark + title (`--fs-md`), then on the same line the crumb
   PC › workspace › folder (`--fs-xs`, `--text-dim`); with one PC registered the PC is left out, as
