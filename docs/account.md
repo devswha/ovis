@@ -364,7 +364,7 @@ was made for.
 The answers carry today's fields and two more:
 
 ```json
-POST /api/relay/code  -> { "code": "ABCDE-FGHJK", "expires_at": "…", "server_id": "…", "expect_account": "acct_1", "pairing": { "id": "<32 hex>" } }
+POST /api/relay/code  -> { "code": "ABCDE-FGHJK", "expires_at": "…", "server_id": "…", "app": "https://app.ovis.sh", "relay": "wss://relay.ovis.sh", "expect_account": "acct_1", "pairing": { "id": "<32 hex>" } }
 POST /api/relay/offer -> { "url": "https://app.ovis.sh/s/<server_id>/#offer=…", "expires_at": "…", "expect_account": "acct_1", "pairing": { "id": "<32 hex>" } }
 ```
 

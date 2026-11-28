@@ -13,7 +13,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Plugin } from "vite";
-import { REGIONAL_APPS } from "../shared/relay-regions.ts";
+import { relayEndpoint } from "../shared/relay-offer.ts";
+import { GLOBAL_RELAY, REGIONAL_APPS, REGIONAL_RELAYS } from "../shared/relay-regions.ts";
 import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE, IMMUTABLE_CACHE, pagePolicy, REVALIDATE, shellContentSecurityPolicy } from "../shared/web-policy.ts";
 
 export const SHELL_MODE = "shell";
@@ -37,6 +38,22 @@ export function accountMetas(env: Record<string, string | undefined>): string[] 
 }
 
 /**
+ * The relay meta the shell is built with: `ovis-relay` from OVIS_RELAY_URL, the self-hosted relay a
+ * PC that names this copy as its app (OVIS_RELAY_APP_URL) holds typed codes on; none without it or
+ * for one of Ovis's relays, whose PCs hold codes on the global one, where the shell looks without a
+ * meta. A value the PC refuses (relayEndpoint) fails the build.
+ */
+export function relayMetas(env: Record<string, string | undefined>): string[] {
+  const named = env["OVIS_RELAY_URL"];
+  if (named === undefined) return [];
+  let origin: string;
+  try { origin = relayEndpoint(named, "wss:"); } catch (error) {
+    throw new Error(`OVIS_RELAY_URL must be a wss origin such as wss://relay.example.com, not ${JSON.stringify(named)}`, { cause: error });
+  }
+  return origin === GLOBAL_RELAY || REGIONAL_RELAYS.includes(origin) ? [] : [`<meta name="ovis-relay" content="${origin}" />`];
+}
+
+/**
  * index.html as the shell: the meta that names the mode, and the manifest named relative to the
  * page, so a PC's page at `/s/<id>/` installs from `/s/<id>/manifest.webmanifest` (its own scope)
  * and the front page from `/manifest.webmanifest`.
@@ -48,7 +65,7 @@ export function shellIndexHtml(html: string, env: Record<string, string | undefi
   const head = /<head>\n?/.exec(linked);
   if (head === null) throw new Error("index.html must hold a <head>");
   const at = head.index + head[0].length;
-  return `${linked.slice(0, at)}${[SHELL_META, ...accountMetas(env)].map((meta) => `    ${meta}\n`).join("")}${linked.slice(at)}`;
+  return `${linked.slice(0, at)}${[SHELL_META, ...accountMetas(env), ...relayMetas(env)].map((meta) => `    ${meta}\n`).join("")}${linked.slice(at)}`;
 }
 
 /**
