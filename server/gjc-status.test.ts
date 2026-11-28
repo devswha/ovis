@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it, spyOn } from "bun:test";
 import * as darwinProcess from "./darwin-process.ts";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -253,6 +253,22 @@ describe("a GJC pane's status in place of herdr's provider-child status", () => 
     gjc.poll();
     expect(told.at(-1)).toEqual(["gjc", "working", 0, true]);
     expect(gjc.backgroundOf("gjc")).toBe(0);
+  });
+
+  it("holds a turn gjc 0.18.12 ended on its background task job until the job's delivery (recorded)", async () => {
+    // a real gjc 0.18.12 session's records: prompt, task call, task result naming its job, rest, async-result, answer
+    const recorded = readFileSync(join(import.meta.dir, "fixtures", "gjc-0.18.12-background-task.jsonl"), "utf8").trim().split("\n");
+    const { gjc, told, append } = setup(lines(recorded[0]!));
+    await gjc.refresh(herdr().panes);
+    append(...recorded.slice(1, 4));
+    gjc.poll();
+    expect(told.at(-1)).toEqual(["gjc", "idle", 1, true]);
+    append(recorded[4]!);
+    gjc.poll();
+    expect(told.at(-1)).toEqual(["gjc", "working", 0, true]);
+    append(recorded[5]!);
+    gjc.poll();
+    expect(told.at(-1)).toEqual(["gjc", "idle", 0, true]);
   });
 
   it("ignores background jobs from before the process holding the session", async () => {
