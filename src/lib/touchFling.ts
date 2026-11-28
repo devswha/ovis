@@ -24,12 +24,29 @@ export interface VelocityTracker {
 export function createVelocityTracker(): VelocityTracker {
   let samples: Array<{ time: number; position: number }> = [];
   let reach = 0;
+  let heading = 0;
+  let pivot: { time: number; position: number } | undefined;
   return {
-    reset() { samples = []; reach = 0; },
+    reset() { samples = []; reach = 0; heading = 0; pivot = undefined; },
     add(time, position) {
       if (!Number.isFinite(time) || !Number.isFinite(position)) return;
       reach = Math.max(reach, Math.abs(position));
+      // a finger that turns back past the touch slop flings its new way: the samples before the turn do not count
+      // toward its speed. A smaller slip back, as a finger lifts off the glass, keeps the stroke's way.
+      const last = samples.at(-1);
+      const step = last ? Math.sign(position - last.position) : 0;
+      if (last && step !== 0) {
+        if (heading === 0) heading = step;
+        else if (step === heading) pivot = undefined;
+        else pivot ??= last;
+      }
       samples.push({ time, position });
+      if (pivot && Math.abs(position - pivot.position) >= FLING_SLOP_PX) {
+        const turn = pivot;
+        samples = [turn, ...samples.filter((sample) => sample.time > turn.time)];
+        heading = step;
+        pivot = undefined;
+      }
       while (samples.length > 2 && time - samples[1]!.time > FLING_HORIZON_MS) samples.shift();
     },
     release(time) {
