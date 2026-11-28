@@ -1123,6 +1123,20 @@ describe("the address bar over a phone's sheets: a pane's address goes onto that
     expect(addresses(start).slice(0, 2)).toEqual([address("a"), address("b", "&sidebar=hidden")]);
   });
 
+  it("keeps pane b's address on the drawer's entry once the way back from a jump onto a's entry lands there (#4907)", async () => {
+    const start = await open();
+    await show({ paneId: "b" });
+    await lands(() => fake.tap());
+    sheet(() => {});
+    sheet(() => {});
+    await lands(() => h.go(-2));
+    expect(place.paneId).toBe("b");
+    expect(fake.at()).toBe(start + 2);
+    expect(addresses(start)).toEqual([address("a"), address("b"), address("b")]);
+    await rosterAgain();
+    expect(addresses(start)).toEqual([address("a"), address("b"), address("b")]);
+  });
+
   it("keeps pane a's entry when a jump lands on it from a drawer over pane b, which took the place over on the entry of a dialog opened over a's", async () => {
     const start = await open();
     await lands(() => fake.tap());
