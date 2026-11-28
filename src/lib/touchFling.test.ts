@@ -68,6 +68,17 @@ describe("the finger's speed at the lift", () => {
     expect(tracker.release(t)).toBeCloseTo(-30 / 24, 5);
   });
 
+  test("follows a finger that turned back through a move that went nowhere", () => {
+    const tracker = createVelocityTracker();
+    let t = 0;
+    let position = 0;
+    tracker.add(t, position);
+    for (let n = 0; n < 6; n++) tracker.add(t += 10, position += 20);
+    tracker.add(t += 8, position);
+    for (let n = 0; n < 3; n++) tracker.add(t += 8, position -= 10);
+    expect(tracker.release(t)).toBeCloseTo(-30 / 24, 5);
+  });
+
   test("is none for a slow drag, which ends where the finger does", () => {
     const { tracker, last } = swipe(FLING_MIN_VELOCITY * 0.9, 300);
     expect(tracker.release(last)).toBe(0);

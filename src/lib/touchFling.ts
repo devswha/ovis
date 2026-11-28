@@ -24,15 +24,18 @@ export interface VelocityTracker {
 export function createVelocityTracker(): VelocityTracker {
   let samples: Array<{ time: number; position: number }> = [];
   let reach = 0;
+  let heading = 0;
   return {
-    reset() { samples = []; reach = 0; },
+    reset() { samples = []; reach = 0; heading = 0; },
     add(time, position) {
       if (!Number.isFinite(time) || !Number.isFinite(position)) return;
       reach = Math.max(reach, Math.abs(position));
-      // a finger that turns back flings its new way: the samples before the turn do not count toward its speed
+      // a finger that turns back flings its new way: the samples before the turn do not count toward its speed,
+      // even when a move that went nowhere sits at the turn
       const last = samples.at(-1);
-      const before = samples.at(-2);
-      if (last && before && Math.sign(position - last.position) * Math.sign(last.position - before.position) < 0) samples = [last];
+      const step = last ? Math.sign(position - last.position) : 0;
+      if (last && step !== 0 && heading !== 0 && step !== heading) samples = [last];
+      if (step !== 0) heading = step;
       samples.push({ time, position });
       while (samples.length > 2 && time - samples[1]!.time > FLING_HORIZON_MS) samples.shift();
     },
