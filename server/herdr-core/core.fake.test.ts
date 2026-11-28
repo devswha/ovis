@@ -426,6 +426,23 @@ describe("fake herdr-core: the attach stream", () => {
     await s.until("A's whole paint", () => s.bytes("A").endsWith("prompt$ "));
   });
 
+  it("what a program writes at an attach's own resize goes out behind that attach's reply and first paint", async () => {
+    const core = new FakeHcCore();
+    const hc = new HcConnection(() => core.transport());
+    cleanups.push(() => hc.close());
+    const t = (await hc.call("terminal.run", { argv: ["sh"] })).address;
+    const program = core.program(t);
+    program.onResize = (cols, rows) => program.output(`resized ${cols}x${rows}`);
+    const from = core.log.length;
+    const got: string[] = [];
+    await hc.open("terminal.attach", { terminal: t, cols: 100, rows: 30 }, { onData: (bytes) => { got.push(Buffer.from(bytes).toString("latin1")); }, onClose: () => {} });
+    const order = core.log.slice(from).flatMap((entry) => {
+      if (entry.what === "reply") return entry.method === "terminal.attach" ? ["reply"] : [];
+      return entry.what === "frame" && entry.from === "core" && entry.kind === FRAME_DATA && entry.terminal !== null ? ["bytes"] : [];
+    });
+    expect({ order, got }).toEqual({ order: ["reply", "bytes", "bytes"], got: [`${CAN}\x1b[0m\x1b[?9001l`, "resized 100x30"] });
+  });
+
   it("credit window", async () => {
     const s = scene();
     const t = await s.run();

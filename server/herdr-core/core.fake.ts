@@ -164,7 +164,8 @@ class CallError extends Error {
 const notFound = (terminal: string) => new CallError(-32000, "not_found", `no terminal "${terminal}"`, "see `hc ls --all`");
 const missing = (field: string) => new CallError(-32602, "invalid_params", `missing field \`${field}\``, "see `hc schema`");
 
-interface Viewer { viewer: number; line: Line; stream: Stream; terminal: string; cols: number; rows: number; stamp: number | null; attached: number; observe: boolean }
+/** `staged`: what the program wrote to a viewer whose attach reply has not gone out yet, sent behind its first paint */
+interface Viewer { viewer: number; line: Line; stream: Stream; terminal: string; cols: number; rows: number; stamp: number | null; attached: number; observe: boolean; staged: Uint8Array[] | null }
 interface Held { terminal: Terminal; program: FakeProgram; viewers: Viewer[]; paint: FakePaint; lost: boolean }
 type Out = { bytes: Uint8Array } | { close: Uint8Array };
 
@@ -736,7 +737,10 @@ export class FakeHcCore {
       output: (bytes) => {
         const held = this.terminals.get(address);
         if (!held || held.lost || held.terminal.state !== "live") return;
-        for (const viewer of held.viewers) viewer.stream.push(bytes);
+        for (const viewer of held.viewers) {
+          if (viewer.staged) viewer.staged.push(bytes);
+          else viewer.stream.push(bytes);
+        }
       },
       exit: (code) => {
         const held = this.terminals.get(address);
@@ -754,7 +758,7 @@ export class FakeHcCore {
     if (held.lost) throw new CallError(-32000, "unavailable", `${params.terminal} is lost, waiting for its new shell`, "attach again after `restarted`");
     const stream = line.stream();
     const observe = params.observe === true;
-    const viewer: Viewer = { viewer: this.nextViewer++, line, stream, terminal: params.terminal, cols: params.cols, rows: params.rows, stamp: null, attached: ++this.clock, observe };
+    const viewer: Viewer = { viewer: this.nextViewer++, line, stream, terminal: params.terminal, cols: params.cols, rows: params.rows, stamp: null, attached: ++this.clock, observe, staged: [] };
     stream.viewer = viewer;
     held.viewers.push(viewer);
     // the size this attach sets is in its reply at once; the event that tells of it follows the reply, on either side of the first bytes
@@ -777,6 +781,9 @@ export class FakeHcCore {
         }
         stream.push(Buffer.from(split ? paint : paint + after, "latin1"));
         if (split) stream.push(Buffer.from(after, "latin1"));
+        // what the program wrote at this attach's own resize (it comes in `settle` above, before the reply)
+        for (const bytes of viewer.staged ?? []) stream.push(bytes);
+        viewer.staged = null;
         if (!ahead) {
           this.release(line);
           told?.();
