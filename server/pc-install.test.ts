@@ -417,7 +417,7 @@ describe("installing Ovis on a PC over SSH", () => {
     expect(two.error).toContain("starting it again as it was failed: it did not start within");
     const other = fixture({ descriptors: [descriptor(4242)], restoreFails: true, otherRegistersOnRestore: true, installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
     const three = await other.settled(other.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
-    expect(three.error).toContain("starting it again as it was failed: it did not start within");
+    expect(three.error).toContain("another already runs in its place");
   });
 
   it("fails closed on a registration whose identity cannot be told: it counts as a server there", async () => {
@@ -440,6 +440,43 @@ describe("installing Ovis on a PC over SSH", () => {
     const pc = fixture({ descriptors: [descriptor(4242)], installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" }, onProbe: () => pc.installer.stop() });
     await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
     expect(pc.commands.some((command) => command.includes('[ -L "$d/exe" ]'))).toBe(false);
+  });
+
+  it("stops the server it started again, and says another runs, once another registers on the socket while it starts", async () => {
+    // the socket has one registration (server/bridge.ts): a server started on another port meanwhile holds it, and the one
+    // started again would serve beside it unregistered
+    const pc: ReturnType<typeof fixture> = fixture({ descriptors: [descriptor(4242)], restoreFails: true, onLaunch: () => { pc.registerNew(); pc.alive.add(4243); }, installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(job.error).toContain("another already runs in its place");
+    expect([pc.alive.has(5555), pc.alive.has(4243)]).toEqual([true, false]);
+  });
+
+  it("neither retries nor keeps the restore's SSH connection once this app stops", async () => {
+    const closed = new Set<unknown>();
+    const watch = () => {
+      const run = SshConnection.prototype.run;
+      SshConnection.prototype.close = function (this: SshConnection) { closed.add(this); };
+      SshConnection.prototype.run = async function (this: SshConnection, ...args: Parameters<SshConnection["run"]>) { if (closed.has(this)) throw new Error("SSH connection closed"); return run.apply(this, args); };
+    };
+    // its first connection still starting, failing once this app stopped
+    const pc = fixture({ descriptors: [descriptor(4242)], installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
+    watch();
+    let starts = 0; let pending: unknown;
+    const gate = Promise.withResolvers<void>(), restoring = Promise.withResolvers<void>();
+    SshConnection.prototype.start = async function (this: SshConnection) { if (++starts === 2) { pending = this; restoring.resolve(); await gate.promise; } };
+    const job = pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } });
+    await restoring.promise;
+    pc.installer.stop();
+    expect(closed.has(pending)).toBe(true);
+    gate.reject(new Error("Connection cancelled"));
+    await pc.settled(job);
+    expect(starts).toBe(2);
+    // or waiting for the server it started to register
+    let stoppedAt = 0;
+    const waiting: ReturnType<typeof fixture> = fixture({ descriptors: [descriptor(4242)], restoreFails: true, onLaunch: () => { waiting.alive.add(4243); queueMicrotask(() => { waiting.installer.stop(); stoppedAt = waiting.commands.length; }); }, installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
+    watch();
+    await waiting.settled(waiting.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(waiting.commands.length - stoppedAt).toBeLessThanOrEqual(1);
   });
 
   it("takes a live registration whose birth cannot be read now for a server there, never as gone", async () => {

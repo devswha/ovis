@@ -254,7 +254,9 @@ export class PcInstaller {
     this.options.onChange?.(state.public);
   }
   private stopping = false;
-  stop(): void { this.stopping = true; for (const id of this.jobs.keys()) this.cancel(id); }
+  /** startAgain's own connections, which no job holds: closed with this app, so none outlives its teardown */
+  private recovering = new Set<SshConnection>();
+  stop(): void { this.stopping = true; for (const id of this.jobs.keys()) this.cancel(id); for (const ssh of this.recovering) ssh.close(); }
 
   /**
    * After an install that failed or was cancelled once its server was copied: starts that server again as captureServer
@@ -274,7 +276,8 @@ export class PcInstaller {
     try {
       for (let tries = 0; ; tries++) {
         ssh = new SshConnection(request.target, this.options.sshDir, request.machine_id ? join(this.options.sshDir, request.machine_id) : undefined);
-        try { await ssh.start(); break; } catch (error) { ssh.close(); ssh = undefined; if (tries >= 1) throw error; }
+        this.recovering.add(ssh);
+        try { await ssh.start(); break; } catch (error) { ssh.close(); this.recovering.delete(ssh); ssh = undefined; if (tries >= 1 || this.stopping) throw error; }
       }
       const at = ssh!;
       const forgotten = async (said: string) => { await at.run(forgetServer(saved)).catch(() => {}); return said; };
@@ -309,19 +312,22 @@ export class PcInstaller {
       if (launched === "taken") return "replaced";
       // started: once the very process it started (its pid and its birth, as the launcher told them) registers and still
       // runs, never another's, nor one that took its pid after it ended
-      const [pidText, launchedBirth] = launched.split(" ");
+      const [pidText, launchedBirth = ""] = launched.split(" ");
       const pid = Number(pidText);
-      const started = async () => Number.isSafeInteger(pid) && pid > 0 && !!launchedBirth
-        && (await serving()).some((d) => d.pid === pid && !listedBefore.has(d.token) && (parseBirth(d.birth)?.value ?? launchedBirth) === launchedBirth)
-        && (await at.run(`${bornAs(pid, { platform: "linux", value: launchedBirth })} && echo same || true`)).trim() === "same";
-      for (const until = Date.now() + this.startMs; !(await started());) {
+      const self = bornAs(pid, { platform: "linux", value: launchedBirth });
+      for (const until = Date.now() + this.startMs; ;) {
+        const now = Number.isSafeInteger(pid) && pid > 0 && launchedBirth ? await serving() : [];
+        if (now.some((d) => d.pid === pid && !listedBefore.has(d.token) && (parseBirth(d.birth)?.value ?? launchedBirth) === launchedBirth)
+          && (await at.run(`${self} && echo same || true`)).trim() === "same") return "started";
+        // another server started on the socket meanwhile, on any port (the launcher's probe saw only its own): it holds the
+        // socket's one registration, so the one started here would serve beside it unregistered. Only that very process is stopped
+        if (now.some((d) => d.pid !== pid && !listedBefore.has(d.token))) { await at.run(`${self} && kill -TERM ${pid} 2>/dev/null; true`); return "replaced"; }
         if (Date.now() >= until) return `it did not start within ${Math.round(this.startMs / 1000)} seconds (its output is in ~/.local/state/ovis/restored-server.log there).`;
         await Bun.sleep(this.pollMs);
       }
-      return "started";
     } catch (error) {
       return `${(error instanceof Error ? error.message : String(error)).trim().split("\n").at(-1)?.slice(0, 300) ?? "no answer"}.`;
-    } finally { ssh?.close(); }
+    } finally { if (ssh) { this.recovering.delete(ssh); ssh.close(); } }
   }
   private async run(state: State, request: { target: SshTarget; name?: string; machine_id?: string; plan?: InstallPlan; revision?: string }): Promise<void> {
     const { public: job, abort } = state;
