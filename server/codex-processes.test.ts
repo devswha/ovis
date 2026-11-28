@@ -3870,6 +3870,37 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
     expect(await resolve()).toBeNull();
   });
 
+  heldIt("binds the short answer of the pane's own loaded thread in a folder of more threads than are read (#1478)", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", asked, "ok"));
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.query("UPDATE threads SET updated_at = 1000 WHERE id = ?").run(thread);
+    db.close();
+    for (let at = 0; at < 40; at++) {
+      folderThread(`01a0c7a1-56d9-7e20-9f08-${String(at).padStart(12, "0")}`, turn("t", `Unrelated prompt number ${at}`, `unrelated reply number ${at}`), 2 + at);
+    }
+    screen = footed([`› ${asked}`], ["• ok"]);
+    // no Codex holds it: a thread the 32 newest leave out could be the one shown
+    expect(await resolve()).toBeNull();
+    await loaded(thread);
+    expect(await resolve()).toBe(path);
+  });
+
+  it("binds a short answer beside a thread whose read a long tool output cut above its last prompt (#1478)", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", asked, "ok"));
+    const [prompt, item, reply, finished] = turn("u1", "Summarize the build log.", "The build passed.");
+    const output = { type: "response_item", payload: { type: "function_call_output", call_id: "c1", output: "x".repeat(1536 * 1024) } };
+    const cut = folderThread(otherThread, [prompt!, item!, output, reply!, finished!], 100);
+    expect(statSync(cut).size).toBeGreaterThan(1024 * 1024);
+    screen = footed([`› ${asked}`], ["• ok"]);
+    expect(await resolve()).toBe(path);
+    // the same read beside a thread that was asked the prompt shown still leaves the terminal
+    const same = turn("u1", asked, "Something else.");
+    writeRollout(cut, otherThread, [...same.slice(0, 2), output, ...same.slice(2)]);
+    expect(await resolve()).toBeNull();
+  });
+
   it("takes no short answer while a thread of the folder has no rollout to read (the pane's own, gone)", async () => {
     foreground = live;
     rmSync(path);

@@ -1382,7 +1382,7 @@ interface Told { any: boolean; footerEnded: boolean; users: string[]; lastAnswer
 interface ReadFacts {
   turn?: { open: boolean | null };
   ended?: { answer: string | null };
-  last?: { turn: { asked: string | null; answer: string } | null };
+  last?: { turn: { asked: string | null; answer: string; turn: string } | null };
   finished?: string[];
   asked?: string[];
   unfinished?: boolean;
@@ -1412,7 +1412,7 @@ function factsOf(candidate: { path: string; text: string }): ReadFacts {
 type Candidate = { path: string; text: string };
 const turnOf = (candidate: Candidate): boolean | null => (factsOf(candidate).turn ??= { open: turnUnderWay(candidate.text) }).open;
 const endedOn = (candidate: Candidate): string | null => (factsOf(candidate).ended ??= { answer: lastFinishedAnswer(candidate.text) }).answer;
-const lastTurnOf = (candidate: Candidate): { asked: string | null; answer: string } | null => (factsOf(candidate).last ??= { turn: lastFinishedTurn(candidate.text) }).turn;
+const lastTurnOf = (candidate: Candidate): { asked: string | null; answer: string; turn: string } | null => (factsOf(candidate).last ??= { turn: lastFinishedTurn(candidate.text) }).turn;
 const finishedOf = (candidate: Candidate): string[] => factsOf(candidate).finished ??= finishedAnswerTexts(candidate.text);
 const askedOf = (candidate: Candidate): string[] => factsOf(candidate).asked ??= askedPrompts(candidate.text);
 const unfinishedOf = (candidate: Candidate): boolean => factsOf(candidate).unfinished ??= endsOnUnfinishedAnswer(candidate.text);
@@ -1593,9 +1593,9 @@ function endsOnUnfinishedAnswer(rollout: string): boolean {
   return open;
 }
 
-function lastFinishedTurn(rollout: string): { asked: string | null; answer: string } | null {
+function lastFinishedTurn(rollout: string): { asked: string | null; answer: string; turn: string } | null {
   const asked = new Map<string, string>();
-  let last: { asked: string | null; answer: string } | null = null;
+  let last: { asked: string | null; answer: string; turn: string } | null = null;
   for (const line of rollout.split("\n")) {
     if (!line.includes('"item_completed"') && !line.includes('"task_complete"')) continue;
     try {
@@ -1606,7 +1606,7 @@ function lastFinishedTurn(rollout: string): { asked: string | null; answer: stri
       if (payload["type"] === "item_completed" && item?.type === "UserMessage" && Array.isArray(item.content)) {
         asked.set(turn, (asked.get(turn) ?? "") + item.content.map((part: { text?: unknown }) => typeof part?.text === "string" ? part.text : "").join(""));
       } else if (payload["type"] === "task_complete") {
-        last = typeof payload["last_agent_message"] === "string" ? { asked: asked.get(turn) ?? null, answer: payload["last_agent_message"] } : null;
+        last = typeof payload["last_agent_message"] === "string" ? { asked: asked.get(turn) ?? null, answer: payload["last_agent_message"], turn } : null;
       }
     } catch {}
   }
@@ -3415,14 +3415,14 @@ const lookupAnswers = new Map<string, { weighed: string; found: unknown }>();
  * one missing): the conversation shown may then be none of the candidates.
  */
 async function conversationsBeside(asked: string, processes: string, screen: string, candidates: { path: string; text: string }[], resumed: string | null, owners: ReadonlySet<string>, home: string):
-  Promise<{ beside: string[]; weighed: string; known: ReadonlySet<string> } | null> {
+  Promise<{ beside: string[]; weighed: string; known: ReadonlySet<string>; loaded: ReadonlySet<string> } | null> {
   const threads = await loadedRollouts(home);
   if (threads === null) return null;
   const folder = new Set(candidates.map((candidate) => candidate.path));
   const beside = [...new Set([...(resumed === null ? [] : [resumed]), ...threads.keys()])].filter((path) => !folder.has(path));
   const weighed = [asked, processes, `${screen.length}:${Bun.hash(screen)}`, [...owners].sort().join("\n"), ...candidates.map((candidate) => `${candidate.path}\n${stampOf(candidate)}`),
     ...beside.map((path) => { const file = statSync(path); return `${path}\n${file.ino}:${file.size}:${file.mtimeMs}`; })].join("\0");
-  return { beside, weighed, known: new Set([...folder, ...beside]) };
+  return { beside, weighed, known: new Set([...folder, ...beside]), loaded: new Set(threads.keys()) };
 }
 
 function answerKept<Found>(kind: string, paneId: string, weighed: string, weigh: () => Found): Found {
@@ -3451,8 +3451,55 @@ async function stillAsWeighed(paneId: string, processes: string, screen: string,
   } catch { return false; }
 }
 
-async function lastTurnConversation(paneId: string, processes: string, screen: string, candidates: { path: string; text: string }[], resumed: string | null, owners: ReadonlySet<string>, home: string):
-  Promise<{ found: string; known: ReadonlySet<string> } | null> {
+/** How far back from a rollout's end withCutPrompt looks for the prompt its tail read cut off. */
+const CUT_PROMPT_BYTES = 16 * 1024 * 1024;
+const cutPrompts = new Map<string, string>();
+
+/**
+ * The candidate with the records of its last finished turn's prompt put back where its tail read began below them:
+ * one line longer than the read (a tool's output) cuts them off, and a thread whose last prompt went unread counts as
+ * asked what any pane shows (footedTurnOwner), which kept every pane of its folder off its own conversation (#1478).
+ * Only a rollout that continues no other is looked into, and only from that turn's start (its task_started) or the
+ * file's: a prompt read in part could end as the one a pane shows does.
+ */
+function withCutPrompt(candidate: Candidate): Candidate {
+  const last = lastTurnOf(candidate);
+  if (last === null || last.asked !== null) return candidate;
+  try {
+    const file = statSync(candidate.path);
+    if (file.size <= 1024 * 1024 || Object.keys(record(rolloutHeader(candidate.path)?.history_base)).length > 0) return candidate;
+    const key = `${candidate.path}\0${file.ino}:${file.size}:${file.mtimeMs}\0${last.turn}`;
+    let found = cutPrompts.get(key);
+    if (found === undefined) {
+      const start = Math.max(0, file.size - CUT_PROMPT_BYTES);
+      let begun = start === 0;
+      const asked: string[] = [];
+      for (const line of readRange(candidate.path, start, file.size).split("\n")) {
+        if (!line.includes(last.turn)) continue;
+        try {
+          const payload = (JSON.parse(line) as { payload?: Record<string, unknown> }).payload ?? {};
+          if (payload["turn_id"] !== last.turn) continue;
+          if (payload["type"] === "task_started") { begun = true; asked.length = 0; }
+          else if (payload["type"] === "item_completed" && (payload["item"] as { type?: unknown } | undefined)?.type === "UserMessage") asked.push(line);
+        } catch {}
+      }
+      found = begun ? asked.join("\n") : "";
+      cutPrompts.set(key, found);
+      if (cutPrompts.size > 64) cutPrompts.delete(cutPrompts.keys().next().value!);
+    }
+    return found === "" ? candidate : { path: candidate.path, text: `${found}\n${candidate.text}` };
+  } catch (error) {
+    if (error instanceof ConversationReadPending) throw error;
+    return candidate;
+  }
+}
+
+/**
+ * `loadedOnly`: the folder holds more threads than its candidates (the 32 newest). One left out may be the one shown,
+ * unless the thread found is loaded: a TUI shows only a thread Codex holds (loadedRollouts), and every loaded one was weighed.
+ */
+async function lastTurnConversation(paneId: string, processes: string, screen: string, candidates: { path: string; text: string }[], resumed: string | null, owners: ReadonlySet<string>, home: string,
+  loadedOnly = false): Promise<{ found: string; known: ReadonlySet<string> } | null> {
   const view = footedView(screen.slice(Math.max(0, screen.lastIndexOf("OpenAI Codex (v"))));
   if (idleTurnFooter(view.split("\n").map((line) => line.replace(/\r$/, ""))) === null) return null;
   try {
@@ -3462,7 +3509,7 @@ async function lastTurnConversation(paneId: string, processes: string, screen: s
       const wholeReads = new Map<string, boolean>();
       const whole = (path: string): boolean => wholeReads.get(path) ?? (wholeReads.set(path, readWhole(path)), wholeReads.get(path)!);
       const others = store.beside.map((path) => historyTailWithLead(path, 1024 * 1024, home));
-      const every = [...candidates, ...store.beside.map((path, at) => ({ path, text: others[at]!.text }))];
+      const every = [...candidates, ...store.beside.map((path, at) => ({ path, text: others[at]!.text }))].map(withCutPrompt);
       const short = footedShortTranscript(screen, every, owners, whole);
       if (short !== null) return short;
       const leads = () => [...candidates.flatMap((candidate) => whole(candidate.path) ? [] : [{ path: candidate.path, text: historyTailWithLead(candidate.path, 1024 * 1024, home).lead }]),
@@ -3470,7 +3517,7 @@ async function lastTurnConversation(paneId: string, processes: string, screen: s
       const tail = footedTailTranscript(screen, every, owners, whole, leads);
       return tail !== null && every.some((candidate) => candidate.path !== tail && Object.keys(record(rolloutHeader(candidate.path)?.history_base)).length > 0 && !chainComplete(candidate.path, home)) ? null : tail;
     });
-    return found === null ? null : { found, known: store.known };
+    return found === null || (loadedOnly && !store.loaded.has(found)) ? null : { found, known: store.known };
   } catch { return null; }
 }
 
@@ -3608,6 +3655,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   let checkedBound = false;
   const reported = reportedRollout(session, home);
   let listed = false;
+  let crowded = false;
   let titledElsewhere: string | null = null;
   let folderRollouts = new Set<string>();
   let opened: ReturnType<typeof openCodexStore> | undefined;
@@ -3635,6 +3683,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     ).all(...params);
     const rollouts = rows.slice(0, 32).map((row) => codexRolloutPath(row.rollout_path, home));
     listed = rows.length <= 32 && !rollouts.includes(null);
+    crowded = rows.length > 32 && !rollouts.includes(null);
     folderRollouts = new Set(rollouts.filter((path): path is string => path !== null));
     // since Codex 0.157 the shared app-server daemon, not the TUI, holds the rollout open, and a resume
     // through the picker leaves no id on the command line: the title may name a thread of another folder
@@ -3697,9 +3746,9 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     if (boundRollouts.size > 64) boundRollouts.delete(boundRollouts.keys().next().value!);
     return { path: matched, how: "inferred" };
   }
-  if (screen !== null && listed && candidates.length === paths.length && !agent.nestedTerminal && !agent.unlabelled && (resumed === null || resumedPath !== null)
+  if (screen !== null && (listed || crowded) && candidates.length === paths.length && !agent.nestedTerminal && !agent.unlabelled && (resumed === null || resumedPath !== null)
     && !codexProcesses.some(({ argv = [] }) => argv.some((arg) => arg === "--remote" || arg.startsWith("--remote=")))) {
-    const tied = await lastTurnConversation(paneId, processes, screen.text, candidates, resumedPath, folderRollouts, home);
+    const tied = await lastTurnConversation(paneId, processes, screen.text, candidates, resumedPath, folderRollouts, home, crowded);
     if (tied !== null) {
       if (!await stillAsWeighed(paneId, processes, screen.text, home, tied.known)) return null;
       if (boundHere !== undefined && boundHere.path !== tied.found) boundRollouts.delete(paneId);
