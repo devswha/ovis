@@ -362,7 +362,11 @@ export async function claudeBoxReads(paneId: string): Promise<[string, string | 
 async function refuseClaudeDialog(paneId: string, screen: string): Promise<void> {
   if (claudeInputBoxContent(screen) !== null) {
     const rows = (await paneScrollInfo(paneId).catch(() => null))?.viewport_rows;
-    if (rows === undefined || (claudeBoxRows(screen) ?? 0) <= rows) return;
+    // claudeBoxRows counts to the last row with text: the blank rows under it are on the live screen too
+    const lines = stripVTControlCharacters(screen).split(/\r?\n/);
+    let blank = 0;
+    while (blank < lines.length && lines[lines.length - 1 - blank]!.trim() === "") blank++;
+    if (rows === undefined || (claudeBoxRows(screen) ?? 0) + blank <= rows) return;
   }
   const waiting = await claudeProcesses(paneId).then((processes) => claudeForegroundWaiting(processes), () => null);
   if (waiting !== null) throw new HerdrError("agent_blocked", `Claude Code is waiting in the terminal (${waiting}); answer or close it there, then send`);

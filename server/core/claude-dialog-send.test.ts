@@ -137,6 +137,9 @@ it.skipIf(!linux)("reads the record when the only box is above the live screen, 
   scroll = { offset_from_bottom: 0, max_offset_from_bottom: 30, viewport_rows: 7 };
   screen = [...box, DIALOG].join("\n");
   await refusedTyping();
+  // blank rows under a short dialog are live rows too: the box above them is still an older one
+  screen = [...box, "  Select model", "  1. Default", "", "", "", ""].join("\n");
+  await refusedTyping();
   // the box at the live bottom is typed into, whatever the record says
   screen = ["● Reading the project", ...box].join("\n");
   await sends();
