@@ -241,6 +241,17 @@ it("recognizes the agent's process name as herdr reports it on this platform", (
   expect(isAgyProcessName("/usr/local/bin/agy")).toBe(win32);
 });
 
+it("recognizes the exact Antigravity foreground process alias only on macOS", () => {
+  expect(isAgyProcessName("antigravity", "darwin")).toBe(true);
+  expect(isAgyProcessName("agy", "darwin")).toBe(true);
+  for (const name of ["Antigravity", "antigravity-helper", "antigravity.exe", "/Applications/Antigravity"]) {
+    expect(isAgyProcessName(name, "darwin")).toBe(false);
+  }
+  expect(isAgyProcessName("antigravity", "linux")).toBe(false);
+  expect(isAgyProcessName("antigravity", "win32")).toBe(false);
+  expect(isAgyProcessName("agy.exe", "win32")).toBe(true);
+});
+
 it("updates held lock when the process switches from lock A to lock B on /new or /resume", async () => {
   resetWindowsScanCacheForTest();
   const pid = 4242;
@@ -378,7 +389,7 @@ function processInfoAnswers() {
   type Answer = () => herdr.ProcessInfo | Promise<herdr.ProcessInfo>;
   let queue: Answer[] = [];
   let asked = 0;
-  const names = (pids: number[], argv = ["agy"]): Answer => () => ({ pane_id: "agy-pane", foreground_processes: pids.map((pid) => ({ pid, name: "agy", argv })) });
+  const names = (pids: number[], argv = ["agy"], name = "agy"): Answer => () => ({ pane_id: "agy-pane", foreground_processes: pids.map((pid) => ({ pid, name, argv })) });
   const spy = spyOn(herdr, "paneProcessInfo").mockImplementation(async () => {
     asked += 1;
     const answer = queue.shift();
@@ -442,6 +453,19 @@ it.skipIf(process.platform === "win32")("answers a store only while the pane sti
     answers(names([agy.pid]), names([agy.pid]));
     expect(await resolveAgyStore(pane)).toMatchObject({ root, session, pid: agy.pid, path: transcript(session) });
     expect(asked()).toBe(2);
+    if (process.platform === "darwin") {
+      // Report the macOS herdr-core foreground name while the test process holds a real lock.
+      const alias = names([agy.pid], ["agy"], "antigravity");
+      answers(alias, alias);
+      expect(await resolveAgyStore(pane)).toMatchObject({ session, pid: agy.pid, path: transcript(session) });
+      expect(asked()).toBe(2);
+      answers(async () => {
+        const info = await alias();
+        return { ...info, foreground_processes: [...(info.foreground_processes ?? []), { pid: process.pid, name: "agy", argv: ["agy"] }] };
+      });
+      expect(await resolveAgyStore(pane)).toBeNull();
+      expect(asked()).toBe(1);
+    }
     for (const now of [[process.pid], [agy.pid, process.pid], []]) {
       answers(names([agy.pid]), names(now));
       expect(await resolveAgyStore(pane)).toBeNull();

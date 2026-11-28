@@ -289,10 +289,11 @@ async function heldPaths(pid: number): Promise<string[] | null> {
   } catch { return null; }
 }
 
-/** herdr names the process `agy` on Unix and `agy.exe` on Windows, as it does for herdr itself. */
-export function isAgyProcessName(name: unknown): boolean {
+/** The macOS herdr-core foreground name can differ from the pane's already-normalized agent name. */
+export function isAgyProcessName(name: unknown, platform = process.platform): boolean {
   if (typeof name !== "string") return false;
-  return process.platform === "win32" ? /(?:^|[\\/])agy(?:\.exe)?$/i.test(name) : name === "agy";
+  if (platform === "win32") return /(?:^|[\\/])agy(?:\.exe)?$/i.test(name);
+  return name === "agy" || (platform === "darwin" && name === "antigravity");
 }
 
 async function agyPaneProcess(paneId: string): Promise<{ pid: number; argv?: string[] | null } | null> {
