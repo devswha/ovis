@@ -274,12 +274,16 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
     // keeps following
     const body = settingsBodyRef.current;
     const wait = awaited.current;
-    if (wait !== null && (wait.page !== page || keyBarOpen)) awaited.current = null;
+    // a new search or a focus the reader moved out of the page ends the wait: the group would take that focus back
+    if (wait !== null && (wait.page !== page || keyBarOpen || searching)) awaited.current = null;
     else if (wait !== null && body) {
       const moves = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+      const dialog = surface.current;
+      const left = (event: FocusEvent): void => { if (!body.contains(event.target as Node)) stop(); };
       const unsubscribe = (): void => {
         observer.disconnect();
         for (const move of moves) body.removeEventListener(move, stop);
+        dialog?.removeEventListener("focusin", left);
       };
       const stop = (): void => { awaited.current = null; unsubscribe(); };
       const observer = new MutationObserver(() => {
@@ -292,6 +296,7 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
       });
       observer.observe(body, { childList: true, subtree: true });
       for (const move of moves) body.addEventListener(move, stop, { passive: true });
+      dialog?.addEventListener("focusin", left);
       return unsubscribe;
     }
     const follow = following.current;
