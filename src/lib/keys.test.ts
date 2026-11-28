@@ -212,12 +212,13 @@ describe("altOtherKeySequence", () => {
     expect(altOtherKeySequence("\u001bk", false, 2)).toBe("\u001b[27;3;107~");
     expect(altOtherKeySequence("\u001bK", true, 2)).toBe("\u001b[27;4;75~");
     expect(altOtherKeySequence("\u001b ", false, 2)).toBe("\u001b[27;3;32~");
+    expect(altOtherKeySequence("\u001b😀", false, 2)).toBe("\u001b[27;3;128512~");
   });
 
   it("keeps ESC before the character below level 2, and every control or non-Alt key at any level", () => {
     expect(altOtherKeySequence("\u001bk", false, 0)).toBeNull();
     expect(altOtherKeySequence("\u001bk", false, 1)).toBeNull();
-    for (const typed of ["\u001b\r", "\u001b\u000b", "\u001b\u007f", "\u001b[1;3D", "k"]) expect(altOtherKeySequence(typed, false, 2)).toBeNull();
+    for (const typed of ["\u001b\r", "\u001b\u000b", "\u001b\u007f", "\u001b[1;3D", "\u001b", "k"]) expect(altOtherKeySequence(typed, false, 2)).toBeNull();
   });
 });
 

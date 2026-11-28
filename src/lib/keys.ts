@@ -198,8 +198,9 @@ export function modifyOtherKeysLevel(level: number, final: "m" | "n", params: Re
  */
 export function altOtherKeySequence(typed: string, shift: boolean, modifyOtherKeys: number): string | null {
   const character = modifyOtherKeys >= 2 && typed.startsWith("\u001b") ? [...typed.slice(1)] : [];
-  if (character.length !== 1 || !isPrintable(character[0]!)) return null;
-  return `\u001b[27;${shift ? 4 : 3};${character[0]!.codePointAt(0)}~`;
+  const code = character.length === 1 ? character[0]!.codePointAt(0)! : 0;
+  if (code < 0x20 || code === 0x7f) return null;
+  return `\u001b[27;${shift ? 4 : 3};${code}~`;
 }
 
 /** Ctrl+Enter under modifyOtherKeys, as xterm encodes it; null keeps xterm.js's own CR. */

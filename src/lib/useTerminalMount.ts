@@ -1612,6 +1612,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         altAs = event.altKey && !event.ctrlKey && !event.metaKey && !event.isComposing && event.keyCode !== 229
           ? altOtherKeySequence(key, event.shiftKey, modifyOtherKeysRef.current) : null;
         altTyped = altAs !== null ? key : null;
+        // the key's data follows at once, or never (stdin off, the following half): nothing later, a paste of ESC k
+        // say, may take the rewrite
+        if (altAs !== null) queueMicrotask(() => { altAs = null; altTyped = null; });
       });
       // Let xterm finish pending IME text before remapping the key's following data.
       // Cmd+Backspace uses the terminal's Ctrl+U line-deletion shortcut on macOS. Ctrl+Backspace erases the word
