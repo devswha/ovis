@@ -129,6 +129,20 @@ test("the three older kinds keep their exact signing bytes", () => {
   ]);
 });
 
+test("a record its caller changes while the signature is pending comes back as it was signed, and verifies", async () => {
+  const block = { v: 1, kind: "block", account: "acct_1", target: other.spki, target_no: 5, signer: signer.spki, signer_no: 2, signed_at: issued, nonce: newRecordId() } as const;
+  const blockInput = { ...block };
+  const signingBlock = signSafetyRecord(blockInput, signer.pair.privateKey);
+  const addInput = { ...unsigned.add };
+  const signingAdd = signAccountRecord(addInput, signer.pair.privateKey);
+  Object.assign(blockInput, { target_no: 6, nonce: newRecordId() });
+  Object.assign(addInput, { label: "Changed", id: newRecordId() });
+  const { id: _id, signature: _blockSignature, ...signedBlock } = await signingBlock;
+  const { signature: _addSignature, ...signedAdd } = await signingAdd;
+  expect([signedBlock, signedAdd]).toEqual([block, unsigned.add]);
+  expect([await verifySafetyRecord(await signingBlock), await verifyAccountRecord(await signingAdd)]).toEqual([true, true]);
+});
+
 describe("safety records (device table P24, P16)", () => {
   const block = () => signSafetyRecord({ v: 1, kind: "block", account: "acct_1", target: other.spki, target_no: 5, signer: signer.spki, signer_no: 2, signed_at: issued, nonce: newRecordId() }, signer.pair.privateKey);
 
