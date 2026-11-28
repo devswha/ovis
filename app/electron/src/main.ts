@@ -363,6 +363,7 @@ function createWindow(): void {
     ...(process.platform === "linux" ? { icon: iconPath } : {}),
     webPreferences: { preload, contextIsolation: true, sandbox: true, nodeIntegration: false },
   });
+  keepMenuBarHidden(window);
   window.once("ready-to-show", () => window?.show());
   window.on("close", (event) => {
     if (quitting) return;
@@ -390,13 +391,25 @@ function guard(contents: Electron.WebContents, blank?: BrowserWindow): void {
     openOutside(url);
     return { action: "deny" };
   });
-  contents.on("did-create-window", (child, { url }) => guard(child.webContents, url === "about:blank" ? child : undefined));
+  contents.on("did-create-window", (child, { url }) => {
+    keepMenuBarHidden(child);
+    guard(child.webContents, url === "about:blank" ? child : undefined);
+  });
   contents.on("will-navigate", (event, url) => {
     if (ours(url) || url === connectPageUrl) return;
     event.preventDefault();
     openOutside(url);
     blank?.close();
   });
+}
+
+/**
+ * Linux and Windows: the window starts with its menu bar hidden (autoHideMenuBar), and a lone Alt
+ * would then show it and give it the keys that follow, which a terminal's Alt chords need. Its
+ * items keep their shortcuts, and Open in Browser and Quit are in the tray.
+ */
+function keepMenuBarHidden(win: BrowserWindow): void {
+  win.setAutoHideMenuBar(false);
 }
 
 /** the browsers as last found, or found now: Settings finds them again each time it lists them */
