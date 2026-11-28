@@ -13,24 +13,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { BrowserContext, BrowserContextOptions } from "playwright-core";
 import { bindScope } from "../server/access.ts";
-import { changedFiles, findBrowserChecks } from "./browser-checks.ts";
+import { LIVE_HERDR, changedFiles, findBrowserChecks } from "./browser-checks.ts";
 import { withDemoBrowser } from "./demo-browser.ts";
 import { withLiveBrowser } from "./verify-ui-live.ts";
-
-export const STRIPPED_LIVE_SESSION_ENV = [
-  "HERDR_SOCKET",
-  "HERDR_SOCKET_PATH",
-  "HERDR_SESSION",
-  "HERDR_ENV",
-  "HERDR_PANE_ID",
-  "HERDR_TAB_ID",
-  "HERDR_WORKSPACE_ID",
-  "HERDR_CONFIG_PATH",
-  "HERDR_TEST_LIVE",
-  "HC_SOCKET",
-  "HC_SESSION",
-  "OVIS_ALLOW_LIVE_HERDR",
-] as const;
 
 export interface VerifyMatrixCell {
   readonly id: "desktop-dark" | "desktop-light" | "phone-dark" | "phone-light";
@@ -161,7 +146,7 @@ export function sanitizedVerifyEnv(
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(source)) {
-    if (value !== undefined && !(STRIPPED_LIVE_SESSION_ENV as readonly string[]).includes(key)) {
+    if (value !== undefined && !LIVE_HERDR.includes(key)) {
       env[key] = value;
     }
   }
@@ -177,7 +162,7 @@ export function sanitizedVerifyEnv(
 export function applySanitizedVerifyEnv(target: Record<string, string | undefined> = process.env): () => void {
   sanitizedVerifyEnv(target);
   const saved: Array<readonly [string, string]> = [];
-  for (const key of STRIPPED_LIVE_SESSION_ENV) {
+  for (const key of LIVE_HERDR) {
     const prev = target[key];
     if (prev !== undefined) {
       saved.push([key, prev]);
@@ -256,13 +241,19 @@ async function probeCells(
         } catch {}
       });
 
-      await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
-      // index.html starts with `<div id="root"><div class="boot" role="status">…</div></div>`;
-      // wait until React replaces `.boot` with the mounted application shell.
-      await page.waitForFunction(() => {
-        const root = document.getElementById("root");
-        return root !== null && root.childElementCount > 0 && root.querySelector(":scope > .boot") === null;
-      }, undefined, { timeout: 20_000 });
+      const failures: string[] = [];
+      try {
+        await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
+        // index.html starts with `<div id="root"><div class="boot" role="status">…</div></div>`;
+        // wait until React replaces `.boot` with the mounted application shell.
+        await page.waitForFunction(() => {
+          const root = document.getElementById("root");
+          return root !== null && root.childElementCount > 0 && root.querySelector(":scope > .boot") === null;
+        }, undefined, { timeout: 20_000 });
+      } catch (error) {
+        // A page that never loads or never mounts is this cell's failure: keep probing the rest.
+        failures.push(`load: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
+      }
 
       const metrics = await page.evaluate(() => {
         const root = document.getElementById("root");
@@ -281,7 +272,6 @@ async function probeCells(
         await page.screenshot({ path: screenshot, timeout: 10_000 });
       }
 
-      const failures: string[] = [];
       if (metrics.crashed) failures.push("#root rendered .app-crash");
       if (!metrics.mountedShell) failures.push("#root did not finish mounting past .boot");
       if (metrics.resolvedTheme !== cell.colorScheme) {

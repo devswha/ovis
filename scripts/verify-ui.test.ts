@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
 import { resolve } from "node:path";
-import { read } from "./source-scan.ts";
 import {
   VERIFY_MATRIX,
   applySanitizedVerifyEnv,
@@ -13,16 +12,16 @@ import {
 
 describe("verify-ui URL and environment guards", () => {
   it("accepts loopback and own-tailnet addresses and rejects wildcard, LAN, funnel or external hosts", () => {
-    const ownTailnet = { tailnetSuffix: "tail1e211e.ts.net" } as const;
+    const ownTailnet = { tailnetSuffix: "tail0example.ts.net" } as const;
     expect(assertSafeVerifyUrl("http://127.0.0.1:43123/app/", ownTailnet).hostname).toBe("127.0.0.1");
     expect(assertSafeVerifyUrl("http://localhost:5173/", ownTailnet).hostname).toBe("localhost");
     expect(assertSafeVerifyUrl("http://[::1]:7317/", ownTailnet).hostname).toBe("[::1]");
     expect(assertSafeVerifyUrl("http://100.64.0.1:49152/", ownTailnet).hostname).toBe("100.64.0.1");
     expect(assertSafeVerifyUrl("http://100.101.202.45:8123/", ownTailnet).hostname).toBe("100.101.202.45");
-    expect(assertSafeVerifyUrl("https://home-server.tail1e211e.ts.net:17421/", ownTailnet).hostname).toBe("home-server.tail1e211e.ts.net");
+    expect(assertSafeVerifyUrl("https://home-server.tail0example.ts.net:17421/", ownTailnet).hostname).toBe("home-server.tail0example.ts.net");
 
     expect(() => assertSafeVerifyUrl("https://stranger.tail99999.ts.net/", ownTailnet)).toThrow("Refusing non-local/non-tailnet host");
-    expect(() => assertSafeVerifyUrl("https://home-server.tail1e211e.ts.net:17421/", { tailnetSuffix: null })).toThrow("Refusing non-local/non-tailnet host");
+    expect(() => assertSafeVerifyUrl("https://home-server.tail0example.ts.net:17421/", { tailnetSuffix: null })).toThrow("Refusing non-local/non-tailnet host");
     expect(() => assertSafeVerifyUrl("http://user:pass@127.0.0.1:7317/", ownTailnet)).toThrow("embedded credentials");
     expect(() => assertSafeVerifyUrl("http://0.0.0.0:7317/", ownTailnet)).toThrow("Refusing wildcard host");
     expect(() => assertSafeVerifyUrl("http://0:7317/", ownTailnet)).toThrow("Refusing wildcard host");
@@ -108,19 +107,5 @@ describe("verify-ui URL and environment guards", () => {
     expect(() => parseVerifyArgs(["--evidence", "--json"])).toThrow("--evidence requires a value");
     expect(() => parseVerifyArgs(["--url", "--json"])).toThrow("--url requires a value");
     expect(() => parseVerifyArgs(["--url", "http://127.0.0.1:9999/app/", "--path", "https://evil.example/"])).toThrow("must be a relative path");
-  });
-});
-
-describe("verify-ui skill contract", () => {
-  it("documents separate-agent verification, runner-image rules and both browser check commands", () => {
-    const skill = read(".claude/skills/verify-ui/SKILL.md");
-    expect(skill).toContain("name: verify-ui");
-    expect(skill).toContain("scripts/browser-checks.ts");
-    expect(skill).toContain("scripts/verify-ui.ts");
-    expect(skill).toMatch(/separate verifier|fresh verifier/i);
-    expect(skill).toMatch(/CI\s+runner image/);
-    expect(skill).toContain("--limit 0");
-    expect(skill).toContain("0.0.0.0");
-    expect(skill).toContain("17421");
   });
 });

@@ -26,8 +26,8 @@ Give the verifier only what a reviewer or user knows:
   session IDs (`scripts/browser-checks.ts` and `scripts/verify-ui.ts` strip them automatically), and
   capture screenshots only from the disposable demo or an isolated test session (`ovis-test`), never
   a live one.
-- **Never stop `herdr-web-main.service` (`https://home-server.tail1e211e.ts.net:17421`).** Leave the
-  maintainer's running main app untouched; for reproducible `before` screenshots, run `verify-ui.ts`
+- **Never stop `herdr-web-main.service`** (the maintainer's main test app, AGENTS.md). Leave it
+  untouched; for reproducible `before` screenshots, run `verify-ui.ts`
   against a clean `origin/main` checkout so both `before` and `after` use identical demo or test
   fixtures.
 - **Never bind `0.0.0.0`.** Automated checks bind `127.0.0.1` on `port: 0`. A throwaway preview for
@@ -63,7 +63,9 @@ TMPDIR=~/.cache/ovis-tmp/ui-check \
 
 For a visual change that needs before/after screenshots on the PR, also capture `--label before`
 from an `origin/main` checkout on the same fixture setup and inspect every saved PNG
-(`desktop-dark`, `desktop-light`, `phone-dark`, `phone-light`) directly.
+(`desktop-dark`, `desktop-light`, `phone-dark`, `phone-light`) directly. A baseline older than
+`scripts/verify-ui.ts` is served on loopback and probed from this checkout with `--url`.
+Captures shown to the maintainer are the light ones only (`desktop-light`, `phone-light`).
 
 ### 3. Try to break the touched surface
 
