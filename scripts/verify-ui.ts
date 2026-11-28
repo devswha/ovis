@@ -212,25 +212,28 @@ async function probeCells(
   if (options.evidenceDir !== null) mkdirSync(options.evidenceDir, { recursive: true });
 
   for (const cell of options.cells) {
-    const context = await openContext({
-      viewport: cell.viewport,
-      colorScheme: cell.colorScheme,
-      isMobile: cell.isMobile,
-      hasTouch: cell.hasTouch,
-      storageState: {
-        cookies: [],
-        origins: [{
-          origin,
-          localStorage: [{ name: "ovis:settings", value: JSON.stringify({ theme: cell.colorScheme }) }],
-        }],
-      },
-    });
+    const failures: string[] = [];
+    const pageErrors: string[] = [];
+    const consoleErrors: string[] = [];
+    const serverErrors: string[] = [];
+    let metrics = { resolvedTheme: null as string | null, crashed: false, mountedShell: false, horizontalOverflowPx: 0 };
+    let screenshot: string | null = null;
+    let context: BrowserContext | undefined;
     try {
+      context = await openContext({
+        viewport: cell.viewport,
+        colorScheme: cell.colorScheme,
+        isMobile: cell.isMobile,
+        hasTouch: cell.hasTouch,
+        storageState: {
+          cookies: [],
+          origins: [{
+            origin,
+            localStorage: [{ name: "ovis:settings", value: JSON.stringify({ theme: cell.colorScheme }) }],
+          }],
+        },
+      });
       const page = await context.newPage();
-      const pageErrors: string[] = [];
-      const consoleErrors: string[] = [];
-      const serverErrors: string[] = [];
-
       page.on("pageerror", (error) => { pageErrors.push(error.message); });
       page.on("console", (msg) => {
         if (msg.type() === "error") consoleErrors.push(msg.text());
@@ -243,7 +246,6 @@ async function probeCells(
         } catch {}
       });
 
-      const failures: string[] = [];
       try {
         await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
         // index.html starts with `<div id="root"><div class="boot" role="status">…</div></div>`;
@@ -257,8 +259,6 @@ async function probeCells(
         failures.push(`load: ${firstLine(error)}`);
       }
 
-      let metrics = { resolvedTheme: null as string | null, crashed: false, mountedShell: false, horizontalOverflowPx: 0 };
-      let screenshot: string | null = null;
       try {
         metrics = await page.evaluate(() => {
           const root = document.getElementById("root");
@@ -279,38 +279,41 @@ async function probeCells(
         // A failed navigation leaves no page to measure or capture.
         failures.push(`probe: ${firstLine(error)}`);
       }
-
-      if (metrics.crashed) failures.push("#root rendered .app-crash");
-      if (!metrics.mountedShell) failures.push("#root did not finish mounting past .boot");
-      if (metrics.resolvedTheme !== cell.colorScheme) {
-        failures.push(`expected data-theme="${cell.colorScheme}", got "${metrics.resolvedTheme ?? "null"}"`);
-      }
-      if (metrics.horizontalOverflowPx > 1) {
-        failures.push(`document horizontal overflow of ${metrics.horizontalOverflowPx}px at ${cell.viewport.width}px width`);
-      }
-      for (const err of pageErrors) failures.push(`pageerror: ${err}`);
-      for (const err of consoleErrors) failures.push(`console.error: ${err}`);
-      for (const err of serverErrors) failures.push(`5xx response: ${err}`);
-
-      reports.push({
-        id: cell.id,
-        url: targetUrl,
-        viewport: cell.viewport,
-        expectedTheme: cell.colorScheme,
-        resolvedTheme: metrics.resolvedTheme,
-        mountedShell: metrics.mountedShell,
-        crashed: metrics.crashed,
-        horizontalOverflowPx: metrics.horizontalOverflowPx,
-        pageErrors,
-        consoleErrors,
-        serverErrors,
-        screenshot,
-        ok: failures.length === 0,
-        failures,
-      });
+    } catch (error) {
+      // The browser itself failed (a context or page that would not open): the cell still gets its row.
+      failures.push(`browser: ${firstLine(error)}`);
     } finally {
-      await context.close();
+      await context?.close().catch((error: unknown) => { failures.push(`close: ${firstLine(error)}`); });
     }
+
+    if (metrics.crashed) failures.push("#root rendered .app-crash");
+    if (!metrics.mountedShell) failures.push("#root did not finish mounting past .boot");
+    if (metrics.resolvedTheme !== cell.colorScheme) {
+      failures.push(`expected data-theme="${cell.colorScheme}", got "${metrics.resolvedTheme ?? "null"}"`);
+    }
+    if (metrics.horizontalOverflowPx > 1) {
+      failures.push(`document horizontal overflow of ${metrics.horizontalOverflowPx}px at ${cell.viewport.width}px width`);
+    }
+    for (const err of pageErrors) failures.push(`pageerror: ${err}`);
+    for (const err of consoleErrors) failures.push(`console.error: ${err}`);
+    for (const err of serverErrors) failures.push(`5xx response: ${err}`);
+
+    reports.push({
+      id: cell.id,
+      url: targetUrl,
+      viewport: cell.viewport,
+      expectedTheme: cell.colorScheme,
+      resolvedTheme: metrics.resolvedTheme,
+      mountedShell: metrics.mountedShell,
+      crashed: metrics.crashed,
+      horizontalOverflowPx: metrics.horizontalOverflowPx,
+      pageErrors,
+      consoleErrors,
+      serverErrors,
+      screenshot,
+      ok: failures.length === 0,
+      failures,
+    });
   }
   return reports;
 }
