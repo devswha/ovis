@@ -211,8 +211,8 @@ then waits for the approval. On a PC's own page, the join shows the digits under
 
 **Pairing with a typed code.** For a device with no camera pointed at the PC, **Show a code to
 type** under the QR code shows ten characters, `XXXXX-XXXXX` (Crockford base32: no I, L, O or U;
-O, I and L typed are read as 0, 1 and 1), and **Pair with a code** on app.ovis.sh takes them
-(in a browser, in the **Ovis relay** tab of the signed-out front page, **Connect a PC**, or under
+O, I and L typed are read as 0, 1 and 1), and **Pair with a code** on app.ovis.sh (or the PC's own
+app, below) takes them (in a browser, in the **Ovis relay** tab of the signed-out front page, **Connect a PC**, or under
 **Add a PC → Scan a QR code**, the front page itself when no account service runs). The code finds the PC and hands the device the same offer the QR code carries, then the
 device pairs with the six-digit code in it as a scanned QR code does: nothing else admits it
 ([`shared/relay-pair-code.ts`](../shared/relay-pair-code.ts),
@@ -246,8 +246,11 @@ long as it; the PC checks that code is still the pending one before it sends the
 device that knew the code it ran out otherwise. Wrong typed codes do not count toward the 20 failed
 relay pairings that pause QR pairing. A code is a relay control like the QR code: made on the PC or
 a direct connection, never through the relay (`local_required`) or by a Portal visitor. The PC
-offers codes only on `relay.ovis.sh` (409 `code_unavailable` on a relay of its own), where the hosted
-app looks for them. The relay sees the nameplate, when the two meet and how big the frames are.
+offers codes on `relay.ovis.sh`, where app.ovis.sh looks for them, and on a relay of its own only when
+`OVIS_RELAY_APP_URL` names an app of its own too, built with the same `OVIS_RELAY_URL` so it looks
+there (`<meta name="ovis-relay">`); a relay of its own with app.ovis.sh or its regional copy answers
+409 `code_unavailable`, and a build that names one of Ovis's relays writes no meta. The relay sees
+the nameplate, when the two meet and how big the frames are.
 CPace asks for the password's mapping to run in constant time; this one is JavaScript (noble), which
 promises no such thing. The PC works out its first message before a device arrives and every try
 hashes a fresh `sid`, so the relay cannot time it against an arrival or measure one input twice.
@@ -723,11 +726,11 @@ for it before they show or ask anything.
   server that goes away in those last ten minutes ends it unless the PC is in the account by then. A run
   that ends sooner (the PC was added, Ctrl+C) leaves the window to run out by itself, within ten
   minutes.
-- **`link --code`** prints what **Connect a device** shows: the code to type at app.ovis.sh
-  (**Pair with a code**), the relay pairing link as a QR code drawn in the terminal, and this PC's
-  ID for the other device to compare. Both renew when they run out. When the relay mints no typed
-  code (a relay that is not Ovis's own, or one that refuses it), it says why and shows a QR code
-  of its own alone. Its QR code carries its own code to type, else a fresh code (`x-ovis-pairing`,
+- **`link --code`** prints what **Connect a device** shows: the code to type in the PC's app
+  (app.ovis.sh unless `OVIS_RELAY_APP_URL` names another, **Pair with a code**), the relay pairing
+  link as a QR code drawn in the terminal, and this PC's ID for the other device to compare. Both
+  renew when they run out. When the relay mints no typed code (a relay of its own beside Ovis's app
+  or its regional copy, or one that refuses it), it says why and shows a QR code of its own alone. Its QR code carries its own code to type, else a fresh code (`x-ovis-pairing`,
   [A code made for an account](account.md#a-code-made-for-an-account)). Ctrl+C, SIGTERM, SIGHUP
   (the terminal closing), or any error, takes back what it made (`POST /api/devices/pair/cancel`
   with `{ "code", "id" }`, the six-digit code it showed and its id, or the id of a code to type whose

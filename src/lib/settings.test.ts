@@ -248,6 +248,17 @@ describe("saved theme migration", () => {
     expect(loadSettings().voiceEngine).toBe("auto");
   });
 
+  it("keeps Latin American Spanish after an old tab saves an unrelated preference", () => {
+    putOld({ voiceLanguage: "es-ES" });
+    expect(loadSettings().voiceLanguage).toBe("es-ES");
+    const olderTab = readOld();
+    saveSettings({ ...loadSettings(), voiceLanguage: "es-419" });
+    oldSaveSettings({ ...olderTab, terminalFontSize: 18 });
+    expect(loadSettings()).toMatchObject({ voiceLanguage: "es-419", terminalFontSize: 18 });
+    saveSettings({ ...loadSettings(), voiceLanguage: "auto" });
+    expect(loadSettings().voiceLanguage).toBe("auto");
+  });
+
   it("keeps the file text size in its own key, out of an old tab's whole-record save", () => {
     expect(loadSettings().fileFontSize).toBeNull();
     saveSettings(sanitizeSettings({ fileFontSize: 20 }));
@@ -697,6 +708,11 @@ it("draws agent logos in their brand colors unless Mono was chosen", () => {
 });
 
 describe("telemetry settings snapshot", () => {
+  it("does not send the new dictation locale to older PCs and collectors", () => {
+    const snapshot = telemetrySettingsSnapshot(sanitizeSettings({ voiceLanguage: "es-419" }));
+    expect(telemetrySettings(snapshot)?.voiceLanguage).toBe("auto");
+  });
+
   it("reports current enum, boolean and bounded scalar values", () => {
     const settings = sanitizeSettings({
       terminalInputMode: "direct",
@@ -1183,6 +1199,7 @@ describe("microphone button", () => {
     expect(DEFAULT_SETTINGS.voiceLanguage).toBe("auto");
     expect(sanitizeSettings({}).voiceLanguage).toBe("auto");
     for (const voiceLanguage of DICTATION_LANGUAGES) expect(sanitizeSettings({ voiceLanguage }).voiceLanguage).toBe(voiceLanguage);
+    expect(sanitizeSettings({ voiceLanguage: "es-419" }).voiceLanguage).toBe("es-419");
     for (const voiceLanguage of [null, 1, "", "hu", "hu-hu", "xx-XX", "auto "]) expect(sanitizeSettings({ voiceLanguage }).voiceLanguage).toBe("auto");
   });
 

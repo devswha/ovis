@@ -844,6 +844,10 @@ floor of `--fs-meta` holds at scale 1 and only grows with it.
   Cancellation restores the starting size. The badge is hidden from assistive tech; a polite live
   region says "Terminal text size {px} px" once, when a pinch ends at a new size, and says nothing
   for a cancelled pinch.
+- A phone's terminal grid follows Termux in using a stationary long press to start selecting
+  text instead of scrolling. Drag to include more visible cells and lift to copy if herdr's
+  `copy_on_select` is on; otherwise the selection offers **Copy**, with no new setting.
+  A swipe without the hold and a two-finger pinch keep their usual actions.
 - A split pane that would have fewer than 80 columns at that size draws in the largest smaller
   whole-pixel size that gives it 80, never below `10px`. A pane alone in its tab or zoomed, a pane that `10px` cannot bring
   to 80 columns, and a pane this browser only watches or mirrors keep the user's size. The saved
@@ -4914,7 +4918,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   text, which only the key's path does. The choice has its own storage key (`ovis:voice-engine`),
   so an older tab's save keeps it, and open tabs follow it at once. Two rows, no new composer
   control: macOS's Dictation settings likewise keep the language and the source beside the switch,
-  not on the input.
+  not on the input. Latin American Spanish (`es-419`) and European Spanish (`es-ES`) are separate
+  choices on the existing language row. The choice is stored in `ovis:voice-language`; the older
+  record and telemetry keep their supported values (Auto for `es-419`). This is a speech
+  recognition language, not an app locale.
 - A mouse holds the mic to talk (release finishes) or taps it to toggle. A touch on the browser's
   speech recognition (no key) taps to start and taps to finish, from the click: iOS starts it only
   from a user activation, which a touch's pointerdown is not (#2343). With a key, a touch holds too.

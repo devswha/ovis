@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, posix, sep } from "node:path";
 import { browserScriptFiles, demoLaunchCounts, demoLaunches, directContextCounts, directContexts } from "./direct-contexts.ts";
 import { fixedSleepCounts, fixedSleeps, markedWaitCounts, markedWaits, sleepFiles, turnWaitCounts, turnWaitFiles, turnWaits } from "./fixed-sleeps.ts";
-import { fail, files, lineOf, read, repo, stripComments } from "./source-scan.ts";
+import { fail, files, importClosure, lineOf, read, repo, stripComments } from "./source-scan.ts";
 
 const SOURCES = [...files("{src,server,shared,scripts,site,telemetry,integrations,tui}/**/*.{ts,tsx,mjs,js}"), "vite.config.ts"];
 
@@ -23,11 +23,12 @@ const specifiers = (file: string): { specifier: string; at: string }[] =>
   specifiersIn(stripComments(read(file))).map(({ specifier, line }) => ({ specifier, at: `${file}:${line}: ${specifier}` }));
 
 describe("imports", () => {
-  it("name relative modules with their extension and never use the @shared alias", () => {
+  it("name relative modules with their extension and never use the @shared alias, nor a root path in browser code", () => {
     const offenders = SOURCES.flatMap((file) => specifiers(file)
-      .filter(({ specifier }) => specifier.startsWith("@shared/") || (specifier.startsWith(".") && !/\.(?:ts|tsx|mjs|js|css|json|md|svg|png|woff2|html|txt|wasm|sh)(?:\?[\w&=-]*)?$/.test(specifier)))
+      // Vite resolves a root path such as "/shared/x.ts" in src/ and site/; the walks in this repository follow only relative ones.
+      .filter(({ specifier }) => specifier.startsWith("@shared/") || (specifier.startsWith("/") && /^(?:src|site)\//.test(file)) || (specifier.startsWith(".") && !/\.(?:ts|tsx|mjs|js|css|json|md|svg|png|woff2|html|txt|wasm|sh)(?:\?[\w&=-]*)?$/.test(specifier)))
       .map(({ at }) => at));
-    fail(offenders, "Imports carry explicit .ts/.tsx extensions and relative paths (AGENTS.md, Code conventions): write \"./x.ts\" or \"../shared/x.ts\", never \"./x\" or \"@shared/x\".");
+    fail(offenders, "Imports carry explicit .ts/.tsx extensions and relative paths (AGENTS.md, Code conventions): write \"./x.ts\" or \"../shared/x.ts\", never \"./x\", \"@shared/x\" or \"/shared/x.ts\".");
   });
 
   it("finds the specifiers and the line each is on", () => {
@@ -73,6 +74,48 @@ describe("what the browser loads", () => {
     expect(leadsTo("src/server/list.ts", "./server/row.ts")).toBe("src");
     expect(leadsTo("site/demo/transport.ts", "../../src/lib/phone.ts")).toBe("src");
     expect(leadsTo("shared/web-policy.ts", "../package.json")).toBe("package.json");
+  });
+
+  /** Each value import of shared/protocol.ts that `entries` load, directly or through other modules; type-only imports load nothing. */
+  const protocolValueLoads = (entries: string | readonly string[], source: (path: string) => string | undefined): string[] =>
+    importClosure(entries, source, (path) => path !== "shared/protocol.ts", () => true).offenders;
+
+  it("imports only types from shared/protocol.ts", () => {
+    const browserEntries = files("{src,site}/**/*.{mjs,js,ts,tsx}").filter((file) => !/\.test\./.test(file));
+    const repoSource = (path: string) => (existsSync(join(repo, path)) ? read(path) : undefined);
+    fail(protocolValueLoads(browserEntries, repoSource),
+      "Browser code imports only types from shared/protocol.ts, which reads process.env at module load: write `import type { … } from \"…/shared/protocol.ts\"`, and put runtime constants the browser also needs in another shared/ module (such as shared/web-policy.ts).");
+  });
+
+  it("tells a type-only import of shared/protocol.ts from a direct or transitive value load", () => {
+    const graph: Record<string, string> = {
+      "src/types-ok.ts": [
+        "import type { SessionSnapshot } from \"../shared/protocol.ts\";",
+        "import type * as Protocol from \"../shared/protocol.ts\";",
+        "export type { CreateTabRequest } from \"../shared/protocol.ts\";",
+        "export type * from \"../shared/protocol.ts\";",
+        "type Inline = import(\"../shared/protocol.ts\").SessionSnapshot;",
+        "type Module = typeof import(\"../shared/protocol.ts\");",
+        "export type { SessionSnapshot, Protocol, Inline, Module };",
+      ].join("\n"),
+      "src/direct-bad.ts": [
+        "import { DEFAULT_PORT } from \"../shared/protocol.ts\";",
+        "import { type SessionSnapshot } from \"../shared/protocol.ts\";",
+        "import \"../shared/protocol.ts\";",
+        "const mod = await import(`../shared/protocol.ts`);",
+        "export * from \"../shared/protocol.ts\";",
+        "export { DEFAULT_PORT } from \"../shared/protocol.ts\";",
+      ].join("\n"),
+      "src/types-of-value-ok.ts": "import type { port } from \"../shared/reexport-value.ts\";\nexport type Port = typeof port;",
+      "src/transitive-bad.ts": "import { port } from \"../shared/reexport-value.ts\";\nexport { port };",
+      "shared/reexport-value.ts": "import { DEFAULT_PORT } from \"./protocol.ts\";\nexport const port = DEFAULT_PORT;",
+    };
+    const source = (path: string) => graph[path];
+    expect(protocolValueLoads(["src/types-ok.ts", "src/types-of-value-ok.ts"], source)).toEqual([]);
+    expect(protocolValueLoads("src/direct-bad.ts", source).map((offender) => offender.split(":")[1])).toEqual(["1", "2", "3", "4", "5", "6"]);
+    expect(protocolValueLoads(["src/types-ok.ts", "src/transitive-bad.ts"], source)).toEqual([
+      "shared/reexport-value.ts:1: ./protocol.ts (shared/protocol.ts)",
+    ]);
   });
 });
 

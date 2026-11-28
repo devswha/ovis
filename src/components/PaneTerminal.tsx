@@ -31,6 +31,7 @@ import { DETACHED, usePaneBranch } from "../lib/paneBranch.ts";
 import { answerHint } from "../lib/promptAnswer.ts";
 import { composerDrafts } from "../lib/composerDraft.ts";
 import { appendQuote, formatTerminalQuote } from "../lib/terminalQuote.ts";
+import { copyText } from "../lib/clipboard.ts";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useSessionHistoryOffered } from "../lib/useSessionHistoryOffered.ts";
 import { paneStorageId } from "../../shared/machines.ts";
@@ -66,7 +67,7 @@ import { MIRROR_WRAP_QUERY } from "../lib/terminalFold.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { modalOpen } from "../lib/focus.ts";
 import { connectedSockets } from "../lib/paneTerminalShared.ts";
-import { useTerminalMount } from "../lib/useTerminalMount.ts";
+import { useTerminalMount, type TerminalSelectionOffer } from "../lib/useTerminalMount.ts";
 import { useTerminalRefits } from "../lib/useTerminalRefits.ts";
 import { usePaneAttach } from "../lib/usePaneAttach.ts";
 import { useTerminalSends } from "../lib/useTerminalSends.ts";
@@ -566,7 +567,7 @@ export function PaneTerminal({
   const [clipboardNote, setClipboardNote] = useState<string | null>(null);
   const clipboardTimerRef = useRef<number | null>(null);
   const [dismissedNotices, setDismissedNotices] = useState<DismissedNotices>(NO_DISMISSALS);
-  const [selectionQuote, setSelectionQuote] = useState<{ pane: string; text: string; range: { start: number; end: number } | null } | null>(null);
+  const [selectionQuote, setSelectionQuote] = useState<TerminalSelectionOffer | null>(null);
   const [chatRefresh, setChatRefresh] = useState(0);
   const [chatInvalidation, setChatInvalidation] = useState(0);
   const [approvalReflow, setApprovalReflow] = useState({ pane: "", revision: 0, pending: false, promptId: "" });
@@ -1106,6 +1107,12 @@ export function PaneTerminal({
           <button type="button" className="terminal-banner terminal-banner-action terminal-quote"
             onMouseDown={(event) => { event.preventDefault(); }}
             onClick={() => {
+              if (selectionQuote.action === "copy") {
+                void copyText(selectionQuote.text).then((copied) => {
+                  if (paneRef.current === paneId && !chatViewRef.current) noteClipboard(copied ? "copied to clipboard" : "clipboard write blocked by the browser");
+                });
+                return;
+              }
               const block = formatTerminalQuote({ label: title?.trim() || paneId, range: selectionQuote.range, text: selectionQuote.text });
               if (block === null) return;
               const key = `ovis:composer-draft:${paneStorageId(machineId, paneId)}`;
@@ -1115,7 +1122,7 @@ export function PaneTerminal({
               termRef.current?.clearSelection();
               noteClipboard(t("Added to the message draft"));
             }}>
-            <Quote aria-hidden="true" />{t("Quote in message")}
+            {selectionQuote.action === "copy" ? <><ClipboardCheck aria-hidden="true" />{t("Copy")}</> : <><Quote aria-hidden="true" />{t("Quote in message")}</>}
           </button>
         )}
         {clipboardNote && !noticesDocked && (

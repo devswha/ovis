@@ -71,7 +71,7 @@ An initial connection can be cancelled while waiting; already-started work stays
 
 In **Add a connection → Tailscale**, **Connect** opens SSH setup with the PC's address filled in, whether or not either PC is in an account. The relay one-tap API uses a code and is separate from this tab. For a PC in an account, use **Ovis relay → Add from account** to connect through the relay.
 
-PCs already added through the relay keep working. Clients that support pairing links or typed codes can still use them between unbound PCs: both PCs only connect out to the [Ovis relay](relay.md). On the other PC, open
+PCs already added through the relay keep working. Clients that support pairing links or typed codes can still use them between unbound PCs: both PCs only connect out to the relay that holds the code (the [Ovis relay](relay.md), or a relay of that PC's own beside an app of its own). On the other PC, open
 **Settings → Devices and PCs → Connect** (with the relay on) and type the ten-character code it shows
 beside its QR code here (its pairing link works too):
 this PC's server finds that PC through the relay as a phone does ([Pairing with a typed code](relay.md)),
@@ -89,8 +89,10 @@ the other PCs of this PC's own Tailscale login whose Ovis already lets this PC i
 `tailscale serve`, no token), and **Add PC** adds one through the relay in one tap. This PC reads
 `tailscale status`, asks only online, untagged peers of its own login that do not report iOS or
 Android (the first 32 of them in that list; type a code for one past that), asks the
-chosen PC for its code over Tailscale, and checks that the relay found the same PC (`server_id`)
-before it pairs; on a mismatch nothing is added. A PC whose relay is off shows **Turn the relay on
+chosen PC for its code over Tailscale, and checks that the code names the relay ID that PC's health
+named and that the relay found the same PC (`server_id`) before it pairs; on a mismatch nothing is
+added. A code held on a relay of that PC's own is looked up there only when the relay is one of
+Ovis's or at a public address: a loopback, LAN, Tailscale or link-local relay is refused. A PC whose relay is off shows **Turn the relay on
 on that PC first**. PCs of another login, tagged nodes and iOS or Android devices are never asked, and Tailscale
 alone never adds a PC to your account (`GET` and `POST /api/machines/tailnet`; the `GET` lists a PC
 already added too, with the relay ID it names itself (`server_id`, shown only: the relay tab marks a PC

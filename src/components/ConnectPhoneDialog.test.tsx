@@ -113,6 +113,8 @@ describe("Connect a phone on a phone", () => {
   let accessNow: RemoteAccess;
   let serveReply: () => Response;
   let openReply: () => Response;
+  /** the app POST /api/relay/code names, as a PC on a relay of its own does; none: an older PC's answer */
+  let codeApp: string | undefined;
 
   beforeEach(() => {
     accessNow = tailscaleAccess({ state: "stopped" });
@@ -125,6 +127,7 @@ describe("Connect a phone on a phone", () => {
     offerGates = [];
     offersOut = 0;
     offerRoads = [];
+    codeApp = undefined;
     requests = [];
     assigned = [];
     relayCodes.clear();
@@ -200,7 +203,7 @@ describe("Connect a phone on a phone", () => {
       if (path === "/api/access") return Response.json(accessNow);
       if (path === "/api/access/tailscale/serve") return serveReply();
       if (path === "/api/access/tailscale/open") return openReply();
-      if (path === "/api/relay/code") { pending = "777111"; pendingOwn = false; return Response.json({ code: "7K3QD-M2XHA", expires_at, server_id: SERVER_ID }); }
+      if (path === "/api/relay/code") { pending = "777111"; pendingOwn = false; return Response.json({ code: "7K3QD-M2XHA", expires_at, server_id: SERVER_ID, ...(codeApp === undefined ? {} : { app: codeApp }) }); }
       return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
     };
     spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
@@ -475,6 +478,36 @@ describe("Connect a phone on a phone", () => {
     expect(qrCodes()).toHaveLength(0);
     await act(async () => { announcePairingCode({ code: "246801", expires_at }); });
     expect(shown()).toEqual(["246 801"]);
+  });
+
+  it("names the app to type the code in beside the QR code only when it is this PC's own", async () => {
+    const hint = async (app: string | undefined) => {
+      codeApp = app;
+      await mount(<RelayPairing compact />);
+      for (let flush = 0; flush < 3; flush += 1) await act(async () => {});
+      const hints = all("p").map(text).filter((line) => line.startsWith("Type the code in"));
+      await mount(null);
+      return hints;
+    };
+    expect(await hint("https://app.example.test")).toEqual(["Type the code in app.example.test."]);
+    expect(await hint("https://app.ovis.sh")).toEqual([]);
+    expect(await hint("https://app-ap.ovis.sh")).toEqual([]);
+    expect(await hint(undefined)).toEqual([]);
+  });
+
+  it("names the app the code is looked up by under the full panel's code to type", async () => {
+    const hint = async (app: string | undefined) => {
+      codeApp = app;
+      await mount(<RelayPairing />);
+      for (let flush = 0; flush < 3; flush += 1) await act(async () => {});
+      await act(async () => { button("Show a code to type").click(); });
+      for (let flush = 0; flush < 3; flush += 1) await act(async () => {});
+      const hints = all("p").map(text).flatMap((line) => /^On the other device, open ([^,]+),/.exec(line)?.[1] ?? []);
+      await mount(null);
+      return hints;
+    };
+    expect(await hint("https://app.example.test")).toEqual(["app.example.test"]);
+    expect(await hint(undefined)).toEqual(["app.ovis.sh"]);
   });
 
   it("pairs this phone through the relay in one tap: its own offer opens in this browser", async () => {

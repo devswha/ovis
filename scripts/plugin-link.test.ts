@@ -143,7 +143,8 @@ describe("ovis link, on the PC itself", () => {
       if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
       if (path === "/api/relay/code") {
         const code = codes[minted++]!;
-        return Response.json({ code, expires_at: new Date(time.now() + 600_000).toISOString(), server_id: pc.server_id });
+        // the second as a PC on its own relay answers, naming the app that looks its codes up there
+        return Response.json({ code, expires_at: new Date(time.now() + 600_000).toISOString(), server_id: pc.server_id, ...minted === 2 ? { app: "https://app.example.test" } : {} });
       }
       if (path === "/api/relay/offer") {
         // the page asks for the offer after the code, never beside it: the code starts a new pairing
@@ -160,6 +161,8 @@ describe("ovis link, on the PC itself", () => {
     const text = out.join("");
     expect(text).toContain("ABCD-EFGH-JK");
     expect(text).toContain("MNPQ-RSTV-WX");
+    expect(text).toContain("On the other device, open app.ovis.sh, choose Pair with a code");
+    expect(text).toContain("On the other device, open app.example.test, choose Pair with a code");
     expect(text).toContain(pc.server_id.match(/.{4}/g)!.join(" "));
     expectQrCode(text);
     expect(time.waits).toEqual([600_000]);
@@ -2591,6 +2594,8 @@ describe("ovis link, on the PC itself", () => {
     refuse?: (path: string, codes: number) => Response | undefined;
     service?: (request: Request, pass: () => Promise<Response>, at: { pc: ReturnType<typeof identity>; stop: AbortController; now: () => number }) => Promise<Response>;
     settings?: Record<string, string | undefined>;
+    /** the app this PC's codes name, as a PC on its own relay answers */
+    codeApp?: string;
     confirm?: string | false;
     ends?: boolean;
     soon?: boolean;
@@ -2639,7 +2644,7 @@ describe("ovis link, on the PC itself", () => {
       if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, name: "old-desktop" }, "https://app.ovis.sh") });
       if (path === "/api/relay/link/close") return Response.json({ ok: true });
       if (path === "/api/devices" && request.method === "GET") return Response.json({ devices: state.devices });
-      if (path === "/api/relay/code") return Response.json({ code: `ABCD-EFGH-J${offers.length + 1}`, expires_at: new Date(time.now() + 600_000).toISOString(), server_id: pc.server_id, ...forAccount(request, tied?.expect?.code, tied?.typedId ?? `p${offers.length + 1}`) });
+      if (path === "/api/relay/code") return Response.json({ code: `ABCD-EFGH-J${offers.length + 1}`, expires_at: new Date(time.now() + 600_000).toISOString(), server_id: pc.server_id, ...options.codeApp === undefined ? {} : { app: options.codeApp }, ...forAccount(request, tied?.expect?.code, tied?.typedId ?? `p${offers.length + 1}`) });
       if (path === "/api/relay/offer") {
         began ??= time.now();
         offers.push(String(100001 + offers.length));
@@ -2822,6 +2827,12 @@ describe("ovis link, on the PC itself", () => {
   const APP = "https://app.example.test:17541";
   const WRAPPER_NAMES = { OVIS_RELAY_APP_URL: APP, OVIS_CLI_NAME: "/opt/wrapper/bin/ovis-wrapper" };
   const approving = (settings: Record<string, string | undefined>) => scanning({ args: ["--approve"], settings, said: (text, _type, _answer, stop) => { if (text.includes("choose Add on")) stop.abort(); } });
+
+  it("with the fleet preview off, names the app the PC's reply names for its code", async () => {
+    const own = await scanning({ isTty: false, args: ["--print"], discard: true, confirm: "no", step: joins, codeApp: "https://app.example.test" });
+    expect(own.code).toBe(0);
+    expect(own.text).toContain("Or, on that device, open app.example.test, choose Pair with a code and type it.\n");
+  });
 
   it("with the fleet preview off, writes the QR code with --print where its output is not a terminal, asks for no Enter, and names app.ovis.sh and ovis whatever OVIS_RELAY_APP_URL and OVIS_CLI_NAME say, as before it", async () => {
     for (const names of [{}, WRAPPER_NAMES]) {
