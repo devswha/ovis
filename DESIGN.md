@@ -844,6 +844,10 @@ floor of `--fs-meta` holds at scale 1 and only grows with it.
   Cancellation restores the starting size. The badge is hidden from assistive tech; a polite live
   region says "Terminal text size {px} px" once, when a pinch ends at a new size, and says nothing
   for a cancelled pinch.
+- A phone's terminal grid follows Termux in using a stationary long press to start selecting
+  text instead of scrolling. Drag to include more visible cells and lift to copy if herdr's
+  `copy_on_select` is on; otherwise the selection offers **Copy**, with no new setting.
+  A swipe without the hold and a two-finger pinch keep their usual actions.
 - A split pane that would have fewer than 80 columns at that size draws in the largest smaller
   whole-pixel size that gives it 80, never below `10px`. A pane alone in its tab or zoomed, a pane that `10px` cannot bring
   to 80 columns, and a pane this browser only watches or mirrors keep the user's size. The saved
@@ -2652,8 +2656,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     rail's end and the column's own edge), with
     `--radius-lg`: the mark at `--avatar-size`, `--space-2-5` before the name (`--fs-md`) over
     the words (`--fs-sm`), the state's mark at the row's end on its middle, `--space-2` inside
-    the row's box. A wide row draws no time; its tooltip says the name and the words whole and
-    the time, with the full local time. The open thread's row has the sidebar's selection
+    the row's box. A wide row draws its time at the end of the name's line, as a narrow row
+    does (the Agents list and the Codex app's sidebar draw each row's age on the row too), so a
+    glance down the list says which agent has waited longest; its tooltip says the name and
+    the words whole and the time, with the full local time. The open thread's row has the
+    sidebar's selection
     (`--side-selected`, the name at `--fw-selected`, `aria-current="true"`), with no border,
     stripe or outline; no row is open while no agent is chosen. A row fills with the sidebar's
     `--side-hover` under a hovering pointer and, under a press, half way from `--side-selected`

@@ -934,10 +934,11 @@ describe("InboxList", () => {
       expect(row.getAttribute("title")).toBe("Guard the export button\nNeeds you");
     });
 
-    it("draws no time on a row, and says it in the row's name and its tooltip", async () => {
+    it("draws the time at the end of a row's name, as a narrow row does, and says it in the row's name and its tooltip", async () => {
       const root = await draw(roster(), { wide: true, activity: statusOf({ "w1E:p1": "done" }) });
       await answerSummaries({ "w1E:p1": said("All six export tests pass.", ago(6.5)) });
-      expect(times(root, "w1E:p1")).toEqual([]);
+      expect(age(root, "w1E:p1")).toEqual(["6m"]);
+      expect(times(root, "w1E:p1")[0]!.parentElement!.getAttribute("class")).toBe("inbox-line");
       const row = byClass(item(root, "w1E:p1"), "inbox-row")[0]!;
       expect(row.getAttribute("aria-label")).toBe("Gajae Code, Why did the backup fail?, Done, All six export tests pass., 6m");
       const lines = String(row.getAttribute("title")).split("\n");

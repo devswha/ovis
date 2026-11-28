@@ -25,8 +25,17 @@ interface HistoryFixture {
 declare global { interface Window { historyFixture: HistoryFixture } }
 
 function installHistoryFixture(clearHistory: string): void {
-  const core = new URL(location.href).searchParams.get("server") === "core";
-  const lines = Array.from({ length: 300 }, (_, index) => `HIST-${String(index + 1).padStart(3, "0")}`);
+  const query = new URL(location.href).searchParams;
+  const core = query.get("server") === "core";
+  const copy = query.get("copy");
+  if (copy !== null) {
+    const fetch = window.fetch.bind(window);
+    window.fetch = Object.assign((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      return url.pathname === "/api/herdr-ui" ? Promise.resolve(Response.json({ copy_on_select: copy === "on" })) : fetch(input, init);
+    }, fetch);
+  }
+  const lines = Array.from({ length: 300 }, (_, index) => `HIST-${String(index + 1).padStart(3, "0")}${index === 298 ? " 한글ABC" : ""}`);
   const stream = `${clearHistory}${lines.join("\r\n")}`;
   const sockets: Array<WebSocket & { push(frame: Record<string, unknown>): void }> = [];
   let pane: string | null = null;
@@ -121,6 +130,9 @@ const atBottom = (page: Page) => page.waitForFunction(() => {
   return now !== undefined && now.viewportY === now.baseY;
 });
 const evidence = process.env["UI_EVIDENCE_DIR"];
+const holdTouch = async (page: Page): Promise<void> => {
+  await page.waitForFunction((at) => performance.now() - at > 600, await page.evaluate(() => performance.now()));
+};
 
 await withDemoBrowser({ tempPrefix: "herdr-core-history-demo-", afterTransport: `\n<script>(${installHistoryFixture.toString()})(${JSON.stringify(CLEAR_HISTORY)})</script>` }, async ({ newContext, baseUrl }) => {
   for (const kind of ["core", "herdr"] as const) {
@@ -131,7 +143,7 @@ await withDemoBrowser({ tempPrefix: "herdr-core-history-demo-", afterTransport: 
       page.setDefaultTimeout(10000);
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      await page.goto(`${baseUrl}?pane=${encodeURIComponent(panes.shell)}&view=terminal&server=${kind}`);
+      await page.goto(`${baseUrl}?pane=${encodeURIComponent(panes.shell)}&view=terminal&server=${kind}&copy=on`);
       await page.locator(".conn-live").waitFor();
       await appFaces(page);
       await showsNewest(page);
@@ -217,8 +229,97 @@ await withDemoBrowser({ tempPrefix: "herdr-core-history-demo-", afterTransport: 
       const arrows = ["\x1b[A", "\x1b[B", "\x1bOA", "\x1bOB"];
       const typed = (await inputs(page)).filter((frame) => arrows.some((arrow) => JSON.stringify(frame).includes(JSON.stringify(arrow).slice(1, -1))));
       if (kind === "core") assert.deepEqual(typed, [], "core: scrolling the history types nothing");
+      if (kind === "core") {
+        await page.locator(".pane-frame.is-current .terminal-jump-bottom").tap();
+        await atBottom(page);
+        await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+        await page.evaluate(() => navigator.clipboard.writeText("not copied"));
+        const points = await page.locator(".pane-frame.is-current .ghostty-row", { hasText: "HIST-300" }).evaluate((row) => {
+          const text = document.createTreeWalker(row, NodeFilter.SHOW_TEXT).nextNode()!;
+          const at = (index: number) => {
+            const range = document.createRange();
+            range.setStart(text, index);
+            range.setEnd(text, index + 1);
+            const bounds = range.getBoundingClientRect();
+            return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+          };
+          const first = at(0), last = at(7);
+          return [first, { x: last.x + 30, y: last.y }] as const;
+        });
+        const beforeHold = await history(page);
+        const beforeInput = await inputs(page);
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [points[0]] });
+        // An actual stationary hold precedes a horizontal drag long enough to open the drawer.
+        await holdTouch(page);
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [points[1]] });
+        await settled(page);
+        if (evidence) await page.screenshot({ path: join(evidence, "terminal-touch-selection-drag.png") });
+        const highlighted = await page.locator(".pane-frame.is-current .xterm-selection div").count();
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        assert.ok(highlighted > 0, "a long press and drag highlights the visible terminal cells");
+        await page.waitForFunction(async () => await navigator.clipboard.readText() === "HIST-300", undefined, { timeout: 5000 });
+        assert.deepEqual(await history(page), beforeHold, "a selecting drag does not scroll history");
+        assert.deepEqual(await inputs(page), beforeInput, "a selecting drag sends no input to the pane");
+        assert.notEqual(await page.locator("#workspace-drawer").getAttribute("aria-modal"), "true", "the drawer does not take the selecting drag");
+        if (evidence) await page.screenshot({ path: join(evidence, "terminal-touch-selection-copied.png") });
+        await page.evaluate(() => navigator.clipboard.writeText("not copied again"));
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [points[0]] });
+        await holdTouch(page);
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+        await page.locator(".pane-frame.is-current .xterm-selection div").first().waitFor({ state: "detached" });
+        assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "not copied again", "a canceled selection does not copy");
+        assert.ok(points[0].x < 24, "the drawer check starts at its left edge");
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [points[0]] });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: points[0].x + 20, y: points[0].y }] });
+        await holdTouch(page);
+        assert.equal(await page.locator(".pane-frame.is-current .xterm-selection div").count(), 0, "a drawer drag that pauses does not start selecting");
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [points[1]] });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "not copied again", "a drawer drag does not copy");
+        await page.keyboard.press("Escape");
+        await page.waitForFunction(() => (document.getElementById("workspace-drawer")?.getBoundingClientRect().right ?? 0) <= 0.5);
+        const wide = await page.locator(".pane-frame.is-current .ghostty-row", { hasText: "HIST-299 한글ABC" }).evaluate((row) => {
+          const rect = row.getBoundingClientRect();
+          const width = Number.parseFloat(getComputedStyle(row).getPropertyValue("--ghostty-cw"));
+          return { x: rect.left + 10.5 * width, y: rect.top + rect.height / 2 };
+        });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [wide] });
+        await holdTouch(page);
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await page.waitForFunction(async () => await navigator.clipboard.readText() === "한", undefined, { timeout: 5000 });
+        console.log("PASS a phone long press highlights terminal cells and copies exactly those cells on release");
+      }
       assert.deepEqual(errors, [], `${kind}: no page errors`);
       console.log(`PASS ${kind}: ${kind === "core" ? "wheel, swipe and a replay keep the browser's history" : "no local history"}`);
+    } finally {
+      await context.close();
+    }
+  }
+  {
+    const context = await newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    try {
+      await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+      const page = await context.newPage();
+      await page.goto(`${baseUrl}?pane=${encodeURIComponent(panes.shell)}&view=terminal&server=core&copy=off`);
+      await page.locator(".conn-live").waitFor();
+      await appFaces(page);
+      await showsNewest(page);
+      const row = await page.locator(".pane-frame.is-current .ghostty-row", { hasText: "HIST-300" }).boundingBox();
+      assert.ok(row);
+      const point = { x: row.x + 5, y: row.y + row.height / 2 };
+      const cdp = await context.newCDPSession(page);
+      await page.evaluate(() => navigator.clipboard.writeText("keep this"));
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
+      await holdTouch(page);
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: point.x + 85, y: point.y }] });
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      const copy = page.locator(".pane-frame.is-current").getByRole("button", { name: "Copy", exact: true });
+      await copy.waitFor({ timeout: 5000 });
+      assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "keep this", "copy_on_select off keeps the clipboard until Copy is tapped");
+      if (evidence) await page.screenshot({ path: join(evidence, "terminal-touch-selection-copy-action.png") });
+      await copy.tap();
+      await page.waitForFunction(async () => await navigator.clipboard.readText() === "HIST-300", undefined, { timeout: 5000 });
+      console.log("PASS copy_on_select off offers Copy without overwriting the clipboard on release");
     } finally {
       await context.close();
     }
