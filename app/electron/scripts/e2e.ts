@@ -400,8 +400,13 @@ async function lifecycle(app: string): Promise<void> {
   if (process.platform !== "darwin") {
     // a lone Alt stays the page's (a terminal's Alt chords) and never opens the hidden menu bar, which would take the keys after it
     await first.inspector.eval(`(() => { const contents = e2e.window().webContents; contents.focus(); for (const type of ["keyDown", "keyUp"]) contents.sendInputEvent({ type, keyCode: "Alt" }); return true; })()`);
-    const menuBar = await until("the menu bar shown by a lone Alt", () => first.inspector.eval<boolean>("e2e.window().isMenuBarVisible() || !e2e.window().webContents.isFocused()"), 5_000).catch(() => false);
-    check("a lone Alt keeps the menu bar hidden and the page focused", menuBar === false);
+    let looks = 0;
+    const menuBar = await until("the menu bar shown by a lone Alt", async () => {
+      const taken = await first.inspector.eval<boolean>("e2e.window().isMenuBarVisible() || !e2e.window().webContents.isFocused()");
+      looks += 1;
+      return taken;
+    }, 5_000).catch(() => false);
+    check("a lone Alt keeps the menu bar hidden and the page focused", menuBar === false && looks > 0, `${looks} looks`);
   }
 
   const serverPid = saved(first).server?.pid ?? -1;
