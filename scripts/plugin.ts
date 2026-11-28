@@ -29,7 +29,7 @@ import { fleetPreview } from "../server/preview.ts";
 import { stateDirRefusal } from "../server/machine-profile.ts";
 import { COMPILED, entryCommand, ROOT as SERVER_ROOT } from "../server/entries.ts";
 import { version as builtVersion } from "../package.json";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { appendFileSync, chmodSync, closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, hostname, platform, uptime } from "node:os";
 import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
@@ -48,7 +48,7 @@ import { desktopCommandRecord, ENV_FILES, LEGACY_PLUGIN_ID, ownDir, PLUGIN_ID, p
 import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
 import { herdrStateDir } from "./plugin-state.ts";
 import { HTTPS_PORT_VARIABLE, HTTPS_PORTS, httpsPorts, parseTailscale, parseTailscaleIp, parseTailscaleOwner, readTailscale, tailscaleBinary } from "../server/tailscale.ts";
-import { descendantProcesses, windowsArgv, windowsProcessTable } from "../server/windows-processes.ts";
+import { descendantProcesses, terminateWindowsTree, windowsArgv, windowsProcessTable } from "../server/windows-processes.ts";
 
 // `ovis tui` comes first: the screen needs nothing of this install's state, so it starts before the work below reads the
 // state dirs or copies an old install's settings (adoptLegacyConfig).
@@ -609,14 +609,18 @@ async function start(): Promise<number> {
   }
 }
 
-async function startInTurn(): Promise<number> {
-  if (!portSet) {
-    const kept = savedPort(PORT_FILE) ?? DEFAULT_PORT;
-    if (kept !== port) {
-      port = kept;
-      origin = originOf(host, port);
-    }
+/** The port a start chose and saved (a fallback when the default was taken), unless PORT sets one. */
+function followSavedPort(): void {
+  if (portSet) return;
+  const kept = savedPort(PORT_FILE) ?? DEFAULT_PORT;
+  if (kept !== port) {
+    port = kept;
+    origin = originOf(host, port);
   }
+}
+
+async function startInTurn(): Promise<number> {
+  followSavedPort();
   if (await health()) {
     process.stdout.write(`Ovis already running at ${origin}\n`);
     return 0;
@@ -753,7 +757,8 @@ type StopDependencies = {
   readonly isWindows: boolean;
   readonly processTable: typeof windowsProcessTable;
   readonly isAlive: (pid: number) => boolean;
-  readonly terminateTree: (pid: number) => { status: number | null; error: Error | undefined; stderr: string };
+  /** `started`: the creation time the stop verified, which the process must still have when it is ended */
+  readonly terminateTree: (pid: number, started?: number) => { status: number | null; error: Error | undefined; stderr: string };
 };
 
 const stopDependencies: StopDependencies = {
@@ -763,14 +768,7 @@ const stopDependencies: StopDependencies = {
     try { process.kill(pid, 0); return true; }
     catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
   },
-  terminateTree(pid) {
-    const result = spawnSync("taskkill", ["/pid", String(pid), "/t", "/f"], { windowsHide: true, encoding: "utf8" });
-    return {
-      status: result.status,
-      error: result.error,
-      stderr: result.stderr?.trim() ?? "",
-    };
-  },
+  terminateTree: terminateWindowsTree,
 };
 
 /**
@@ -793,8 +791,12 @@ export function startedByThisPlugin(path: string, argv: string[], env: Record<st
  * Returns once the server is gone. It stops answering at once, but its supervisor holds the
  * checkout's lock until the bridge under it exits, and a `start` before then finds that lock,
  * gives up, and leaves nothing running.
+ *
+ * `ifDown` (Ovis for Windows' Start, which stops a recorded server its status read as down): a start
+ * may hold the lifecycle turn while its server comes up, so the server is asked again once this stop
+ * has the turn, and one that answers by then is left running.
  */
-export async function stop(dependencies: StopDependencies = stopDependencies): Promise<number> {
+export async function stop(dependencies: StopDependencies = stopDependencies, { ifDown = false } = {}): Promise<number> {
   if (!existsSync(REQUESTED_STATE_DIR) && recordedPid() === null) {
     process.stdout.write("Ovis is not running\n");
     return 0;
@@ -807,6 +809,13 @@ export async function stop(dependencies: StopDependencies = stopDependencies): P
   }
   try {
     settleStateDir();
+    if (ifDown) {
+      followSavedPort();
+      if (await health()) {
+        process.stdout.write(`Ovis already running at ${origin}\n`);
+        return 0;
+      }
+    }
     return await stopInTurn(dependencies);
   } finally {
     turn.release();
@@ -840,6 +849,12 @@ async function stopInTurn(dependencies: StopDependencies): Promise<number> {
     const identified = owner?.started !== undefined && (birth !== null
       ? owner.started === birth
       : owner.started <= recordedAt && startedByThisPlugin(owner.path ?? "", windowsArgv(owner.commandLine ?? "")));
+    // proved only by a creation time recorded and read that differ: an unread table or a record without one proves nothing
+    if (owner?.started !== undefined && birth !== null && owner.started !== birth) {
+      forgetServer(pid);
+      process.stdout.write(`Ovis is not running (pid ${pid} now belongs to another process)\n`);
+      return 0;
+    }
     if (!owner || !identified
       || !existsSync(PID_FILE) || statSync(PID_FILE).mtimeMs !== recordedAt
       || Number(readFileSync(PID_FILE, "utf8").trim()) !== pid) {
@@ -851,7 +866,7 @@ async function stopInTurn(dependencies: StopDependencies): Promise<number> {
       return member ? [member] : [];
     })];
     // Windows has no Unix process groups or graceful SIGTERM: include the supervisor and bridge.
-    const killed = dependencies.terminateTree(pid);
+    const killed = dependencies.terminateTree(pid, owner.started);
     if (killed.status !== 0 && recordedPid() !== null) {
       process.stderr.write(`could not stop Ovis: ${killed.error?.message ?? killed.stderr.trim()}\n`);
       return 1;
@@ -1595,7 +1610,7 @@ export async function runPlugin(): Promise<void> {
   switch (command) {
     case "agent": process.exit(await (await import("./plugin-agent.ts")).runAgent(args));
     case "start": process.exit(await start());
-    case "stop": process.exit(await stop());
+    case "stop": process.exit(await stop(stopDependencies, { ifDown: args.includes("--if-down") }));
     case "status": process.exit(await status(args));
     case "pair": process.exit(await pair(args));
     case "link": process.exit(await linkCommand(args));

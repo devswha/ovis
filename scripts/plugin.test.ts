@@ -555,6 +555,37 @@ describe("starts at the same moment", () => {
     }
   }, 30_000);
 
+  it("stop --if-down leaves the recorded server alone when it answers once the stop has its turn; plain stop ends it (#4006)", async () => {
+    // a start holds the turn while its server comes up: Ovis for Windows read the status as down meanwhile
+    const holder = await holdLock();
+    let up = false;
+    const ours = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch: () => up ? Response.json(APP_HEALTH) : new Response("starting", { status: 503 }) });
+    const { server } = recordedSleeper((pid) => { const reading = readProcessBirth(pid); return reading.state === "identified" ? reading.birth : null; });
+    const alive = () => { try { process.kill(server.pid!, 0); return true; } catch { return false; } };
+    try {
+      const stop = launch("stop", { PORT: String(ours.port) }, { args: ["--if-down"] });
+      const reader = stop.stdout.getReader();
+      let out = await readUntil(reader, "waiting for it to finish", "stop --if-down");
+      up = true;
+      await holder.release();
+      const code = await stop.exited;
+      for (;;) { const { value, done } = await reader.read(); if (done) break; out += new TextDecoder().decode(value); }
+      expect(code, `${out}\n${await new Response(stop.stderr).text()}`).toBe(0);
+      expect(out).toContain(`Ovis already running at http://127.0.0.1:${ours.port}`);
+      expect(alive(), "regression (fails on main): the server that came up while the stop waited was ended").toBe(true);
+      expect(readFileSync(join(scratch, "state", "server.pid"), "utf8")).toBe(`${server.pid}\n`);
+
+      const plain = await run("stop", { PORT: String(ours.port) });
+      expect(plain.exitCode, plain.err).toBe(0);
+      expect(plain.out, "control: a plain stop still ends a server that answers").toContain(`stopped Ovis (pid ${server.pid})`);
+      expect(alive()).toBe(false);
+    } finally {
+      holder.kill();
+      try { process.kill(-server.pid!, "SIGKILL"); } catch {}
+      await ours.stop(true);
+    }
+  }, 30_000);
+
   it("stop the server they spawned when its record cannot be written, so none runs unrecorded", async () => {
     mkdirSync(join(scratch, "state", "server.owner"), { recursive: true });
     const root = join(scratch, "root");

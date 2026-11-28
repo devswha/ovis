@@ -269,8 +269,13 @@ namespace Ovis
         }
 
         /// <summary>
-        /// Only a pid the stop could not verify as Ovis's (another program reused it) is no failure: the stop leaves it
-        /// alone and the start passes over it.
+        /// A recorded process that lives but does not answer gets the plugin's verified stop first, whether herdr runs or
+        /// not: with herdr down, the start herdr's startup hook runs would refuse it. One that answers its bridge while
+        /// herdr is down is left to answer again once herdr is back. The stop is told --if-down: a start may be bringing
+        /// its server up meanwhile, and the stop leaves it running once it answers. Every stop that exits nonzero failed: one
+        /// that finds the recorded pid is another program's now (its creation time differs) says so and exits 0, and
+        /// "could not verify the recorded Ovis process" means it could not tell, when the start would refuse that process
+        /// too (scripts/plugin-stop-identity.test.ts).
         /// </summary>
         public async Task Start()
         {
@@ -279,10 +284,12 @@ namespace Ovis
             if (Phase != Phase.Installed || (Status != null && Status.Running)) return;
             ClearLog();
             Set(Phase.Working, Lang.L("Restarting…", "다시 시작하는 중…"));
-            if (plugin != null && Status != null && Status.Pid != null && await HerdrRunning())
+            if (plugin != null && Status != null && Status.Pid != null && (!Status.AliveWithoutHerdr || await HerdrRunning()))
             {
-                var stop = await PluginCommand(plugin, "stop", Append);
-                if (Setup.StopFailed(stop.Status, stop.Output))
+                var stop = await PluginCommand(plugin, "stop", Append, true, 120, "--if-down");
+                // a plugin from before --if-down refuses the flag as a usage error, and runs nothing
+                if (stop.Status == 2) stop = await PluginCommand(plugin, "stop", Append);
+                if (stop.Status != 0)
                 {
                     Fail(Lang.L("Could not stop the Ovis server.", "Ovis 서버를 멈추지 못했습니다."));
                     return;
@@ -392,9 +399,9 @@ namespace Ovis
         /// checkout's files open for the move's uninstall, and their status named no pid. Every release under the new id
         /// finds herdr's dir itself, and keeps its own for a server started by hand from the checkout.
         /// </summary>
-        private static async Task<RunResult> PluginCommand(Plugin plugin, string command, Action<string> onLine, bool keepStderr = true, int limitSeconds = 120)
+        private static async Task<RunResult> PluginCommand(Plugin plugin, string command, Action<string> onLine, bool keepStderr = true, int limitSeconds = 120, params string[] rest)
         {
-            var line = Setup.PluginCommandLine(plugin.Root, command, System.IO.File.Exists);
+            var line = Setup.PluginCommandLine(plugin.Root, command, System.IO.File.Exists, rest);
             var program = line[0];
             var words = line.Skip(1).ToArray();
             if (plugin.Id != Links.LegacyPluginId) return await Run.Program(program, words, onLine, keepStderr, limitSeconds);
