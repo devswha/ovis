@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType } from "react";
-import { createPortal, flushSync } from "react-dom";
+import { createPortal } from "react-dom";
 import { ChevronDown, ChevronRight, Circle, CircleAlert, CircleCheck, CircleDot, CircleSlash, type LucideProps } from "lucide-react";
 
 import { legacyEditText } from "../../shared/edit-output.ts";
@@ -16,6 +16,7 @@ import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { askedQuestions } from "../../shared/askQuestions.ts";
 import { OpenFileContext } from "../lib/filePaths.ts";
 import { foldToolOutput } from "../../shared/markdown.ts";
+import { showFoldedBlock, useFindableTail } from "../lib/textFold.ts";
 import { toolPathLabel } from "../lib/workspacePath.ts";
 import { linkFilePaths } from "./FilePathLink.tsx";
 import { patchText } from "../../shared/patch.ts";
@@ -307,21 +308,7 @@ function ToolOutputText({ stateKey, output, whole }: { stateKey: string; output:
   const [chosen, setExpanded] = useChatRowToggle(stateKey, false);
   const expanded = chosen === true;
   const folded = fold !== null && !expanded;
-  // where the browser can find hidden text (hidden=until-found), a folded output's tail stays in the
-  // page, drawn as nothing: its find reaches it and unfolds the output; elsewhere only the head is drawn
-  // (rendered without a page, as to static markup, nothing is found)
-  const findable = folded && typeof HTMLElement !== "undefined" && "onbeforematch" in HTMLElement.prototype;
-  const tail = useRef<HTMLSpanElement>(null);
-  useLayoutEffect(() => {
-    const node = tail.current;
-    if (node === null) return;
-    // React writes `hidden` only as true or false
-    node.setAttribute("hidden", "until-found");
-    // unfolded before the browser scrolls to the match, so it lands where the unfolded text puts it
-    const found = () => flushSync(() => setExpanded(true));
-    node.addEventListener("beforematch", found);
-    return () => node.removeEventListener("beforematch", found);
-  }, [folded, setExpanded]);
+  const tail = useFindableTail<HTMLSpanElement>(folded, setExpanded);
   const box = useRef<HTMLPreElement>(null);
   const more = useRef<HTMLButtonElement>(null);
   const folding = useRef(false);
@@ -332,8 +319,7 @@ function ToolOutputText({ stateKey, output, whole }: { stateKey: string; output:
     const view = node?.closest(".chat-view");
     if (folding.current) {
       folding.current = false;
-      const atEnd = view instanceof HTMLElement && view.scrollHeight - view.clientHeight - view.scrollTop <= 1;
-      if (node && view && !atEnd && node.getBoundingClientRect().top < view.getBoundingClientRect().top) node.scrollIntoView({ block: "start" });
+      showFoldedBlock(node);
     }
     if (revealing.current) {
       revealing.current = false;
@@ -343,7 +329,7 @@ function ToolOutputText({ stateKey, output, whole }: { stateKey: string; output:
   }, [expanded]);
   return <>
     {/* the head of a folded output links its paths as the whole text finds them: a path the fold cuts stays text */}
-    <pre ref={box} tabIndex={-1} className={`chat-tool-io chat-tool-result${whole ? " is-whole" : ""}`}>{linkFilePaths(output, openFile, folded ? fold.head.length : output.length)}{folded && findable && <span ref={tail} className="chat-tool-result-tail">{output.slice(fold.head.length)}</span>}</pre>
+    <pre ref={box} tabIndex={-1} className={`chat-tool-io chat-tool-result${whole ? " is-whole" : ""}`}>{linkFilePaths(output, openFile, folded ? fold.head.length : output.length)}{folded && tail.findable && <span ref={tail.ref} className="chat-tool-result-tail">{output.slice(fold.head.length)}</span>}</pre>
     {fold !== null && <button ref={more} type="button" className="markdown-code-more chat-tool-result-more" aria-expanded={expanded}
       onClick={(event) => { folding.current = expanded; revealing.current = !expanded && event.detail === 0; setExpanded(!expanded); }}>
       {expanded ? t("Show less") : fold.lines !== null ? t("Show all {n} lines", { n: fold.lines }) : t("Show all {size} characters", { size: formatTokens(output.length) })}

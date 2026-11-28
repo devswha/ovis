@@ -10,6 +10,7 @@ import { shouldOpenWebPage, WebPanelContext } from "../lib/webPanel.ts";
 import { MachineContext, MachineRosterContext } from "../lib/machineContext.tsx";
 import { CHAT_HIGHLIGHT_LIMIT, languageForFence } from "../lib/highlight.ts";
 import { HighlightedCode } from "./HighlightedCode.tsx";
+import { showFoldedBlock, useFindableTail } from "../lib/textFold.ts";
 import { useT } from "../lib/i18n.ts";
 import { useResourceUrlState } from "../lib/useResourceUrl.ts";
 import { type MarkdownImagePreview } from "../lib/markdownImages.ts";
@@ -356,6 +357,8 @@ function CodeBlock({ language, value }: { language: string; value: string }) {
   const [expanded, setExpanded] = useState(false);
   const block = useRef<HTMLDivElement>(null);
   const fold = useMemo(() => foldCode(value), [value]);
+  const folded = fold !== null && !expanded;
+  const tail = useFindableTail<HTMLSpanElement>(folded, setExpanded);
   const copy = async (): Promise<void> => {
     const ok = await copyText(value);
     setCopied(ok);
@@ -370,9 +373,7 @@ function CodeBlock({ language, value }: { language: string; value: string }) {
   useLayoutEffect(() => {
     if (!folding.current) return;
     folding.current = false;
-    const node = block.current;
-    const view = node?.closest(".chat-view");
-    if (node && view && node.getBoundingClientRect().top < view.getBoundingClientRect().top) node.scrollIntoView({ block: "start" });
+    showFoldedBlock(block.current);
   }, [expanded]);
   return (
     <div className="markdown-code" ref={block}>
@@ -383,7 +384,8 @@ function CodeBlock({ language, value }: { language: string; value: string }) {
         </button>
       </div>
       {copyFailed && <p className="markdown-code-error" role="alert">{t("Couldn't copy. Select the text and copy it manually.")}</p>}
-      <HighlightedCode code={fold !== null && !expanded ? fold.head : value} language={grammar} limit={CHAT_HIGHLIGHT_LIMIT} open={plain ? open : null} />
+      <HighlightedCode code={folded ? fold.head : value} language={grammar} limit={CHAT_HIGHLIGHT_LIMIT} open={plain ? open : null} />
+      {folded && tail.findable && <span ref={tail.ref} className="markdown-code-tail">{value.slice(fold.head.length)}</span>}
       {fold !== null && (
         <button type="button" className="markdown-code-more" aria-expanded={expanded} onClick={toggle}>
           {expanded ? t("Show less") : t("Show all {n} lines", { n: fold.lines })}

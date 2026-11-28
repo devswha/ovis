@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { chromium, type Locator, type Page } from "playwright-core";
 import type { ConversationTurn } from "../shared/protocol.ts";
 import type {} from "./chat-virtual-fixture.tsx";
+import { appContext } from "./app-context.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-chat-virtual-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
@@ -43,6 +44,16 @@ function foldChat(): ConversationTurn[] {
       { kind: "tool", name: "Bash", summary: "cat big.json", input: JSON.stringify({ command: "cat big.json" }), output: LONG_LINE_OUTPUT, output_ref: "fold-output", output_size: WHOLE_OUTPUT.length },
       { kind: "text", text: "FOLD-CHAT-END" },
     ] },
+  ];
+}
+/** an answer that ends in a long code block (80 lines, folded to 20): its last line is only in the folded tail */
+function codeChat(): ConversationTurn[] {
+  const say = (role: ConversationTurn["role"], text: string): ConversationTurn => ({ role, ts: "2026-10-12T00:00:00.000Z", parts: [{ kind: "text", text }] });
+  const code = [...Array.from({ length: 79 }, (_, n) => `const line${n + 1} = ${n + 1};`), "// CODE-TAIL-END"].join("\n");
+  return [
+    ...Array.from({ length: 6 }, (_, n) => say(n % 2 ? "assistant" : "user", `Code turn ${n + 1}. ${"A line of text. ".repeat(8)}`)),
+    say("user", "Write the file."),
+    say("assistant", `CODE-CHAT-END\n\n\`\`\`ts\n${code}\n\`\`\``),
   ];
 }
 const olderEvents = new EventTarget();
@@ -143,6 +154,13 @@ async function update(page: Page) {
   await page.evaluate(() => window.chatQa.refresh());
   await (await response).finished();
 }
+/**
+ * The browser's own find-in-page looks for `text`: a text fragment (`#:~:text=`) runs the search Ctrl+F runs, which
+ * reaches hidden=until-found text and fires its beforematch. `window.find` reaches that text too but reveals nothing.
+ */
+async function findInPage(page: Page, text: string) {
+  await page.evaluate((text) => { location.hash = `:~:text=${encodeURIComponent(text).replaceAll("-", "%2D")}`; }, text);
+}
 async function shot(page: Page, name: string) {
   if (evidence) await page.screenshot({ path: join(evidence, `chat-virtual-${name}.png`) });
 }
@@ -204,6 +222,9 @@ try {
     if (url.pathname.endsWith("/pane/commands")) return Response.json({ commands: [] });
     if (url.pathname.endsWith("/pane/conversation") && url.pathname.includes("/machines/fold/")) {
       return Response.json({ source: "claude-transcript", history_id: "fold:1", cursor: null, turns: foldChat() });
+    }
+    if (url.pathname.endsWith("/pane/conversation") && url.pathname.includes("/machines/code/")) {
+      return Response.json({ source: "claude-transcript", history_id: "code:1", cursor: null, turns: codeChat() });
     }
     if (url.pathname.endsWith("/pane/conversation") && url.pathname.includes("/machines/long/")) {
       longRead.asked.resolve();
@@ -416,14 +437,14 @@ try {
     assert.deepEqual(folded, { away: false, jump: false }, "a following reader who folds an output stays at the end, following");
     console.log(`PASS ${width}: folding an output while following the end keeps the reader at the end, following`);
     // the folded tail stays in the page, drawn as nothing, so the browser's find reaches it; a match
-    // there (the browser's beforematch) unfolds the output
+    // there unfolds the output
     const testOutput = testRow.locator(".chat-tool-result");
     const tail = testOutput.locator(".chat-tool-result-tail");
     assert.equal(await tail.getAttribute("hidden"), "until-found");
     assert.ok((await testOutput.textContent())?.endsWith("(pass) test 100"), "the folded tail is in the page");
     assert.ok(!(await testOutput.evaluate((node) => (node as HTMLElement).innerText)).includes("(pass) test 100"), "the folded tail is not drawn");
     assert.equal(await tail.evaluate((node) => node.getBoundingClientRect().height), 0, "the folded tail takes no room");
-    await tail.evaluate((node) => node.dispatchEvent(new Event("beforematch")));
+    await findInPage(page, "(pass) test 100");
     await testRow.locator(".chat-tool-result-more[aria-expanded=true]").waitFor();
     assert.ok((await testOutput.evaluate((node) => (node as HTMLElement).innerText)).includes("(pass) test 100"), "a find match in the tail unfolds the output");
     console.log(`PASS ${width}: a folded output's tail stays findable and a match unfolds it`);
@@ -450,6 +471,41 @@ try {
     await longLine.locator(".chat-tool-io.is-whole").waitFor();
     assert.equal(await longLine.locator(".chat-tool-result-more").getAttribute("aria-expanded"), "false", "the whole output opens folded, whatever the preview was");
     console.log(`PASS ${width}: a single 100 KB line folds by its length; a keyboard unfold keeps the focus in view; its whole output opens folded`);
+    await context.close();
+  }
+  for (const width of [1440, 390] as const) {
+    const context = await appContext(browser, { viewport: { width, height: width === 390 ? 844 : 900 } });
+    await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark" })));
+    const page = await context.newPage();
+    activePage = page;
+    page.setDefaultTimeout(15_000);
+    await throttled(page);
+    await page.goto(`http://127.0.0.1:${server.port}/`);
+    await page.getByText("REVISION-0", { exact: true }).waitFor();
+    await page.evaluate(() => { window.chatQa.status("idle"); window.chatQa.machine("code"); });
+    await page.getByText("CODE-CHAT-END", { exact: true }).waitFor();
+    const code = page.locator("[data-chat-row]").filter({ hasText: "CODE-CHAT-END" }).locator(".markdown-code");
+    await code.locator(".markdown-code-more[aria-expanded=false]").waitFor();
+    // a folded code block's tail stays in the page, drawn as nothing, as a folded tool output's does
+    assert.ok((await code.textContent())?.includes("// CODE-TAIL-END"), "the folded tail is in the page");
+    assert.ok(!(await code.evaluate((node) => (node as HTMLElement).innerText)).includes("CODE-TAIL-END"), "the folded tail is not drawn");
+    assert.ok(await code.evaluate((node) => Math.abs(node.querySelector("pre")!.getBoundingClientRect().bottom - node.querySelector(".markdown-code-more")!.getBoundingClientRect().top) <= 1), "the folded tail takes no room");
+    await findInPage(page, "CODE-TAIL-END");
+    await code.locator(".markdown-code-more[aria-expanded=true]").waitFor();
+    assert.ok((await code.evaluate((node) => (node as HTMLElement).innerText)).includes("// CODE-TAIL-END"), "a find match in the tail unfolds the code block");
+    console.log(`PASS ${width}: a folded code block's tail stays findable and a match unfolds it`);
+    const jump = page.locator(".chat-virtual-jump");
+    if (await jump.count() > 0) { await jump.click(); await jump.waitFor({ state: "detached" }); }
+    await page.locator(".chat-view").evaluate((node) => { node.scrollTop = node.scrollHeight; });
+    await settleBottom(page);
+    assert.equal(await jump.count(), 0, "the reader follows the end before folding");
+    assert.ok(await code.evaluate((node) => node.getBoundingClientRect().top < node.closest(".chat-view")!.getBoundingClientRect().top), "the unfolded code block starts above the view");
+    await code.locator(".markdown-code-more[aria-expanded=true]").click();
+    await code.locator(".markdown-code-more[aria-expanded=false]").waitFor();
+    await settled(page);
+    const folded = { away: await page.locator(".chat-view").evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop > 1), jump: await jump.count() > 0 };
+    assert.deepEqual(folded, { away: false, jump: false }, "a following reader who folds a code block stays at the end, following");
+    console.log(`PASS ${width}: folding a code block while following the end keeps the reader at the end, following`);
     await context.close();
   }
   for (const [width, theme] of [[1440, "dark"], [1440, "light"], [390, "dark"], [390, "light"]] as const) {
