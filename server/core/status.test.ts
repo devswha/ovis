@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, it, jest, setSystemTime, spyOn } from "bun:test";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -12,6 +13,7 @@ import * as omo from "../omo.ts";
 import * as records from "../omo-records.ts";
 import * as service from "../opencode-service.ts";
 import * as agyStore from "../agy-store.ts";
+import { BackgroundWait, WAIT_LIMIT_MS } from "../background-wait.ts";
 import * as grokStore from "../grok-store.ts";
 import * as processStart from "../process-start.ts";
 import { closeOpenCodeNative, openCodeNativeState, openCodePaneService, PANE_VERIFIED_MS, trackVerifiedOpenCodePanes } from "../opencode-native.ts";
@@ -2467,6 +2469,334 @@ describe("the status hub's Claude turn at rest under its background subagent", (
     appendFileSync(path, line({ type: "user", origin: { kind: "human" }, timestamp: ts(5000), permissionMode: "default", message: { role: "user", content: "next" } }));
     h.poll();
     expect(h.last().status).toBe("working");
+  });
+});
+
+describe("the status hub's GJC turn at rest under its background job", () => {
+  const ts = (ms: number) => new Date(at + ms).toISOString();
+  const pane: HerdrPane = { ...claude, agent: "gjc", agent_status: "working", agent_session: null, focused: false, revision: 0, terminal_id: "gjc-bg" };
+  const prompt = (ms: number) => line({ type: "message", timestamp: ts(ms), message: { role: "user" } });
+  const answer = (ms: number) => line({ type: "message", timestamp: ts(ms), message: { role: "assistant", stopReason: "stop" } });
+  const started = (ms: number) => line({ type: "message", timestamp: ts(ms), message: { role: "toolResult", toolName: "task", toolCallId: "t",
+    content: [{ type: "text", text: "Started 1 background task job using executor.\n- `0-Cleanup` (job `0-Cleanup`)" }],
+    details: { async: { state: "running", jobId: "0-Cleanup", type: "task" } } } });
+  const delivered = (ms: number) => line({ type: "custom_message", customType: "async-result", display: true, timestamp: ts(ms), details: { jobs: [{ jobId: "0-Cleanup", type: "task" }] } });
+  let transcripts = 0;
+  let discovery: { mockRestore(): void } | undefined;
+  afterEach(() => { discovery?.mockRestore(); discovery = undefined; setSystemTime(); });
+  /** GJC found in the hub's pane, its transcript holding `records` */
+  async function gjcPane(records: string, h = hub()) {
+    const path = join(root, `gjc-background-${++transcripts}.jsonl`);
+    writeFileSync(path, records);
+    let running: { path: string | null; startedAt: number | null } | null = { path, startedAt: null };
+    discovery = spyOn(gjc, "gjcPanes").mockImplementation(async () => new Map(running ? [[pane.pane_id, running]] : []));
+    h.herdrSays(pane);
+    await h.status.gjc.refresh([pane]);
+    return { ...h,
+      append: (...records: string[]) => appendFileSync(path, records.join("")),
+      /** the gjc process discovery finds in the pane from now on (its start, and its transcript: this one unless said), or none */
+      runs: (process: { path?: string | null; startedAt: number | null } | null) => { running = process && { path, ...process }; },
+    };
+  }
+  /** a GJC pane whose turn started a background job and came to rest */
+  async function waiting(h = hub()) {
+    const g = await gjcPane(prompt(0), h);
+    expect(g.last().status).toBe("working");
+    g.append(started(100), answer(200));
+    await g.status.gjc.poll();
+    return g;
+  }
+
+  it("ends the wait when gjc leaves the pane, herdr telling it before discovery does", async () => {
+    // Given a GJC pane at rest on a job.
+    const h = await waiting();
+    expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+    // When gjc exits: herdr says the shell is back, and only then does discovery stop finding gjc.
+    const shell = { ...pane, agent: null, agent_status: "unknown" };
+    h.herdrSays(shell);
+    handlers.onStatus(pane.pane_id, "unknown", null);
+    h.runs(null);
+    await h.status.gjc.refresh([shell]);
+    // Then nothing holds the pane, in frames or in the snapshot.
+    expect(h.last().bg).toBe(false);
+    expect((await h.snapshot()).panes[0]?.background_wait).toBeUndefined();
+  });
+
+  /** a GJC pane at rest on a job, whose process's start periodic discovery has read twice: the same process holds its wait */
+  async function waitingOnProcess() {
+    const h = await waiting();
+    const from = Date.now();
+    h.runs({ startedAt: at - 60_000 });
+    setSystemTime(from + 6_000);
+    await h.status.gjc.refresh([pane]);
+    setSystemTime(from + 12_000);
+    await h.status.gjc.refresh([pane]);
+    expect((await h.status.clientSnapshot()).panes[0]).toMatchObject({ background_tasks: 1, background_wait: true });
+    return { ...h, from };
+  }
+
+  it("ends the wait when gjc exits and a new gjc starts in the pane before discovery looks again", async () => {
+    // Given a GJC pane at rest on a job.
+    const h = await waitingOnProcess();
+    // When gjc exits and a fresh gjc, with no transcript record yet, starts there before the next discovery:
+    // herdr's words for both come while the old one is still tracked.
+    handlers.onStatus(pane.pane_id, "unknown", null);
+    handlers.onStatus(pane.pane_id, "idle", "gjc");
+    h.runs({ path: null, startedAt: h.from + 14_000 });
+    setSystemTime(h.from + 18_000);
+    await h.status.gjc.refresh([pane]);
+    // Then nothing holds the new gjc, and none of the old one's work is counted.
+    expect(h.last().bg).toBe(false);
+    const after = (await h.status.clientSnapshot()).panes[0];
+    expect(after?.background_wait).toBeUndefined();
+    expect(after?.background_tasks ?? 0).toBe(0);
+  });
+
+  it("keeps the wait OmO holds in a pane it took from GJC when GJC's discovery then drops the pane", async () => {
+    // Given GJC tracked in a pane, at rest on nothing.
+    const h = await gjcPane(prompt(0) + answer(100));
+    const proj = join(root, "omo-takeover");
+    mkdirSync(join(proj, ".omo", "senpi-task", "tasks"), { recursive: true });
+    const taken: HerdrPane = { ...pane, agent_status: "idle", cwd: proj };
+    h.herdrSays(taken);
+    // When OmO's own discovery finds native OmO there, and its turn ends while a task it started runs.
+    const session = "abcdef12-3456-4789-8abc-def012345678";
+    const omoPath = join(root, `2026-11-15T00-00-00_${session}.jsonl`);
+    writeFileSync(omoPath, prompt(1000));
+    const omoFound = spyOn(omo, "omoPanes").mockResolvedValue(new Map([[pane.pane_id, { path: omoPath, startedAt: null }]]));
+    try {
+      await h.status.omo.refresh([taken]);
+      expect(h.last().status).toBe("working");
+      writeFileSync(join(proj, ".omo", "senpi-task", "tasks", "st_1.json"), JSON.stringify({ status: "running", parent_session_id: session }));
+      appendFileSync(omoPath, answer(2000));
+      await h.status.omo.poll();
+      expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+      const told = h.alerts.length;
+      // And GJC's next discovery (a snapshot reads OmO first, then GJC on the panes OmO named) no longer finds GJC there.
+      await h.status.clientSnapshot();
+      expect(h.status.gjc.runs(pane.pane_id)).toBe(false);
+      // Then OmO's wait stands, and no finish is alerted while its task runs.
+      expect(h.last().bg).toBe(true);
+      expect(h.alerts.slice(told)).not.toContain("done");
+      await h.status.omo.poll();
+      expect((await h.status.clientSnapshot()).panes[0]?.background_wait).toBe(true);
+    } finally {
+      omoFound.mockRestore();
+    }
+  });
+
+  it("ends the wait when a new gjc started in the pane resumes the same session", async () => {
+    // Given a GJC pane at rest on a job.
+    const h = await waitingOnProcess();
+    // When gjc exits and a fresh gjc resumes that session before the next discovery.
+    h.runs({ startedAt: h.from + 14_000 });
+    setSystemTime(h.from + 18_000);
+    await h.status.gjc.refresh([pane]);
+    // Then the old process's job holds nothing: no wait, not even its grace.
+    expect(h.last().bg).toBe(false);
+    const after = (await h.status.clientSnapshot()).panes[0];
+    expect(after?.background_wait).toBeUndefined();
+    expect(after?.background_tasks ?? 0).toBe(0);
+  });
+
+  it("ends the wait when the same gjc switches to another session whose transcript is not read yet", async () => {
+    // Given a GJC pane at rest on a job.
+    const h = await waitingOnProcess();
+    // When the same gjc process moves to a new session (/new, /resume), whose transcript cannot be read yet.
+    h.runs({ path: join(root, "gjc-background-unwritten.jsonl"), startedAt: at - 60_000 });
+    setSystemTime(h.from + 18_000);
+    await h.status.gjc.refresh([pane]);
+    // Then the old session's job holds nothing in the pane.
+    const after = (await h.status.clientSnapshot()).panes[0];
+    expect(after?.background_wait).toBeUndefined();
+    expect(after?.background_tasks ?? 0).toBe(0);
+  });
+
+  it("keeps the wait through herdr's word while the transcript's last record is half written", async () => {
+    // Given a GJC pane at rest on a job, whose transcript's next record is only partly written.
+    const h = await waiting();
+    const record = JSON.stringify({ type: "custom", customType: "note" });
+    h.append(record.slice(0, 10));
+    await h.status.gjc.poll();
+    // When herdr reports the provider child at work and at rest meanwhile, and the record is then complete.
+    handlers.onStatus(pane.pane_id, "working", "gjc");
+    handlers.onStatus(pane.pane_id, "idle", "gjc");
+    h.append(`${record.slice(10)}\n`);
+    await h.status.gjc.poll();
+    // Then the pane still waits on its job: BG, alerted as working, not a finish.
+    expect(h.last()).toMatchObject({ status: "done", bg: true });
+    expect(h.alerts.at(-1)).toBe("working");
+    expect((await h.snapshot()).panes[0]).toMatchObject({ background_tasks: 1, background_wait: true });
+  });
+
+  it("reads BG, not DONE, while a job the turn started runs, and alerts the finish once its delivery is answered", async () => {
+    // Given a GJC pane whose turn starts a background subagent and ends.
+    const h = await waiting();
+    // Then the pane waits on its job: BG, alerted as working, in frames and in the snapshot.
+    expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+    expect(h.alerts.at(-1)).toBe("working");
+    expect((await h.snapshot()).panes[0]).toMatchObject({ background_tasks: 1, background_wait: true });
+    // When herdr reports its provider child at work and at rest meanwhile.
+    handlers.onStatus(pane.pane_id, "working", "gjc");
+    handlers.onStatus(pane.pane_id, "idle", "gjc");
+    // Then the wait is still the transcript's.
+    expect((await h.snapshot()).panes[0]).toMatchObject({ background_tasks: 1, background_wait: true });
+    // When the job's delivery wakes the session and its answer ends the turn.
+    h.append(delivered(5000));
+    await h.status.gjc.poll();
+    expect(h.last()).toEqual({ status: "working", tasks: 0, bg: false });
+    h.append(answer(6000));
+    await h.status.gjc.poll();
+    // Then that rest is the finish.
+    expect(h.last()).toEqual({ status: "done", tasks: 0, bg: false });
+    expect(h.alerts.at(-1)).toBe("done");
+  });
+
+  it("keeps waiting on its job when the Claude session herdr named in the pane before ends there", async () => {
+    // Given a pane herdr named Claude, whose session the hub looked up, that GJC then took, at rest on a job.
+    const h = hub();
+    h.herdrSays(claude);
+    await h.snapshot();
+    const g = await waiting(h);
+    expect(g.last()).toEqual({ status: "done", tasks: 1, bg: true });
+    // When a snapshot ends that Claude session's lifetime in the pane, with no Claude work counted there.
+    await g.snapshot();
+    // Then the GJC wait stands, told as before.
+    expect((await g.snapshot()).panes[0]).toMatchObject({ background_tasks: 1, background_wait: true });
+    expect(g.last()).toEqual({ status: "done", tasks: 1, bg: true });
+  });
+
+  it("holds nothing on what a Claude turn left running in the pane before GJC took it", async () => {
+    // Given a Claude pane at rest on its background subagent.
+    const h = await workingClaude();
+    h.rest();
+    h.poll();
+    expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+    // When GJC is found in the pane, at rest with no job.
+    const g = await gjcPane(prompt(0) + answer(100), h);
+    // Then nothing holds the pane.
+    expect((await g.status.clientSnapshot()).panes[0]?.background_wait).toBeUndefined();
+  });
+
+  it("keeps the wait of the agent that took the pane when a snapshot read begun while herdr named gjc there is answered late", async () => {
+    // Given a GJC pane, and a snapshot read begun while herdr names gjc there.
+    const h = hub();
+    const taken = opencode("ses_parent");
+    const named = { ...opencode(null), agent: "gjc" };
+    const path = join(root, `gjc-background-${++transcripts}.jsonl`);
+    writeFileSync(path, prompt(0) + answer(100));
+    discovery = spyOn(gjc, "gjcPanes").mockResolvedValue(new Map([[named.pane_id, { path, startedAt: null }]]));
+    h.herdrSays(named);
+    handlers.onBaseline([named]);
+    await h.snapshot();
+    const late = await h.heldSnapshot();
+    // When gjc exits, OpenCode starts there and its turn ends while its subagent runs.
+    handlers.onStatus(named.pane_id, "unknown", null);
+    h.herdrSays(taken);
+    handlers.onStatus(named.pane_id, "working", "opencode");
+    handlers.onStatus(named.pane_id, "idle", "opencode");
+    await h.settle();
+    expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+    const told = h.alerts.length;
+    // And the read begun under gjc is answered now, GJC's discovery finding gjc on it.
+    await late();
+    // Then OpenCode's wait stands, and no finish is alerted while its subagent runs, nor after the next read.
+    expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+    discovery.mockRestore();
+    discovery = spyOn(gjc, "gjcPanes").mockResolvedValue(new Map());
+    expect((await h.snapshot()).panes[0]?.background_wait).toBe(true);
+    expect(h.alerts.slice(told)).not.toContain("done");
+  });
+
+  it("alerts the finish of the agent that took the pane when its subagent ends while a late read named gjc there", async () => {
+    // Given a pane gjc left whose OpenCode turn rests on its subagent, and a read begun while herdr named gjc answered late.
+    const h = hub();
+    const taken = opencode("ses_parent");
+    const named = { ...opencode(null), agent: "gjc" };
+    const path = join(root, `gjc-background-${++transcripts}.jsonl`);
+    writeFileSync(path, prompt(0) + answer(100));
+    discovery = spyOn(gjc, "gjcPanes").mockResolvedValue(new Map([[named.pane_id, { path, startedAt: null }]]));
+    h.herdrSays(named);
+    handlers.onBaseline([named]);
+    await h.snapshot();
+    const late = await h.heldSnapshot();
+    handlers.onStatus(named.pane_id, "unknown", null);
+    h.herdrSays(taken);
+    handlers.onStatus(named.pane_id, "working", "opencode");
+    handlers.onStatus(named.pane_id, "idle", "opencode");
+    await h.settle();
+    await late();
+    expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+    // When OpenCode's subagent ends before GJC's next discovery, which then finds no gjc there.
+    const db = new Database(join(root, "opencode.db"));
+    db.query("INSERT INTO session_message VALUES ('msg_child_done', 'ses_child', 'assistant', 2, ?, ?, ?)").run(at + 2000, at + 2000, JSON.stringify({ time: { created: at + 2000, completed: at + 2000 }, finish: "stop" }));
+    const tick = BackgroundWait.prototype.tick;
+    const ranOut = Promise.withResolvers<void>();
+    const timer = spyOn(BackgroundWait.prototype, "tick").mockImplementation(function (this: BackgroundWait) {
+      const out = tick.call(this);
+      if (out.includes(named.pane_id)) ranOut.resolve();
+      return out;
+    });
+    try {
+      await h.status.opencodeAgents.poll();
+      discovery.mockRestore();
+      discovery = spyOn(gjc, "gjcPanes").mockResolvedValue(new Map());
+      await h.status.gjc.refresh([taken as HerdrPane]);
+      setSystemTime(Date.now() + 90_000);
+      await ranOut.promise;
+      // Then the wait ends, and its finish is alerted.
+      expect(h.last()).toMatchObject({ tasks: 0, bg: false });
+      expect(h.alerts.at(-1)).not.toBe("working");
+    } finally {
+      timer.mockRestore();
+      db.query("DELETE FROM session_message WHERE id = 'msg_child_done'").run();
+      db.close();
+    }
+  });
+
+  it("reads DONE and alerts the finish once a job gjc wrote no end for has held the rest as long as a wait is held", async () => {
+    // Given a GJC pane at rest on a job whose end never comes (paused, or a result gjc never wrote).
+    const h = await waiting();
+    expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+    const tick = BackgroundWait.prototype.tick;
+    const ranOut = Promise.withResolvers<void>();
+    const timer = spyOn(BackgroundWait.prototype, "tick").mockImplementation(function (this: BackgroundWait) {
+      const out = tick.call(this);
+      if (out.includes(pane.pane_id)) ranOut.resolve();
+      return out;
+    });
+    try {
+      // When the hub's wait timer finds the limit past.
+      setSystemTime(Date.now() + WAIT_LIMIT_MS);
+      await ranOut.promise;
+      // Then the rest is the finish.
+      expect(h.last()).toMatchObject({ status: "done", bg: false });
+      expect(h.alerts.at(-1)).toBe("done");
+    } finally {
+      timer.mockRestore();
+    }
+  });
+
+  it("reads BG for a whole turn read by one poll that left a job running, though the rest before it is older than a wait is held", async () => {
+    // Given a GJC pane whose last turn came to rest, read at its rest, longer ago than a wait is held.
+    const h = await gjcPane(prompt(0));
+    h.append(answer(100));
+    await h.status.gjc.poll();
+    expect(h.last()).toEqual({ status: "done", tasks: 0, bg: false });
+    setSystemTime(Date.now() + WAIT_LIMIT_MS);
+    // When a next turn's prompt, its job's start and its answer are all read by one poll.
+    h.append(prompt(5000), started(5100), answer(5200));
+    await h.status.gjc.poll();
+    // Then the pane waits on that job, alerted as working.
+    expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+    expect(h.alerts.at(-1)).toBe("working");
+    // And the finish is alerted once the job's delivery is answered.
+    h.append(delivered(9000));
+    await h.status.gjc.poll();
+    h.append(answer(9100));
+    await h.status.gjc.poll();
+    expect(h.last()).toEqual({ status: "done", tasks: 0, bg: false });
+    expect(h.alerts.at(-1)).toBe("done");
   });
 });
 

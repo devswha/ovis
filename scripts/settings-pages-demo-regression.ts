@@ -12,7 +12,7 @@ import { PAGES, SETTINGS, closeSettings, dialogOf, historyHolds, openSettings } 
 import { KO } from "../src/lib/i18n.ko.ts";
 import { JA } from "../src/lib/i18n.ja.ts";
 import { ZH } from "../src/lib/i18n.zh.ts";
-import { terminalTheme } from "../src/lib/settings.ts";
+import { terminalTheme, VOICE_LANGUAGE_STORAGE_KEY } from "../src/lib/settings.ts";
 import { rowFor, THEME_IDS, type ThemeId } from "../src/lib/themes.ts";
 import baseline from "../src/lib/themes.legacy-baseline.json";
 import { comboKey, LEGACY_COMBOS } from "./theme-baseline.ts";
@@ -213,9 +213,9 @@ try {
               await openSettingsFolds(page);
               await page.locator(".voice-key").waitFor();
               const dictation = page.getByLabel(label("Dictation language"), { exact: true });
-              await dictation.selectOption("hu-HU");
-              await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:settings")!).voiceLanguage === "hu-HU");
-              assert.equal(await dictation.inputValue(), "hu-HU");
+              await dictation.selectOption("es-419");
+              await page.waitForFunction((key) => JSON.parse(localStorage.getItem(key) ?? "null") === "es-419", VOICE_LANGUAGE_STORAGE_KEY);
+              assert.equal(await dictation.inputValue(), "es-419");
               assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:settings")!).language), language,
                 "dictation selection does not change the display language");
               await dictation.selectOption("auto");

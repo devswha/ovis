@@ -65,6 +65,14 @@ export function validateOffer(value: unknown): RelayOffer {
   return offer;
 }
 
+/** Only secure origins, without credentials, paths, query, fragments or host lists. */
+export function relayEndpoint(input: string, protocol: "wss:" | "https:"): string {
+  const url = new URL(input);
+  if (url.protocol !== protocol || url.username || url.password || url.search || url.hash
+    || url.pathname !== "/" || !/^[a-z0-9.-]+$/i.test(url.hostname) || url.origin.length > MAX_RELAY_CHARS) throw new Error(`Invalid ${protocol} relay origin`);
+  return url.origin;
+}
+
 export function isWssOrigin(text: string): boolean {
   if (text.length > MAX_RELAY_CHARS) return false;
   try {

@@ -110,6 +110,8 @@ export const TERMINAL_ZH: Record<string, string> = {
   "Move tab left": "向左移动标签页",
   "Move tab right": "向右移动标签页",
   "Move to workspace…": "移动到工作区…",
+  "Bring pane here…": "将面板移到此处…",
+  "Bring a pane right of {name}": "移到 {name} 右侧的面板",
   "Move {tab} to": "将 {tab} 移动到",
   "Tab order did not refresh. Try again.": "标签页顺序未更新，请重试。",
   "Jump to bottom": "跳转到底部",

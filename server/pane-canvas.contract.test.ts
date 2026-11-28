@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
-import { paneFocus, paneSplit, sessionSnapshot, tabCreate, workspaceClose, workspaceCreate } from "./herdr/client.ts";
+import { paneFocus, paneProcessInfo, paneSplit, sessionSnapshot, tabCreate, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import type { ApiError, PaneLayoutSnapshot, PaneMoved, PaneSwapped, ServerMessage } from "../shared/protocol.ts";
 
 describe("pane canvas: focus, explicit swap and dragged split ratio", () => {
@@ -155,7 +155,7 @@ describe("pane canvas: focus, explicit swap and dragged split ratio", () => {
   });
 });
 
-describe("pane canvas: a pane moved beside another of its tab (#1819)", () => {
+describe("pane canvas: a pane moved beside another, of its tab (#1819) or another", () => {
   const state = mkdtempSync(join(tmpdir(), "ovis-canvas-move-"));
   let server: ReturnType<typeof createServer>;
   const owned: string[] = [];
@@ -208,12 +208,33 @@ describe("pane canvas: a pane moved beside another of its tab (#1819)", () => {
     }
   });
 
-  it("refuses a pane beside itself, beside another tab's pane, and a pane herdr does not have", async () => {
-    for (const [beside, reason] of [[moved, "same_pane"], [anotherTab, "cross_tab"]]) {
-      expect(await (await post("pane/move", { pane_id: moved, target_pane_id: beside, side: "left" })).json()).toEqual({ ok: true, changed: false, reason });
-    }
+  it("refuses a pane beside itself and a pane herdr does not have", async () => {
+    expect(await (await post("pane/move", { pane_id: moved, target_pane_id: moved, side: "left" })).json()).toEqual({ ok: true, changed: false, reason: "same_pane" });
     const missing = await post("pane/move", { pane_id: moved, target_pane_id: "missing-pane", side: "left" });
     expect(missing.status).toBe(404);
     expect(((await missing.json()) as ApiError).error.code).toBe("pane_not_found");
+  });
+
+  it("brings a pane of another tab, and of another workspace, beside a pane, its terminal and shell kept, the tab it leaves closed", async () => {
+    for (const [brought, side] of [[anotherTab, "right"], [elsewhere, "down"]] as const) {
+      const before = await sessionSnapshot();
+      const was = before.panes.find((pane) => pane.pane_id === brought)!;
+      const shell = (await paneProcessInfo(brought))?.shell_pid;
+      expect(typeof shell).toBe("number");
+      const response = await post("pane/move", { pane_id: brought, target_pane_id: target, side });
+      expect(response.status).toBe(200);
+      expect((await response.json()) as PaneMoved).toEqual({ ok: true, changed: true, reason: null });
+      const after = await sessionSnapshot();
+      // herdr gives a pane from another workspace a new ID there: its terminal is the one it had
+      const now = after.panes.find((pane) => pane.terminal_id === was.terminal_id)!;
+      expect(now.tab_id).toBe(tabId);
+      if (was.workspace_id === owned[0]) expect(now.pane_id).toBe(brought);
+      expect((await paneProcessInfo(now.pane_id))?.shell_pid).toBe(shell);
+      expect(after.tabs.some((tab) => tab.tab_id === was.tab_id)).toBe(false);
+      const layout = after.layouts.find((candidate) => candidate.tab_id === tabId)!;
+      const rect = (id: string) => layout.panes.find((pane) => pane.pane_id === id)!.rect;
+      const [pane, beside] = [rect(now.pane_id), rect(target)];
+      expect(side === "right" ? pane.x > beside.x && pane.y === beside.y : pane.y > beside.y && pane.x === beside.x).toBe(true);
+    }
   });
 });

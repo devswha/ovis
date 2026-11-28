@@ -401,10 +401,12 @@ export type { DevicePairedEvent, DevicePairedSeenEvent, DeviceRemovedEvent, Pair
  *         on that side, prefix+shift+hjkl, or an explicit pane; exactly one destination is required;
  *         changed false names no_neighbor, same_pane, cross_tab or not_found)
  *  POST   /api/pane/move   { pane_id, target_pane_id, side: left|right|up|down } -> PaneMoved { ok: true, changed, reason }
- *         (pane.move: the pane goes to that side of another pane of its own tab, its terminal and ID kept;
- *         herdr 0.9.5 moves none within a tab, so it passes through a tab of its own, and a swap puts
+ *         (pane.move: the pane goes to that side of another pane, its terminal kept: of its own tab, its ID
+ *         kept, or of another tab, which it joins in one herdr move (herdr gives a pane from another
+ *         workspace a new ID, and closes a tab or workspace it leaves empty); herdr 0.9.5 moves none
+ *         within a tab, so it passes through a tab of its own, and a swap puts
  *         it left of or above the target; herdr's focus stays where it was; changed false names
- *         same_pane or cross_tab, an unknown pane answers pane_not_found; a pane herdr will not
+ *         same_pane, or cross_tab from a bridge that moves no pane between tabs, an unknown pane answers pane_not_found; a pane herdr will not
  *         bring back beside its target goes back into its tab, beside the target or another pane,
  *         and the error says so, or says it waits in a tab of its own; changed true with a reason:
  *         the swap was refused or failed, so the pane stays right of or below its target)

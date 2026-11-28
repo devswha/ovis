@@ -16,6 +16,7 @@ import type { HttpRequest } from "../../shared/relay-mux-engine.ts";
 import { FrameType, KEY_PROOF_FEATURE, type MuxFrame, type SessionError } from "../../shared/relay-mux.ts";
 import { pairFingerprint, signPairProof } from "../../shared/pair-fingerprint.ts";
 import { decodeOffer } from "../../shared/relay-offer.ts";
+import { GLOBAL_APP } from "../../shared/relay-regions.ts";
 import { readDeviceRegistry } from "../devices.ts";
 import { createServer } from "../index.ts";
 import { RelayService } from "../relay/service.ts";
@@ -101,8 +102,8 @@ export async function pairingPc(options: { rows?: readonly { created_at: string 
   // `relayPass`: the relay keeps a pass from the test account service, as a PC on one of Ovis's relays does
   const pass = options.relayPass ? { accountService: "https://account.test", ovisRelays: ["wss://relay.test"],
     accountFetch: (request: Request) => accountFetch ? accountFetch(request, account) : account.fetch(request) } : {};
-  const service = port === undefined ? new RelayService({ stateDir, relay: "wss://relay.test", connect: () => idleSocket(), ...pass })
-    : new RelayService({ stateDir, relay: `wss://127.0.0.1:${port}`, connect: (url) => { const target = new URL(url); return new WebSocket(`ws://127.0.0.1:${port}${target.pathname}${target.search}`); } });
+  const service = port === undefined ? new RelayService({ stateDir, relay: "wss://relay.test", app: GLOBAL_APP, connect: () => idleSocket(), ...pass })
+    : new RelayService({ stateDir, relay: `wss://127.0.0.1:${port}`, app: GLOBAL_APP, connect: (url) => { const target = new URL(url); return new WebSocket(`ws://127.0.0.1:${port}${target.pathname}${target.search}`); } });
   const app = createServer({ ...options.server, port: 0, hostname: "127.0.0.1", stateDir, token: options.server?.token ?? "", tailscaleOwner: null, sidecar: false, relay: service,
     accountService: { url: options.accountService ?? "https://account.test", fetch: accountFetch ? (request) => accountFetch(request, account) : account.fetch } });
   const base = `http://127.0.0.1:${app.port}`;

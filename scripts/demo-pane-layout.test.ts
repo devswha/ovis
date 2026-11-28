@@ -66,8 +66,36 @@ it("the demo preserves native split paths, explicit swaps, moves beside a pane a
       expect(tab.panes.map((candidate) => candidate.pane_id).sort()).toEqual([moving, target].sort());
     }
     expect(await (await post("pane/move", { pane_id: moving, target_pane_id: moving, side: "left" })).json()).toEqual({ ok: true, changed: false, reason: "same_pane" });
-    expect(await (await post("pane/move", { pane_id: moving, target_pane_id: root, side: "left" })).json()).toEqual({ ok: true, changed: false, reason: "cross_tab" });
     expect((await post("pane/move", { pane_id: moving, target_pane_id: target, side: "middle" })).status).toBe(400);
+    // a pane of another tab joins the target's: its tab keeps its other pane, and a tab and workspace it leaves empty close
+    expect(await (await post("pane/move", { pane_id: moving, target_pane_id: root, side: "left" })).json()).toEqual({ ok: true, changed: true, reason: null });
+    let joined = await snapshot();
+    let tab = joined.layouts.find((candidate) => candidate.tab_id === tabId)!;
+    expect(rect(tab, moving).x).toBeLessThan(rect(tab, root).x);
+    expect(joined.panes.find((pane) => pane.pane_id === moving)).toMatchObject({ tab_id: tabId, workspace_id: made.workspace_id });
+    expect(joined.layouts.find((candidate) => candidate.tab_id === moveTab)!.panes.map((pane) => pane.pane_id)).toEqual([target]);
+    const moveWorkspace = joined.panes.find((pane) => pane.pane_id === target)!.workspace_id;
+    expect(await (await post("pane/move", { pane_id: target, target_pane_id: root, side: "down" })).json()).toEqual({ ok: true, changed: true, reason: null });
+    joined = await snapshot();
+    tab = joined.layouts.find((candidate) => candidate.tab_id === tabId)!;
+    expect(rect(tab, target).y).toBeGreaterThan(rect(tab, root).y);
+    expect(joined.tabs.some((candidate) => candidate.tab_id === moveTab)).toBe(false);
+    expect(joined.workspaces.some((workspace) => workspace.workspace_id === moveWorkspace)).toBe(false);
+    expect(joined.tabs.find((candidate) => candidate.tab_id === tabId)!.pane_count).toBe(tab.panes.length);
+    // the focused, zoomed pane of a three-pane tab: its tab unzooms on its two others, and the tab it joins focuses it
+    const zoomedPane = ((await (await post("workspace/create", { cwd: "/home/demo/zoom-check", label: "zoom-check" })).json()) as WorkspaceCreated).pane_id;
+    const zoomedTab = (await snapshot()).panes.find((pane) => pane.pane_id === zoomedPane)!.tab_id;
+    await split(await split(zoomedPane, "right"), "down");
+    await post("pane/focus", { pane_id: zoomedPane });
+    await post("pane/zoom", { pane_id: zoomedPane, mode: "on" });
+    expect(await (await post("pane/move", { pane_id: zoomedPane, target_pane_id: root, side: "right" })).json()).toEqual({ ok: true, changed: true, reason: null });
+    joined = await snapshot();
+    const left = joined.layouts.find((candidate) => candidate.tab_id === zoomedTab)!;
+    expect([left.zoomed, left.panes.length]).toEqual([false, 2]);
+    tab = joined.layouts.find((candidate) => candidate.tab_id === tabId)!;
+    expect(joined.focused_pane_id).toBe(zoomedPane);
+    expect(tab.focused_pane_id).toBe(zoomedPane);
+    expect(tab.panes.filter((pane) => pane.focused).map((pane) => pane.pane_id)).toEqual([zoomedPane]);
   } finally {
     for (const [key, descriptor] of saved) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);

@@ -1,6 +1,6 @@
 import { tally, usageCounters } from "../lib/usageCounters.ts";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type DragEvent, type MouseEvent, type MutableRefObject, type PointerEvent, type ReactNode } from "react";
-import { ArchiveRestore, Bot, Columns2, Ellipsis, Eraser, Folder, FolderInput, LockOpen, Maximize2, Minimize2, MoveHorizontal, Pencil, Plus, Rows2, ArrowLeftRight, Terminal, TextSearch, TextWrap, X } from "lucide-react";
+import { ArchiveRestore, Bot, Columns2, Ellipsis, Eraser, Folder, FolderInput, Import, LockOpen, Maximize2, Minimize2, MoveHorizontal, Pencil, Plus, Rows2, ArrowLeftRight, Terminal, TextSearch, TextWrap, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import type { HerdrPane, HerdrTab, PaneLayoutSnapshot, SessionSnapshot } from "../../shared/protocol.ts";
 import { MAX_LABEL_CHARS } from "../../shared/labels.ts";
@@ -21,6 +21,7 @@ import { useT } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
 import { MIRROR_WRAP_QUERY, wideGridKey, wideGrids } from "../lib/terminalFold.ts";
 import { userErrorMessage, type UserError } from "../lib/userError.ts";
+import { paneMoveNotice } from "../lib/useLayoutNotice.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
@@ -111,6 +112,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
   const [renamingTab, setRenamingTab] = useState<HerdrTab | null>(null);
   const renameDrafts = useRef(new Map<string, string>());
   const [movingTab, setMovingTab] = useState<{ tab: HerdrTab; anchor: HTMLElement } | null>(null);
+  const [bringing, setBringing] = useState<{ target: HerdrPane; anchor: HTMLElement; point?: { x: number; y: number } } | null>(null);
   const [closingTab, setClosingTab] = useState<HerdrTab | null>(null);
   const [closing, setClosing] = useState<HerdrPane | null>(null);
   const [error, setError] = useState<UserError | null>(null);
@@ -156,7 +158,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
     return () => { alive.current = false; cancelDrag(); };
   }, []);
   useEffect(() => { cancelDrag(); }, [topology]);
-  useEffect(() => { setMenu(null); setRenaming(null); setRenamingTab(null); setMovingTab(null); setClosingTab(null); setClosing(null); setError(null); renameDrafts.current.clear(); }, [presented?.tab_id]);
+  useEffect(() => { setMenu(null); setRenaming(null); setRenamingTab(null); setMovingTab(null); setBringing(null); setClosingTab(null); setClosing(null); setError(null); renameDrafts.current.clear(); }, [presented?.tab_id]);
   useLayoutEffect(() => {
     if (renameRequest === null || !loneRowHidden || !appLayout.rename || !presented) return;
     const tab = snapshot?.tabs.find((entry) => entry.tab_id === presented.tab_id);
@@ -167,6 +169,8 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
     rowItems(presented)?.tab.find((item) => item.id === "close-tab" && !item.disabled)?.run();
   }, [closeTabRequest]);
   useEffect(() => { if (menu && !snapshot?.panes.some((item) => item.pane_id === menu.paneId)) setMenu(null); }, [snapshot, menu]);
+  // the picker's target gone, or moved to another tab by another client: its list and destination would be another tab's
+  useEffect(() => { if (bringing && snapshot?.panes.find((item) => item.pane_id === bringing.target.pane_id)?.tab_id !== bringing.target.tab_id) setBringing(null); }, [snapshot, bringing]);
 
   const run = (operation: () => Promise<unknown>): void => {
     const tabId = pane?.tab_id;
@@ -223,6 +227,37 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
     await api.zoomPane(target.pane_id, layout ? zoomMode(layout, target.pane_id) : "on");
     if (alive.current && latest.current.tabId === tabId && latest.current.selection === selection) onSelect(target.pane_id);
   });
+  // the panes of this PC's other tabs, for Bring pane here…: the target's workspace first, then the others, each
+  // in the order its sidebar lists workspaces, tabs and panes
+  const broughtFrom = (target: HerdrPane): HerdrPane[] => {
+    const workspaces = snapshot?.workspaces ?? [];
+    return [...workspaces.filter((workspace) => workspace.workspace_id === target.workspace_id), ...workspaces.filter((workspace) => workspace.workspace_id !== target.workspace_id)]
+      .flatMap((workspace) => snapshot?.tabs.filter((tab) => tab.workspace_id === workspace.workspace_id && tab.tab_id !== target.tab_id) ?? [])
+      .flatMap((tab) => rosterPanes(snapshot?.panes.filter((item) => item.tab_id === tab.tab_id) ?? []));
+  };
+  // the pane's tab in its workspace, and the workspace when it is another: a workspace's one tab says no more than its name
+  const placeOf = (item: HerdrPane, target: HerdrPane): string => {
+    const tabs = snapshot?.tabs.filter((tab) => tab.workspace_id === item.workspace_id) ?? [];
+    const at = tabs.findIndex((tab) => tab.tab_id === item.tab_id);
+    const tab = at === -1 ? "" : tabLabel(tabs[at]!, t, at + 1);
+    if (item.workspace_id === target.workspace_id) return tab;
+    const workspace = snapshot?.workspaces.find((candidate) => candidate.workspace_id === item.workspace_id)?.label ?? "";
+    return tabs.length === 1 ? workspace : `${workspace} · ${tab}`;
+  };
+  // herdr's pane.move into the target's tab, right of it as Split right puts a new pane: the pane keeps its terminal
+  // and process, and a tab it leaves empty closes (server/herdr/client.ts `paneMoveBeside`); a drag of its title then
+  // puts it on another side
+  const bring = (moving: HerdrPane, target: HerdrPane): void => {
+    const tabId = latest.current.tabId;
+    setError(null);
+    void api.movePaneBeside(moving.pane_id, target.pane_id, "right").then((moved) => {
+      if (!alive.current) return;
+      onChanged();
+      // a bridge from before panes moved between tabs answers cross_tab
+      const notice = !moved.changed && moved.reason === "cross_tab" ? t("This PC's bridge does not offer this yet") : paneMoveNotice(moved, "right", t);
+      if (notice !== null && latest.current.tabId === tabId) setError({ message: notice, detail: null });
+    }, (reason: unknown) => { if (latest.current.tabId === tabId) fail(reason); });
+  };
   const target = menu ? snapshot?.panes.find((item) => item.pane_id === menu.paneId) : null;
   type MenuUse = (name: "split_by_menu" | "close_pane_by_menu") => void;
   const layoutItems = (target: HerdrPane, use: MenuUse): RowMenuItem[] => [
@@ -235,6 +270,11 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
       { id: "split-right", label: t("Split right"), icon: Columns2, run: () => { use("split_by_menu"); run(() => split(target, "right")); } },
       { id: "split-down", label: t("Split down"), icon: Rows2, run: () => { use("split_by_menu"); run(() => split(target, "down")); } },
     ]),
+    // a running pane of another tab joins this one beside the target, as tmux's join-pane brings one in
+    ...(!appLayout.split || !appLayout.move || target.own_tab || broughtFrom(target).length === 0 ? [] : [{ id: "bring-pane", label: t("Bring pane here…"), icon: Import, run: () => {
+      const anchor = menu?.anchor ?? document.querySelector<HTMLElement>(".header-more-button") ?? canvas.current;
+      if (anchor) setBringing({ target, anchor, point: menu?.point });
+    } }]),
     ...(!appLayout.arrange ? [] : [{ id: "zoom", label: t(layout && zoomMode(layout, target.pane_id) === "off" ? "Unzoom pane" : "Zoom pane"), icon: Maximize2,
       run: () => zoom(target) }]),
   ];
@@ -275,7 +315,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
     const tabs = snapshot?.tabs.filter((tab) => tab.workspace_id === target.workspace_id).length ?? 0;
     if (!includeTabRow && !tabRowHidden(cramped, tabs, tabsInHeader)) return paneItemsFor(target, use);
     const row = rowItems(target);
-    const own = paneItemsFor(target, use).filter((item) => item.id === "zoom" ? layout?.zoomed : item.id !== "split-right" && item.id !== "split-down");
+    const own = paneItemsFor(target, use).filter((item) => item.id === "zoom" ? layout?.zoomed : item.id !== "split-right" && item.id !== "split-down" && item.id !== "bring-pane");
     return [row.panes, own, row.tab].filter((group) => group.length > 0)
       .flatMap((group, at) => at === 0 ? group : group.map((item, index) => index === 0 ? { ...item, divider: true } : item));
   };
@@ -479,6 +519,12 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
             if (alive.current && latest.current.tabId === tabId) setError({ message: routeMissing(reason) ? t("This PC's bridge does not offer this yet") : t("Move failed: {reason}", { reason: userErrorMessage(reason).message }), detail: null });
           });
         },
+      }))} />}
+    {bringing && <RowMenu anchor={bringing.anchor} point={bringing.point} title={t("Bring a pane right of {name}", { name: displayPaneTitle(bringing.target) })} align="start" onClose={() => setBringing(null)}
+      header={<span className="pane-frame-menu-target">{t("Bring a pane right of {name}", { name: displayPaneTitle(bringing.target) })}</span>}
+      items={broughtFrom(bringing.target).map((item): RowMenuItem => ({
+        id: `bring:${item.pane_id}`, label: displayPaneTitle(item), hint: placeOf(item, bringing.target), icon: Terminal,
+        glyph: item.agent ? <AgentMark agent={item.agent} size={16} /> : undefined, run: () => bring(item, bringing.target),
       }))} />}
     {closingTab && <ConfirmDialog title={t("Close tab {name}?", { name: tabLabel(closingTab, t, 1) })}
       body={`${t("It is the last tab of {workspace}: the workspace closes with it, and the agents and shells in it stop.", { workspace: snapshot?.workspaces.find((entry) => entry.workspace_id === closingTab.workspace_id)?.label ?? "" })} ${closingTabWhat}`}

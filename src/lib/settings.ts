@@ -41,11 +41,20 @@ export const VOICE_ENGINES: readonly VoiceEngineChoice[] = ["auto", "browser", "
  * route takes the first subtag).
  */
 export const DICTATION_LANGUAGES = [
-  "ar-SA", "cs-CZ", "da-DK", "de-DE", "el-GR", "en-GB", "en-US", "es-ES", "fi-FI", "fr-FR", "he-IL", "hi-IN",
+  "ar-SA", "cs-CZ", "da-DK", "de-DE", "el-GR", "en-GB", "en-US", "es-419", "es-ES", "fi-FI", "fr-FR", "he-IL", "hi-IN",
   "hu-HU", "id-ID", "it-IT", "ja-JP", "ko-KR", "nb-NO", "nl-NL", "pl-PL", "pt-BR", "pt-PT", "ro-RO", "ru-RU",
   "sk-SK", "sv-SE", "th-TH", "tr-TR", "uk-UA", "vi-VN", "zh-CN", "zh-TW",
 ] as const;
 export type DictationLanguage = "auto" | (typeof DICTATION_LANGUAGES)[number];
+function isDictationLanguage(value: unknown): value is DictationLanguage {
+  return value === "auto" || DICTATION_LANGUAGES.some((tag) => tag === value);
+}
+
+// Older app bundles, PCs and the deployed telemetry collector do not accept es-419.
+function legacyDictationLanguage(language: DictationLanguage): TelemetrySettings["voiceLanguage"] {
+  return language === "es-419" ? "auto" : language;
+}
+
 export type DefaultView = "auto" | "chat" | "terminal";
 export interface FileFontBase { size: number; chat: number; ui: number }
 import { sanitizeShortcutOverrides, type ShortcutOverrides } from "./shortcutBindings.ts";
@@ -268,7 +277,7 @@ export function telemetrySettingsSnapshot(settings: Settings): TelemetrySettings
     usageGlance: settings.usageGlance,
     defaultView: settings.defaultView,
     voiceInput: settings.voiceInput,
-    voiceLanguage: settings.voiceLanguage,
+    voiceLanguage: legacyDictationLanguage(settings.voiceLanguage),
     voicePolishChat: settings.voicePolishChat,
     voicePolishTerminal: settings.voicePolishTerminal,
     wrapCode: settings.wrapCode,
@@ -639,7 +648,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     usageOrder: usageKeys(record["usageOrder"]),
     usageHidden: usageKeys(record["usageHidden"]),
     voiceInput: voiceButton(record["voiceInput"]),
-    voiceLanguage: DICTATION_LANGUAGES.includes(record["voiceLanguage"] as (typeof DICTATION_LANGUAGES)[number]) ? record["voiceLanguage"] as DictationLanguage : DEFAULT_SETTINGS.voiceLanguage,
+    voiceLanguage: isDictationLanguage(record["voiceLanguage"]) ? record["voiceLanguage"] : DEFAULT_SETTINGS.voiceLanguage,
     voiceEngine: VOICE_ENGINES.includes(record["voiceEngine"] as VoiceEngineChoice) ? record["voiceEngine"] as VoiceEngineChoice : DEFAULT_SETTINGS.voiceEngine,
     voicePolishChat: typeof record["voicePolishChat"] === "boolean" ? record["voicePolishChat"] : DEFAULT_SETTINGS.voicePolishChat,
     voicePolishTerminal: typeof record["voicePolishTerminal"] === "boolean" ? record["voicePolishTerminal"] : DEFAULT_SETTINGS.voicePolishTerminal,
@@ -683,6 +692,8 @@ export const AGENT_GROUP_SORT_STORAGE_KEY = "ovis:agent-group-sort";
 export const PHONE_TABS_STORAGE_KEY = "ovis:phone-tabs";
 /** Settings → Voice input → Speech recognition, in a key of its own: an older tab's whole-record save would put it back on Auto. */
 export const VOICE_ENGINE_STORAGE_KEY = "ovis:voice-engine";
+/** An old tab can mirror a supported choice, but cannot erase the locale this version picked. */
+export const VOICE_LANGUAGE_STORAGE_KEY = "ovis:voice-language";
 export const FILE_FONT_SIZE_STORAGE_KEY = "ovis:file-font-size";
 export const FILE_FONT_BASE_STORAGE_KEY = "ovis:file-font-base";
 export const COMPOSER_ARTIFACTS_STORAGE_KEY = "ovis:composer-artifacts";
@@ -803,6 +814,7 @@ export function loadSettings(): Settings {
   const stored = readStoredAppearance(() => window.localStorage);
   const settings = stored.main === null ? { ...DEFAULT_SETTINGS, theme: defaultThemeSetting() } : sanitizeSettings(stored.main.value);
   const merged = stored.themes === null ? settings : sanitizeSettings({ ...settings, ...stored.themes });
+  const voiceLanguage = readStorageJson(VOICE_LANGUAGE_STORAGE_KEY);
   const { agentGroups, agentGroupSort, phoneTabs, voiceEngine } = sanitizeSettings({
     agentGroups: readStorageJson(AGENT_GROUPS_STORAGE_KEY),
     agentGroupSort: readStorageJson(AGENT_GROUP_SORT_STORAGE_KEY),
@@ -818,6 +830,7 @@ export function loadSettings(): Settings {
     pcLoad: readChosen(PC_LOAD_STORAGE_KEY),
     phoneTabs,
     voiceEngine,
+    voiceLanguage: isDictationLanguage(voiceLanguage) ? voiceLanguage : merged.voiceLanguage,
     agentGroups,
     agentGroupSort,
     ...readFileFont(),
@@ -850,7 +863,8 @@ export function saveSettings(settings: Settings): boolean {
       darkTheme: mirrored.darkTheme, lightTheme: mirrored.lightTheme,
       mirror: { palette: mirrored.palette, paletteDark: mirrored.paletteDark, paletteLight: mirrored.paletteLight },
     }));
-    const main: Record<string, unknown> = { ...mirrored, enterSends: mirrored.enterSends ?? true };
+    const main: Record<string, unknown> = { ...mirrored, enterSends: mirrored.enterSends ?? true, voiceLanguage: legacyDictationLanguage(mirrored.voiceLanguage) };
+    window.localStorage.setItem(VOICE_LANGUAGE_STORAGE_KEY, JSON.stringify(mirrored.voiceLanguage));
     for (const [field, key] of SEPARATE_STORAGE_KEYS) {
       window.localStorage.setItem(key, JSON.stringify(mirrored[field]));
       delete main[field];
@@ -950,13 +964,13 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const onStorage = (event: StorageEvent): void => {
-      if (event.storageArea !== window.localStorage || (event.key !== SETTINGS_STORAGE_KEY && event.key !== ENTER_SENDS_STORAGE_KEY && event.key !== VOICE_ENGINE_STORAGE_KEY && event.key !== PHONE_TABS_STORAGE_KEY && event.key !== TERMINAL_SECRET_FIELD_STORAGE_KEY && event.key !== null)) return;
+      if (event.storageArea !== window.localStorage || (event.key !== SETTINGS_STORAGE_KEY && event.key !== ENTER_SENDS_STORAGE_KEY && event.key !== VOICE_ENGINE_STORAGE_KEY && event.key !== VOICE_LANGUAGE_STORAGE_KEY && event.key !== PHONE_TABS_STORAGE_KEY && event.key !== TERMINAL_SECRET_FIELD_STORAGE_KEY && event.key !== null)) return;
       // the recognition another tab chose: audio must not keep going where this tab last sent it; the phone's tab
       // placement is the device's, so a tab still open moves its row with the one that changed it; so does where a
       // password is typed
-      const { shortcutOverrides, enterSends, voiceEngine, phoneTabs, terminalSecretField } = loadSettings();
-      stored.current = { ...stored.current, shortcutOverrides, enterSends, voiceEngine, phoneTabs, terminalSecretField };
-      advance({ ...held.current, shortcutOverrides, enterSends, voiceEngine, phoneTabs, terminalSecretField });
+      const { shortcutOverrides, enterSends, voiceEngine, voiceLanguage, phoneTabs, terminalSecretField } = loadSettings();
+      stored.current = { ...stored.current, shortcutOverrides, enterSends, voiceEngine, voiceLanguage, phoneTabs, terminalSecretField };
+      advance({ ...held.current, shortcutOverrides, enterSends, voiceEngine, voiceLanguage, phoneTabs, terminalSecretField });
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);

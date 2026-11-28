@@ -52,8 +52,9 @@ document, `ovis-layout` (`hc doc get ovis-layout`, `doc.get` / `doc.set`):
   puts it on top; `ratio` is `first`'s share.
 - `zoomed` is the terminal address the tab shows alone, or `null`.
 
-Labels stay the truth for membership. Every time Ovis reads the core it reconciles the document
-with them: a leaf whose terminal is gone or labeled into another tab is dropped (its sibling takes
+Labels stay the truth for membership. A pane Ovis moves into another tab is relabeled first, then
+placed beside its target in one write of the document. Every time Ovis reads the core it reconciles
+the document with them: a leaf whose terminal is gone or labeled into another tab is dropped (its sibling takes
 the space), a terminal labeled into a tab the document does not place is added to that tab's
 right, and a workspace or tab the document does not list follows the ones it does, in hc's
 terminal order. A tab the document does not know shows its terminals side by side.
