@@ -538,7 +538,11 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
         + (otherHeads ? ` ${t("The other workspaces open on this repository's main checkout close too.")}` : ""),
       run: () => leave(() => closeWorkspace(workspace.workspace_id, sameRepo.length > 0)),
     }) };
-    const folded = repoKey !== undefined && worktreesFolded(repoKey, worktrees);
+    // the fold the row's click works: its worktrees' while it draws them, else its agents' (a group pinned apart, or
+    // one the filter keeps without its worktrees, draws none)
+    const rowWorktrees = [...visibleGroups.pinned, ...visibleGroups.rest].find((group) => group.workspace.workspace_id === workspace.workspace_id)?.children ?? [];
+    const repoFold = repoKey !== undefined && rowWorktrees.length > 0;
+    const folded = repoFold && worktreesFolded(repoKey, rowWorktrees);
     const ownAgents = agentTree ? agentRows.filter((entry) => entry.pane.workspace_id === workspace.workspace_id && (filtered === null || filtered.panes.has(entry.pane.pane_id))) : [];
     const agentsAway = ownAgents.length > 0 && agentsFolded(workspace.workspace_id, ownAgents);
     const pinned = pinnedIds.includes(workspace.workspace_id);
@@ -549,7 +553,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
       // a tab is a drive action, so a watching device is not offered it
       ...(online && !watching ? [{ id: "new-tab", label: t("New tab with agent…"), icon: Bot, run: () => {
         if (agentTree) {
-          if (worktrees.length > 0 && repoKey) { if (folded || collapsedWorktrees.has(repoKey)) unfoldForNewAgent(workspace.workspace_id, repoKey); }
+          if (repoFold) { if (folded || collapsedWorktrees.has(repoKey)) unfoldForNewAgent(workspace.workspace_id, repoKey); }
           else if (agentsAway || foldedAgents.has(workspace.workspace_id)) unfoldForNewAgent(workspace.workspace_id, undefined);
         }
         tally(() => usageCounters.paneUse("new_tab_by_menu", machineId));
@@ -559,8 +563,8 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
       ...(historyOffered && !watching ? [{ id: "session-history", label: t("Earlier sessions…"), icon: History, run: () => actions.openSessionHistory({ machineId, workspaceId: workspace.workspace_id, agent: (panes.length > 0 ? currentPane(workspace, panes) : null)?.agent ?? null }) }] : []),
       ...(holdsLock(closes) ? [] : [{ ...closeItem, label: t(sameRepo.length > 0 ? "Close group" : "Close workspace"), divider: false }]),
       ...worktreeItems, ...deleteItems,
-      ...(worktrees.length > 0 && repoKey ? [{ id: "fold", label: t(folded ? "Expand" : "Collapse"), icon: folded ? ChevronRight : ChevronDown, run: () => toggleWorktrees(repoKey, folded) }] : []),
-      ...(!(worktrees.length > 0 && repoKey) && ownAgents.length > 0 ? [{ id: "fold", label: t(agentsAway ? "Expand" : "Collapse"), icon: agentsAway ? ChevronRight : ChevronDown, run: () => toggleAgents(workspace.workspace_id, agentsAway) }] : []),
+      ...(repoFold ? [{ id: "fold", label: t(folded ? "Expand" : "Collapse"), icon: folded ? ChevronRight : ChevronDown, run: () => toggleWorktrees(repoKey, folded) }] : []),
+      ...(!repoFold && ownAgents.length > 0 ? [{ id: "fold", label: t(agentsAway ? "Expand" : "Collapse"), icon: agentsAway ? ChevronRight : ChevronDown, run: () => toggleAgents(workspace.workspace_id, agentsAway) }] : []),
     ];
   };
 
@@ -856,9 +860,9 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
           aria-description={fixed ? undefined : `${t("Reorder workspace {name}", { name: workspace.label })} · ${t("Drag to reorder · Alt+↑/↓")}`}
           data-pane={pane.pane_id}
           aria-current={selected ? "true" : undefined}
-          aria-expanded={foldable ? !rowFolded : undefined}
+          aria-expanded={foldable ? !agentsAway : undefined}
           title={[`${pane.pane_id} — ${rowTitle}`, branchNote, ...paths, paneTitle(pane), agentsTitle(workspace)].filter(Boolean).join(" — ")}
-          onPointerDown={(event) => { if (event.button === 0 && !event.ctrlKey && !selected && pane.agent != null) pressPane?.(machineId, pane.pane_id); }}
+          onPointerDown={(event) => { if (!foldable && event.button === 0 && !event.ctrlKey && !selected && pane.agent != null) pressPane?.(machineId, pane.pane_id); }}
           onClick={() => { if (foldable) toggleFold(); else actions.selectPane(pane.pane_id); }}
           onKeyDown={(event) => {
             onRowKeyDown(event, workspace.workspace_id);
