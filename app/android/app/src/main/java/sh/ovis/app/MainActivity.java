@@ -745,7 +745,9 @@ public class MainActivity extends BridgeActivity {
     private void keepIfOvis(String pc, String url) {
         // the bundled shell is the app's own copy, asked nothing over the network
         if (PCStore.scoped(pc) || shell != null) {
-            PCStore.remember(this, pc);
+            // an address opened on an unclear answer is kept as the current PC too, not only listed
+            if (PCStore.trying(pc)) PCStore.confirm(this, pc);
+            else PCStore.remember(this, pc);
             return;
         }
         boolean trying = PCStore.trying(pc);
