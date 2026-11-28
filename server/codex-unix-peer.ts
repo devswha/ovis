@@ -1,12 +1,10 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
+import { ssInode } from "./unix-peer.ts";
 
 const exec = promisify(execFile);
 
-/** A socket inode as `ss` prints it. The `ss` of iproute2 6.1 (Ubuntu 24.04) prints it as a signed 32-bit
- * number, so past 2^31 inode 2154015387 reads -2140951909; /proc/net/unix always prints it unsigned. */
-const ssInode = (printed: string) => (BigInt(printed) & 0xffffffffn).toString();
 
 /** The kernel's one established stream from the TUI to this listener, or no proof. */
 export async function codexUnixPeer({ path, server, tui }: {

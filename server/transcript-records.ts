@@ -208,6 +208,8 @@ export function piNotice(value: unknown): Extract<ConversationPart, { kind: "not
   const entry = record(value);
   if (entry.type !== "custom_message" || entry.display === false || typeof entry.content !== "string") return null;
   if ((entry.attribution === "agent" || entry.attribution === undefined) && typeof entry.customType === "string" && GJC_IRC_MESSAGES.has(entry.customType)) return null;
+  // Prime Agent's digest of its harness notes is the model's context, not chat, whatever its `display` says
+  if (entry.customType === "harness_digest") return null;
   const text = entry.content.trim().replace(/^<system-notice>\s*/, "").replace(/\s*<\/system-notice>$/, "").trim();
   if (text.length === 0) return null;
   return typeof entry.customType === "string" ? { kind: "notice", text, source: entry.customType } : { kind: "notice", text };

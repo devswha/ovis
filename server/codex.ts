@@ -25,6 +25,7 @@ import { servedConversations } from "./approvals/codex.ts";
 import { codexAppServerSocket, type CodexConversationMode, isCodexExecutable, optionValue } from "./codex-executable.ts";
 import { tmuxCodexProcess, tmuxWrapper } from "./tmux-terminal.ts";
 import { codexUnixPeer } from "./codex-unix-peer.ts";
+import { descriptorTargets, sameDescriptors, socketInodes } from "./unix-peer.ts";
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue => value !== null && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : {};
@@ -3199,23 +3200,6 @@ async function readHeldRollouts(codexProcesses: readonly { readonly pid: number 
   }
   return { open, held, complete };
 }
-
-/** The descriptors `pid` has open, each with the file it names, or null when they cannot be listed. */
-function descriptorTargets(pid: number): Map<string, string> | null {
-  let descriptors: string[];
-  try { descriptors = readdirSync(`/proc/${pid}/fd`); } catch { return null; }
-  if (descriptors.length > 512) return null;
-  const targets = new Map<string, string>();
-  for (const descriptor of descriptors) {
-    try { targets.set(descriptor, readlinkSync(`/proc/${pid}/fd/${descriptor}`)); } catch { return null; }
-  }
-  return targets;
-}
-
-const socketInodes = (targets: ReadonlyMap<string, string>) =>
-  new Set([...targets.values()].flatMap((target) => /^socket:\[(\d+)\]$/.exec(target)?.[1] ?? []));
-const sameDescriptors = (before: ReadonlyMap<string, string>, after: ReadonlyMap<string, string> | null) =>
-  after !== null && after.size === before.size && [...before].every(([descriptor, target]) => after.get(descriptor) === target);
 
 type RolloutDescriptorProof = { readonly path: string; readonly identity: string; readonly server?: string };
 

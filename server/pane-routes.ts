@@ -36,7 +36,7 @@ interface SummaryReadEntry {
 const summaryReads = new Map<string, SummaryReadEntry>();
 
 const INTEGRATION_BOUND = new Set(["opencode", "grok"]);
-const READ_AGENTS = new Set(["claude", "codex", "pi", "omp", "omo", "gjc", "dsh", "dsh-tui", "kiro", "copilot", "grok", "agy", "muse", "letta", "kimi", "kimi-code", "devin", "opencode", "hermes", "cmd"]);
+const READ_AGENTS = new Set(["claude", "codex", "pi", "omp", "omo", "gjc", "dsh", "dsh-tui", "kiro", "copilot", "grok", "agy", "muse", "letta", "kimi", "kimi-code", "devin", "opencode", "hermes", "cmd", "prime-agent"]);
 const LOOK_MS = 2000;
 const INTEGRATION_LIST_TTL_MS = 30_000;
 let integrations: { at: number; list: Promise<Awaited<ReturnType<typeof integrationList>>> } | null = null;

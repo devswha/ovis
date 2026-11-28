@@ -56,6 +56,7 @@ import { ompBlobStore, ompHeldOpen, ompPaneRoute, ompRouteOwns, ompRouteStore, o
 import { forgetOpencodeRead, forgetOpencodeState, OPENCODE_IMAGE_REF, opencodeConversation, opencodeDatabasePath, opencodeFreshSession, opencodeImage, opencodeReadKey, opencodeSessionId, opencodeToolOutput } from "./opencode.ts";
 import { PI_NPM_ENTRY, piTranscriptPath, unwrittenSession } from "./pi.ts";
 import { cmdModelCatalogPath, cmdTranscriptPath } from "./cmd.ts";
+import { primeTranscriptPath } from "./prime.ts";
 import { defaultDevinDbPath, DevinHistoryUnavailable, devinConversation, forgetDevinState } from "./devin.ts";
 import { forgetGrokState, GROK_IMAGE_REF, grokImage, grokProjection, grokToolOutput, parseGrokTranscript, GrokUnavailable } from "./grok.ts";
 import { resolveGrokStore } from "./grok-store.ts";
@@ -2156,6 +2157,12 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
       if (found === null) throw new ConversationUnavailable("no_session_path");
       if ("unwritten" in found) throw new ConversationNotStarted(found.unwritten.id, "cmd-transcript", found.unwritten.path);
       return { source: "cmd-transcript", path: found.path };
+    }
+    if (agent === "prime-agent") {
+      const found = await primeTranscriptPath(paneId, known === undefined ? {} : { processes: known?.foreground_processes ?? [] });
+      if (found === null) throw new ConversationUnavailable("no_session_path");
+      // Prime Agent writes pi's session format
+      return { source: "pi-transcript", path: found.path, piAgentDir: found.agentDir, piFile: found.identity };
     }
     if (agent === "opencode") {
       const session = opencodeSessionId(pane);

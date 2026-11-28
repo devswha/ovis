@@ -237,6 +237,7 @@ describe("herdr socket", () => {
     "server/herdr-marker.ts": "a liveness probe: connects and ends at once, sends no request",
     "server/account/recovery.ts": "ovis recover's own private recovery socket in this PC's state folder, not herdr's",
     "server/herdr-core/socket-transport.ts": "herdr-core's socket, not herdr's: a line that never starts a core, for a client that must not",
+    "server/prime.ts": "Prime Agent's daemon socket, not herdr's: one read-only `list` per connection, named by the kernel as the pane's TUI's peer",
   };
   const NET_CONNECT_ALLOWED: Record<string, string> = {
     "server/line-call.ts": "one request to a private tool broker's socket, never herdr's",
