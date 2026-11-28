@@ -2099,15 +2099,15 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           return;
         }
         const target = term.element ?? host;
-        // each report belongs to this pane, this attach and this role: one that is not current when
-        // its frame comes drops the rest of the swipe instead of sending it
+        // Drop the rest of a queued swipe if its pane, attach, input role or scroll route changes.
         const pane = paneRef.current;
         const generation = outputGeneration;
         const clientX = touchX;
         const clientY = touchY;
         touchPacer.push(steps, {
           allowed: () => !disposed && pane !== null && paneRef.current === pane && generation === outputGeneration
-            && !observeRef.current && !heldRef.current && !releasedRef.current && !adopted() && socket.canInput(pane),
+            && !observeRef.current && !heldRef.current && !releasedRef.current && !adopted() && socket.canInput(pane)
+            && route === touchScrollRoute(),
           emit: (sign) => {
             touchWheelDispatching = true;
             try {

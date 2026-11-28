@@ -10,7 +10,16 @@ import { withDemoBrowser } from "./demo-browser.ts";
 import { appFaces } from "./app-faces.ts";
 
 interface Frame { type: string; pane_id?: string; text?: string }
-declare global { interface Window { dragFixture: { inputs: Frame[]; glideFinished?: boolean } } }
+declare global {
+  interface Window {
+    dragFixture: {
+      inputs: Frame[];
+      glideFinished?: boolean;
+      leaveFullscreen?: () => void;
+      flushTouchFrame?: () => number;
+    };
+  }
+}
 
 function installDragFixture(): void {
   const params = new URL(location.href).searchParams;
@@ -18,10 +27,11 @@ function installDragFixture(): void {
   const touch = params.get("touch") === "1";
   const local = params.get("buffer") === "main";
   // Fullscreen apps use an alternate screen with SGR mouse reporting, unlike local history.
+  const history = Array.from({ length: 120 }, (_, i) => `LOCAL-ROW-${i + 1}\r\n`).join("");
   const stream = local
-    ? Array.from({ length: 120 }, (_, i) => `LOCAL-ROW-${i + 1}\r\n`).join("")
+    ? history
     : `\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[H\x1b[2J${Array.from({ length: 20 }, (_, index) => `CODEX-ROW-${index + 1}`).join("\r\n")}`;
-  const state = { inputs: [] as Frame[] };
+  const state: Window["dragFixture"] = { inputs: [] };
   window.dragFixture = state;
   const Demo = window.WebSocket;
   const Recorded = function (url: string | URL, protocols?: string | string[]) {
@@ -61,6 +71,10 @@ function installDragFixture(): void {
       }
       if (frame.type === "attach" && frame.pane_id) {
         const paint = () => socket.push({ type: "pty-data", fixture: "drag", pane_id: frame.pane_id, data: stream });
+        state.leaveFullscreen = () => socket.push({
+          type: "pty-data", fixture: "drag", pane_id: frame.pane_id,
+          data: `\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l${history}`,
+        });
         if (featured) paint();
         else waiting = paint;
       }
@@ -151,6 +165,44 @@ await withDemoBrowser({ tempPrefix: "codex-drag-demo-", afterTransport: `\n<scri
         assert.ok(await reports() > 5, `${kind}: a flick still coasts after the finger lifts`);
       }
       console.log(`PASS ${kind}: ${name} uses the ${oneRow ? "one" : "three"}-row wheel report step`);
+      if (pane === panes.web && kind === "core") {
+        const queuedFrameCount = await page.evaluate(({ x, y, rowHeight }) => {
+          const target = document.elementFromPoint(x, y)!;
+          const send = (type: string, clientY: number) => target.dispatchEvent(new TouchEvent(type, {
+            bubbles: true, cancelable: true, touches: [new Touch({ identifier: 1, target, clientX: x, clientY })],
+          }));
+          send("touchstart", y);
+          // Hold the wheel frame until the fixture's PTY output has switched off mouse mode.
+          const frames: FrameRequestCallback[] = [];
+          const request = window.requestAnimationFrame;
+          window.requestAnimationFrame = (run) => frames.push(run);
+          try {
+            send("touchmove", y + rowHeight * 4);
+          } finally {
+            window.requestAnimationFrame = request;
+          }
+          window.dragFixture.flushTouchFrame = () => {
+            let wheels = 0;
+            const countWheel = () => { wheels++; };
+            document.addEventListener("wheel", countWheel, true);
+            try {
+              for (const run of frames) run(performance.now());
+            } finally {
+              document.removeEventListener("wheel", countWheel, true);
+            }
+            return wheels;
+          };
+          window.dragFixture.leaveFullscreen!();
+          return frames.length;
+        }, { x, y, rowHeight: row.height });
+        assert.equal(queuedFrameCount, 1, "drag queued one wheel frame before the mode switch");
+        await page.locator(".pane-frame.is-current .xterm.enable-mouse-events").waitFor({ state: "detached" });
+        await rows.filter({ hasText: "LOCAL-ROW-120" }).first().waitFor();
+        const before = await rowNumber();
+        assert.equal(await page.evaluate(() => window.dragFixture.flushTouchFrame!()), 0, "queued reports must not cross the mode switch");
+        assert.equal(await rowNumber(), before, "stale wheel reports must not scroll local history");
+        console.log("PASS core: switching to local history discards queued fullscreen touch reports");
+      }
     } finally {
       await context.close();
     }

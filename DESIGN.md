@@ -5751,8 +5751,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   neither.
 - An attached touch swipe sends its wheel reports from animation frames, at most 6 per frame and in
   order, with at most 64 waiting: a fast flick that derived up to 24 reports in one frame now spreads
-  them over the next few. Every queued step still arrives while the pane and attach stay current;
-  travel beyond 64 waiting reports is dropped, and the terminal counts it in `data-touch-wheel-dropped`.
+  them over the next few. Queued steps are discarded if the pane, attach, input role or scroll
+  route changes. The terminal counts queue overflow in `data-touch-wheel-dropped`.
   The normal three-row step matches herdr's default. For a mouse-reporting Codex pane on
   the alternate screen, or for a fullscreen Claude Code pane with mouse reporting, one row
   of touch travel sends one report to the app instead. The same wheel input reaches their
