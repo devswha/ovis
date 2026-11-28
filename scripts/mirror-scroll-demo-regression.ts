@@ -208,6 +208,41 @@ await withDemoBrowser({ tempPrefix: "herdr-mirror-scroll-demo-", afterTransport:
       }));
       assert.equal(await terminal.evaluate((node) => node.closest("[inert]") !== null), false, "the terminal is interactive again after closing the drawer");
       await assertNoTouchScroll(0, shortMove, "below-half-step vertical move");
+      if (kind === "native") {
+        // A quick swipe with its own timestamps, so its lift always lands in time to glide.
+        const glide = (direction: 1 | -1) => terminal.evaluate((node, { x, y, direction }) => {
+          const origin = document.elementFromPoint(x, y);
+          if (!origin || !node.contains(origin)) throw new Error("no touch origin on the mirror");
+          let at = performance.now();
+          const emit = (type: string, dy: number) => {
+            const touch = new Touch({ identifier: 2, target: origin, clientX: x, clientY: y + dy });
+            const event = new TouchEvent(type, { bubbles: true, cancelable: true, touches: type === "touchend" ? [] : [touch], changedTouches: [touch] });
+            Object.defineProperty(event, "timeStamp", { value: at });
+            origin.dispatchEvent(event);
+          };
+          emit("touchstart", 0);
+          for (let n = 1; n <= 10; n++) { at += 8; emit("touchmove", direction * n * 25); }
+          at += 4;
+          emit("touchend", direction * 250);
+          return node.hasAttribute("data-touch-fling");
+        }, { x, y: direction > 0 ? y : y + 250, direction });
+        const clicks = () => terminal.evaluate((node) => Number(node.dataset["testClicks"] ?? 0));
+        await terminal.evaluate((node) => {
+          node.addEventListener("click", () => { node.dataset["testClicks"] = String(Number(node.dataset["testClicks"] ?? 0) + 1); }, true);
+          (document.activeElement as HTMLElement | null)?.blur();
+        });
+        assert.ok(await glide(1), "a quick swipe on the mirror glides");
+        const focused = await page.evaluate(() => document.activeElement?.className ?? null);
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await settled(page);
+        assert.equal(await terminal.evaluate((node) => node.hasAttribute("data-touch-fling")), false, "a tap stops the glide");
+        assert.equal(await clicks(), 0, "the tap that stops a glide is not a click on the terminal");
+        assert.equal(await page.evaluate(() => document.activeElement?.className ?? null), focused, "the tap that stops a glide does not focus the terminal");
+        await waitForStep("stopped glide's writes settle", () => page.waitForFunction(() => !document.querySelector("[data-touch-fling]")));
+
+        console.log("PASS a tap that stops a mirror glide is not a click");
+      }
       await cdp.detach();
 
       await page.evaluate((paneId) => (window as FixtureWindow).mirrorFixture.sockets.at(-1)!.push({

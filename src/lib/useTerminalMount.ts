@@ -1936,6 +1936,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const touchVelocity = createVelocityTracker();
       const touchFling = createTouchFling();
       let touchTravel = 0;
+      let touchStoppedGlide = false;
       let touchPane: string | null = null;
       let touchGeneration = -1;
       let touchView = -1;
@@ -2026,6 +2027,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       const onTouchStart = (event: TouchEvent): void => {
         if (chatViewRef.current) return;
+        touchStoppedGlide = touchFling.active;
         cancelTouchRef.current();
         if (event.touches.length === 1 && pinchStroke) {
           finishPinch(false);
@@ -2213,6 +2215,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           });
           return;
         }
+        // the tap that stops a glide only stops it, as on a native scroll view: no click, focus or mouse report
+        if (touchStoppedGlide && event.type === "touchend") event.preventDefault();
+        touchStoppedGlide = false;
         if (tracking && event.type === "touchend" && !pinchStroke && (!adopted() || scrollableMirror())) {
           const velocity = touchVelocity.release(event.timeStamp);
           const pane = touchPane;
