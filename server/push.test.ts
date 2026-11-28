@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest, spyOn } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
@@ -758,6 +758,23 @@ describe("alert timing and each device's choice", () => {
     expect(fake.received).toHaveLength(0);
   });
 
+  it("delivers a confirmed failure while Claude still looks busy with a queued successor", async () => {
+    const { push } = timed({ input: true, done: "off", error: true });
+    await push.onStatus("w1:p1", "working");
+    await push.onFailed("w1:p1", undefined, true);
+    await push.settled();
+    expect(fake.received.map((message) => message.payload.kind)).toEqual(["error"]);
+  });
+
+  it("keeps a failure told before a queued turn when that turn ends at once", async () => {
+    const { push } = timed({ input: true, done: "off", error: true });
+    await push.onStatus("w1:p1", "working");
+    await push.onFailed("w1:p1", undefined, true);
+    await push.onStatus("w1:p1", "idle");
+    await push.settled();
+    expect(fake.received.map((message) => message.payload.kind)).toEqual(["error"]);
+  });
+
   it("asks a waiting alert's device again for the PC as the alert goes out", async () => {
     const { push } = timed({ input: true, done: "off" });
     await push.onStatus("w1:p1", "working");
@@ -1361,37 +1378,109 @@ it("never follows a redirect: an https endpoint cannot send the alert on to a lo
 });
 
 describe("a window of the app in use (#751)", () => {
-  it("sends no device an alert while some window is in use, and sends again once none is", async () => {
+  it.each([
+    ["blocked", "input"],
+    ["done", "done"],
+  ] as const)("sends a still-%s alert after five minutes even while a window stays in use (#4201)", async (status, kind) => {
+    const push = createPushService({ loopbackHttp: true, stateDir, inUse: () => true });
+    push.subscribe(fake.subscription, { input: true, done: "always" });
+    push.seed([pane("w1:p1", "working", "claude")]);
+    jest.useFakeTimers();
+    try {
+      await push.onStatus("w1:p1", status);
+      jest.advanceTimersByTime(5 * 60_000 - 1);
+      expect(fake.received).toHaveLength(0);
+      jest.advanceTimersByTime(1);
+    } finally {
+      jest.useRealTimers();
+    }
+    await push.settled();
+    expect(fake.received.map((r) => r.payload.kind)).toEqual([kind]);
+  });
+
+  it("holds a question while a window is in use, cancels it on exit, and sends normally once no window is in use", async () => {
     let inUse = true;
-    const push = subscribed({ inUse: () => inUse });
+    const push = createPushService({ loopbackHttp: true, stateDir, timing: { short: 0 }, inUse: () => inUse });
+    push.subscribe(fake.subscription);
     push.seed([pane("w1:p1", "working", "claude: fix the build")]);
-    await push.onStatus("w1:p1", "blocked");
-    await push.onEnded("w1:p1");
+    jest.useFakeTimers();
+    try {
+      await push.onStatus("w1:p1", "blocked");
+      jest.advanceTimersByTime(1);
+      await push.onEnded("w1:p1");
+      jest.advanceTimersByTime(5 * 60_000);
+    } finally {
+      jest.useRealTimers();
+    }
+    await push.settled();
     expect(fake.received).toHaveLength(0);
     expect(await push.sendTest(fake.subscription.endpoint)).toEqual({ ok: true });
     expect(fake.received.map((r) => r.payload.tag)).toEqual(["herdr-test"]);
     inUse = false;
     await push.onStatus("w1:p1", "working");
     await push.onStatus("w1:p1", "blocked");
+    await push.settled();
     expect(fake.received.map((r) => r.payload.body)).toEqual(["Alerts are on for this device", "waiting for your input"]);
   });
 
-  it("asks when the alert would go out, not when the status changed", async () => {
+  it("defers an alert if a window comes into use before it is due, and cancels when work resumes", async () => {
     let inUse = false;
     const push = createPushService({ loopbackHttp: true, stateDir, timing: { short: 0, long: 0, longTurn: 0 }, inUse: () => inUse });
     push.subscribe(fake.subscription);
     push.seed([pane("w1:p1", "working", "claude")]);
-    await push.onStatus("w1:p1", "blocked");
-    inUse = true;
+    jest.useFakeTimers();
+    try {
+      await push.onStatus("w1:p1", "blocked");
+      inUse = true;
+      jest.advanceTimersByTime(1);
+      await push.onStatus("w1:p1", "working");
+      jest.advanceTimersByTime(5 * 60_000);
+    } finally {
+      jest.useRealTimers();
+    }
     await push.settled();
     expect(fake.received).toHaveLength(0);
   });
 
   it("holds an alert when a window comes into use while its title is looked up", async () => {
     let inUse = false;
-    const push = subscribed({ inUse: () => inUse, lookupPane: async () => { inUse = true; return { title: "claude" }; } });
+    const push = createPushService({
+      loopbackHttp: true, stateDir, timing: { short: 0 },
+      inUse: () => inUse, lookupPane: async () => { inUse = true; return { title: "claude" }; },
+    });
+    push.subscribe(fake.subscription);
     push.seed([pane("w1:p1", "working", "claude")]);
-    await push.onStatus("w1:p1", "blocked");
+    const nextTurn = setImmediate;
+    jest.useFakeTimers();
+    try {
+      await push.onStatus("w1:p1", "blocked");
+      jest.advanceTimersByTime(1);
+      await new Promise<void>((resolve) => { nextTurn(resolve); });
+      expect(inUse).toBe(true);
+      await push.onStatus("w1:p1", "working");
+      jest.advanceTimersByTime(5 * 60_000);
+    } finally {
+      jest.useRealTimers();
+    }
+    await push.settled();
+    expect(fake.received).toHaveLength(0);
+  });
+
+  it("cancels a deferred finish when the pane moves while working", async () => {
+    const push = createPushService({ loopbackHttp: true, stateDir, inUse: () => true });
+    push.subscribe(fake.subscription, { input: true, done: "always" });
+    push.seed([pane("w1:p1", "working", "claude")]);
+    jest.useFakeTimers();
+    try {
+      await push.onStatus("w1:p1", "done");
+      jest.advanceTimersByTime(10_000);
+      push.resync([pane("w1:p1", "idle", "claude")], new Set());
+      push.moved("w1:p1", "w2:p1", "working");
+      jest.advanceTimersByTime(5 * 60_000);
+    } finally {
+      jest.useRealTimers();
+    }
+    await push.settled();
     expect(fake.received).toHaveLength(0);
   });
 });
@@ -1460,6 +1549,24 @@ describe("push resync after lost status events", () => {
     await push.onStatus("w1:p2", "done");
     expect(fake.received.length).toBe(sent + 2);
   });
+});
+
+it("rekeys a finish already under way even when the destination reported work before the move", async () => {
+  const asked = Promise.withResolvers<void>();
+  const looked = Promise.withResolvers<void>();
+  const push = createPushService({ loopbackHttp: true, stateDir, timing: { short: 0, long: 0, longTurn: 0 },
+    lookupPane: async () => { asked.resolve(); await looked.promise; return { title: "claude" }; } });
+  push.subscribe(fake.subscription);
+  push.seed([pane("w1:p1", "working", "claude")]);
+  await push.onStatus("w1:p1", "done");
+  await asked.promise;
+  try {
+    await push.onStatus("w2:p1", "working");
+    push.moved("w1:p1", "w2:p1", "done");
+  } finally { looked.resolve(); }
+
+  await push.settled();
+  expect(fake.received.map(({ payload }) => [payload.kind, payload.pane_id])).toEqual([["done", "w2:p1"]]);
 });
 
 describe("the shared pane mute (shared/preferences.ts muted_panes)", () => {

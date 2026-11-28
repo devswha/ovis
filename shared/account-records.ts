@@ -67,6 +67,11 @@ export function isAccountKeyEncoding(text: unknown): text is string {
 }
 
 const ISO_MS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/** A time as this PC writes it: a four-digit-year ISO string with milliseconds that reads back as itself. */
+export function isIsoTime(v: unknown): v is string {
+  return typeof v === "string" && ISO_MS.test(v) && !Number.isNaN(Date.parse(v)) && new Date(v).toISOString() === v;
+}
 const checks: Record<string, (value: unknown) => boolean> = {
   account: (v) => typeof v === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(v),
   key: isAccountKeyEncoding,
@@ -79,7 +84,7 @@ const checks: Record<string, (value: unknown) => boolean> = {
   role: (v) => v === "drive" || v === "watch",
   server_id: (v) => typeof v === "string" && /^[0-9a-f]{32}$/.test(v),
   device_id: (v) => typeof v === "string" && /^[0-9a-f]{16}$/.test(v),
-  issued_at: (v) => typeof v === "string" && ISO_MS.test(v) && !Number.isNaN(Date.parse(v)) && new Date(v).toISOString() === v,
+  issued_at: isIsoTime,
   id: (v) => typeof v === "string" && /^[0-9a-f]{32}$/.test(v),
   signature: (v) => typeof v === "string" && /^[A-Za-z0-9_-]{86}$/.test(v) && toBase64Url(fromBase64Url(v)) === v,
 };
@@ -174,6 +179,25 @@ export const DEVICE_REGISTER_PREFIX = "ovis-device-register/1";
  */
 export function registerSigningBytes(account: string, key: string, challengeId: string, challenge: string): Uint8Array<ArrayBuffer> {
   return signingBytes([account, key, challengeId, challenge], DEVICE_REGISTER_PREFIX);
+}
+
+export const PC_ADD_PREFIX = "ovis-pc-add/1";
+/**
+ * What a key proof is for. Adding a PC: the one-press admit, a confirm (`PUT` with `confirm: true`), or a `PUT` listing a
+ * PC the account does not list yet. The account's signed list (docs/account-list.md, "On a device"): `list-genesis` for
+ * starting it and `list-claim` for a device's claim of its own key, each with the list id in the place of the server_id;
+ * a genesis names no listing, and a claim names the claimed key there.
+ */
+export type PcAddPurpose = "admit" | "confirm" | "list" | "list-genesis" | "list-claim";
+
+/**
+ * What a sign-in's registered key signs to add a PC once that sign-in is older than ten minutes (docs/account.md, "In
+ * one press"): `ovis-pc-add/1`, then the purpose, the account, the PC's server_id, the listing ID (the one a confirm
+ * names, else the PC's current one, "" when the account lists none), the challenge id and the challenge, laid out as
+ * registerSigningBytes lays out its own. Must stay byte-for-byte equal to the account service's.
+ */
+export function pcAddSigningBytes(purpose: PcAddPurpose, account: string, serverId: string, listingId: string, challengeId: string, challenge: string): Uint8Array<ArrayBuffer> {
+  return signingBytes([purpose, account, serverId, listingId, challengeId, challenge], PC_ADD_PREFIX);
 }
 
 /** Device table P24 (rule R2): the kinds of the PC's safety log. */

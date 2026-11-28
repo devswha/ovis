@@ -110,16 +110,25 @@ export function listDirectories(path: string, hidden = false, withFiles = false,
       files.push({ name: entry.name, size });
     }
   }
+  return directoryListing(target, home, directories, withFiles ? files : null);
+}
+
+/**
+ * The answer for the folder `target`: its folders and, when asked for, its files (`files`, null when not), sorted
+ * and cut at `MAX_DIRECTORY_ENTRIES` each; `cut` when they were read only in part. `parentOf`: this system's dirname,
+ * or another machine's (herdr-core/machine-files.ts).
+ */
+export function directoryListing(target: string, home: string, directories: string[], files: { name: string; size: number }[] | null, cut = false, parentOf: (path: string) => string = dirname): DirectoryListing {
   const byName = (left: string, right: string) => left.localeCompare(right, undefined, { sensitivity: "base", numeric: true });
   directories.sort(byName);
-  files.sort((left, right) => byName(left.name, right.name));
-  const parent = dirname(target);
+  files?.sort((left, right) => byName(left.name, right.name));
+  const parent = parentOf(target);
   return {
     path: target,
     parent: parent === target ? null : parent,
     home,
     directories: directories.slice(0, MAX_DIRECTORY_ENTRIES),
-    truncated: directories.length > MAX_DIRECTORY_ENTRIES || files.length > MAX_DIRECTORY_ENTRIES,
-    ...(withFiles ? { files: files.slice(0, MAX_DIRECTORY_ENTRIES) } : {}),
+    truncated: cut || directories.length > MAX_DIRECTORY_ENTRIES || (files?.length ?? 0) > MAX_DIRECTORY_ENTRIES,
+    ...(files !== null ? { files: files.slice(0, MAX_DIRECTORY_ENTRIES) } : {}),
   };
 }

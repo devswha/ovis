@@ -24,6 +24,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.json.JSONArray;
@@ -41,25 +42,108 @@ final class PCStore {
     /** The address to open instead of the bare origin until a PC page loads: a pairing link keeps its code through Try again. In memory only, as it can hold that code. */
     static String pendingStart;
 
+    /** A new address that answered 200 without identifying itself. Open in this process only until verified. */
+    private static volatile String trying;
+
+    /**
+     * The connect screen is up to pick another way or PC, the current PC kept (HerdrShell chooseAnother, a PC page's
+     * Connect a PC): Back or its button reopens that PC, and opening another replaces it. In memory only, so an app
+     * started again opens the current PC.
+     */
+    static volatile boolean choosing;
+
     /** A PC's page on the hosted shell the app was opened with (appLink), until the connect screen takes it. In memory only, as it can hold a pairing offer's code. */
     static volatile String link;
+
+    /**
+     * The hosted Connect a PC screen (Home) did not load, so the app's own page stands in for it, until the person
+     * tries it again there (Try again) or a PC's page has loaded since: never by itself. In memory only: an app started
+     * again tries the hosted screen.
+     */
+    static volatile boolean homeFailed;
+
+    /** The bundled demo was asked for (HerdrShell openDemo) and is up until it is left. In memory only. */
+    static volatile boolean demo;
+
+    /**
+     * Change PC was pressed where an SSH PC did not open: the app's own page, whose Manage holds what mends it (Forget
+     * host key, Set up again), which the hosted screen has not. In memory only.
+     */
+    static volatile boolean manage;
+
+    /**
+     * The fragment the next hosted screen starts at instead of `#pcs` (Home.homeStart: a sign-in the app's own page
+     * asked for), taken once by the activity that opens it. In memory only.
+     */
+    static volatile String homeStart;
+
+    /**
+     * Whether something waits that only the app's own Connect a PC page takes: a pairing link, an SSH PC whose address
+     * another app holds, which that page says, or an SSH PC to manage.
+     */
+    static boolean bundledAsked() {
+        return link != null || manage || "ssh-port".equals(failureKind);
+    }
+
+    /** The hosted screen is to be tried again (Try again on the fallback, the way back from the app's own page): nothing is left that would keep the app's own page up. */
+    static void goHome() {
+        homeFailed = false;
+        demo = false;
+        link = null;
+        manage = false;
+        homeStart = null;
+        if ("ssh-port".equals(failureKind)) fail(null, null);
+    }
+
+    /**
+     * The PC is left (Change PC): none is current. Where an SSH PC did not open (`unopened`: the cover's Change PC,
+     * error.html's), the app's own page comes for it (`manage`): error.html sends the person to Manage there (Forget
+     * host key, Set up again), and the hosted screen has no such thing.
+     */
+    static void leave(Context context, boolean unopened) {
+        String left = current(context);
+        setCurrent(context, null);
+        manage = unopened && left != null && SshPcs.on(context).get(left) != null;
+    }
+
+    /**
+     * The hosted app's front page asked for by its address (Home.homeStart): an attempt at the hosted screen, starting
+     * at `start`, which makes nothing the current PC. A PC that is current stays the one to go back to.
+     */
+    static void homeAttempt(Context context, String start) {
+        goHome();
+        homeStart = start;
+        if (current(context) != null) choosing = true;
+    }
+
+    /**
+     * A relay PC's page came up in the hosted screen (Home.Event.RELAY_PC), which the app is not asked to open: the
+     * hosted app at `appOrigin` is the current PC from here on, as it is after a sign-in from the app's own page, so
+     * Back and the next start are that PC's.
+     */
+    static synchronized void keepHosted(Context context, String appOrigin) {
+        choosing = false;
+        prefs(context).edit().putString("current", appOrigin).putString("last", appOrigin).apply();
+        trying = null;
+        if (names(context).optString(appOrigin, "").isEmpty()) setName(context, appOrigin, "Ovis");
+    }
 
     private static final Pattern PC_SCOPE = Pattern.compile("/s/([0-9a-f]{32})/?");
 
     /**
-     * `data` when an intent of `action` is a view of a PC on the hosted shell
-     * (`https://app.ovis.sh/s/<server_id>/`, within the manifest's verified link), whatever its
+     * `data` when an intent of `action` is a view of a PC on the hosted shell at `appOrigin`
+     * (`<appOrigin>/s/<server_id>/`; app.ovis.sh is the manifest's verified link), whatever its
      * fragment or query, else null: a link to another page of the hosted shell is not taken, so it
      * does not close the page that is open.
      */
-    static String appLink(String action, String data) {
+    static String appLink(String action, String data, String appOrigin) {
         if (!"android.intent.action.VIEW".equals(action) || data == null) return null;
-        return appScope(data) == null ? null : data;
+        return appScope(data, appOrigin) == null ? null : data;
     }
 
-    /** Whether the page the app shows (`current`, a saved key) is the hosted shell's: its own list, or one of its PCs. */
-    static boolean showsHostedShell(String current) {
-        return sameOrigin(current, "https://app.ovis.sh");
+    /** Whether the page the app shows (`current`, a saved key) is the hosted shell's at `appOrigin`: its own list, or one of its PCs. */
+    static boolean showsHostedShell(String current, String appOrigin) {
+        return sameOrigin(current, appOrigin);
     }
 
     /**
@@ -71,16 +155,15 @@ final class PCStore {
         if (start != null && belongs(start, pc)) pendingStart = null;
     }
 
-    static String appScope(String link) {
+    static String appScope(String link, String appOrigin) {
         URI uri;
         try {
             uri = new URI(link);
         } catch (URISyntaxException notAnAddress) {
             return null;
         }
-        boolean hostedShell = "https".equalsIgnoreCase(uri.getScheme()) && "app.ovis.sh".equalsIgnoreCase(uri.getHost()) && (uri.getPort() == -1 || uri.getPort() == 443);
         Matcher scope = PC_SCOPE.matcher(uri.getRawPath() == null ? "" : uri.getRawPath());
-        return hostedShell && scope.matches() ? "https://app.ovis.sh/s/" + scope.group(1) + "/" : null;
+        return sameOrigin(link, appOrigin) && scope.matches() ? appOrigin + "/s/" + scope.group(1) + "/" : null;
     }
 
     private static final Pattern SERVER_ID = Pattern.compile("[0-9a-f]{32}");
@@ -89,18 +172,18 @@ final class PCStore {
      * The PC is the one the alert's endpoint was made for (`origin`, the push module's key for it) when
      * that origin is a saved PC; a relay PC, which shares the hosted shell's origin with every other, is
      * named by its relay ID (`serverId`) instead. Its pane rides in the scope's fragment there, as the
-     * hosted shell's host never hears it.
+     * hosted shell's host (`appOrigin`) never hears it.
      */
-    static String[] alertLink(List<String> saved, String origin, String serverId, String machine, String workspace, String pane) {
+    static String[] alertLink(List<String> saved, String origin, String serverId, String machine, String workspace, String pane, String appOrigin) {
         if (pane == null || pane.isEmpty()) return null;
         String query = "machine=" + encoded(machine == null || machine.isEmpty() ? "local" : machine)
             + (workspace == null || workspace.isEmpty() ? "" : "&ws=" + encoded(workspace))
             + "&pane=" + encoded(pane) + "&view=chat";
         String key = origin(origin);
         // the hosted shell's own origin is every relay PC's, and "Your PCs" when that is saved: never the PC itself
-        if (key != null && saved.contains(key) && !scoped(key) && !sameOrigin(key, "https://app.ovis.sh")) return new String[] { key, key + "/?" + query };
+        if (key != null && saved.contains(key) && !scoped(key) && !sameOrigin(key, appOrigin)) return new String[] { key, key + "/?" + query };
         if (serverId != null && SERVER_ID.matcher(serverId).matches()) {
-            String scope = "https://app.ovis.sh/s/" + serverId + "/";
+            String scope = appOrigin + "/s/" + serverId + "/";
             if (saved.contains(scope) && (key == null || sameOrigin(key, scope))) return new String[] { scope, scope + "#" + query };
         }
         return null;
@@ -118,8 +201,8 @@ final class PCStore {
         }
     }
 
-    static AlertTap alertTap(List<String> saved, String current, String shown, String origin, String serverId, String machine, String workspace, String pane) {
-        String[] link = alertLink(saved, origin, serverId, machine, workspace, pane);
+    static AlertTap alertTap(List<String> saved, String current, String shown, String origin, String serverId, String machine, String workspace, String pane, String appOrigin) {
+        String[] link = alertLink(saved, origin, serverId, machine, workspace, pane, appOrigin);
         if (link == null) return null;
         if (!link[0].equals(current) || shown == null || !belongs(shown, current) || !appPage(shown, current)) return new AlertTap(link[0], link[1], null);
         try {
@@ -190,23 +273,34 @@ final class PCStore {
     }
 
     /**
-     * Whether an app link is one to pair from: the PC's scope alone or with its pairing offer, which
-     * the connect screen checks as it does a scanned QR code (app/web/shell.js relayLink). Any other
+     * Whether an app link is one to pair from: the PC's scope alone, with its pairing offer, or with a
+     * provider's sign-in (the QR code a PC in an account shows: sign in, then join it), which the
+     * connect screen checks as it does a scanned QR code (app/web/shell.js relayLink). Any other
      * fragment or query is a view of the PC (a file, a pane), which opens only a PC already saved.
      */
     static boolean pairingLink(String link) {
         URI uri = URI.create(link);
         String fragment = uri.getRawFragment();
-        return uri.getRawQuery() == null && (fragment == null || fragment.isEmpty() || fragment.startsWith("offer="));
+        return uri.getRawQuery() == null && (fragment == null || fragment.isEmpty() || fragment.startsWith("offer=") || SIGN_IN.matcher(fragment).matches());
     }
+
+    private static final Pattern SIGN_IN = Pattern.compile("sign-in=[a-z]{1,32}");
 
     static volatile String failure;
 
     static volatile String failureKind;
 
+    /** A command to run on the PC that fixes the failure, which the error page shows to copy (an SSH PC's: SshFailure.command); else null. */
+    static volatile String failureCommand;
+
     static void fail(String reason, String kind) {
+        fail(reason, kind, null);
+    }
+
+    static void fail(String reason, String kind, String command) {
         failure = reason;
         failureKind = kind;
+        failureCommand = command;
     }
 
     static final int ANSWER_SECONDS = 20;
@@ -246,9 +340,13 @@ final class PCStore {
     }
 
     static List<String> saved(Context context) {
+        return saved(prefs(context));
+    }
+
+    private static List<String> saved(SharedPreferences prefs) {
         List<String> list = new ArrayList<>();
         try {
-            JSONArray array = new JSONArray(prefs(context).getString("saved", "[]"));
+            JSONArray array = new JSONArray(prefs.getString("saved", "[]"));
             for (int i = 0; i < array.length(); i++) list.add(array.getString(i));
         } catch (org.json.JSONException ignored) {
         }
@@ -260,14 +358,19 @@ final class PCStore {
     }
 
     static JSONObject names(Context context) {
+        return names(prefs(context));
+    }
+
+    private static JSONObject names(SharedPreferences prefs) {
         try {
-            return new JSONObject(prefs(context).getString("names", "{}"));
+            return new JSONObject(prefs.getString("names", "{}"));
         } catch (JSONException damaged) {
             return new JSONObject();
         }
     }
 
-    static void setName(Context context, String key, String name) {
+    /** On PCStore's monitor, as identify writes the names there too: neither write is lost to the other. */
+    static synchronized void setName(Context context, String key, String name) {
         JSONObject names = names(context);
         try {
             if (name == null) names.remove(key);
@@ -278,12 +381,36 @@ final class PCStore {
         prefs(context).edit().putString("names", names.toString()).apply();
     }
 
-    static String current(Context context) {
-        return prefs(context).getString("current", null);
+    /** The relay ID each saved PC's own page said it has (HerdrShell identify), by its key. */
+    static JSONObject ids(Context context) {
+        return ids(prefs(context));
     }
 
-    static void setCurrent(Context context, String origin) {
+    private static JSONObject ids(SharedPreferences prefs) {
+        try {
+            return new JSONObject(prefs.getString("ids", "{}"));
+        } catch (JSONException damaged) {
+            return new JSONObject();
+        }
+    }
+
+    /** What the page of the saved PC `key` said of itself (Home.identifiedKey): its relay ID, and a name where none is kept. */
+    static synchronized void identify(Context context, String key, String serverId, String name) {
+        JSONObject ids = ids(context), names = names(context);
+        Home.identified(ids, names, key, serverId, name);
+        prefs(context).edit().putString("ids", ids.toString()).putString("names", names.toString()).apply();
+    }
+
+    static String current(Context context) {
+        String candidate = trying;
+        return candidate == null ? prefs(context).getString("current", null) : candidate;
+    }
+
+    static synchronized void setCurrent(Context context, String origin) {
+        choosing = false;
+        demo = false;
         prefs(context).edit().putString("current", origin).apply();
+        trying = null;
     }
 
     static String last(Context context) {
@@ -291,8 +418,40 @@ final class PCStore {
     }
 
     static void open(Context context, String key, String start) {
-        prefs(context).edit().putString("current", key).putString("last", key).apply();
+        open(context, key, start, false);
+    }
+
+    static synchronized void open(Context context, String key, String start, boolean unverified) {
+        choosing = false;
+        demo = false;
+        manage = false;
+        homeStart = null;
+        if (unverified && !saved(context).contains(key)) {
+            trying = key;
+        } else {
+            prefs(context).edit().putString("current", key).putString("last", key).apply();
+            trying = null;
+        }
         pendingStart = start;
+    }
+
+    static boolean trying(String key) {
+        return key.equals(trying);
+    }
+
+    static synchronized void confirm(Context context, String key) {
+        if (!trying(key)) return;
+        prefs(context).edit().putString("current", key).putString("last", key).apply();
+        remember(context, key);
+        trying = null;
+    }
+
+    static synchronized boolean stopTrying() {
+        if (trying == null) return false;
+        trying = null;
+        pendingStart = null;
+        answerBy = 0;
+        return true;
     }
 
     static synchronized void remember(Context context, String key) {
@@ -315,14 +474,24 @@ final class PCStore {
     }
 
     static synchronized void forget(Context context, String key) {
+        forget(prefs(context), key);
+    }
+
+    /** Forgets `key` in `prefs`: off the saved list, with its name and the relay ID its page said, and as current or last. */
+    static synchronized void forget(SharedPreferences prefs, String key) {
         forgottenAt.put(key, ++forgets);
-        List<String> list = saved(context);
+        if (trying(key)) stopTrying();
+        List<String> list = saved(prefs);
         list.remove(key);
-        setSaved(context, list);
-        setName(context, key, null);
-        SharedPreferences.Editor edit = prefs(context).edit();
-        if (key.equals(current(context))) edit.remove("current");
-        if (key.equals(last(context))) edit.remove("last");
+        JSONObject names = names(prefs), ids = ids(prefs);
+        names.remove(key);
+        ids.remove(key);
+        SharedPreferences.Editor edit = prefs.edit()
+            .putString("saved", new JSONArray(list).toString())
+            .putString("names", names.toString())
+            .putString("ids", ids.toString());
+        if (key.equals(prefs.getString("current", null))) edit.remove("current");
+        if (key.equals(prefs.getString("last", null))) edit.remove("last");
         edit.apply();
     }
 
@@ -352,10 +521,6 @@ final class PCStore {
         return !scope.isEmpty() && !scope.equals("/");
     }
 
-    static boolean pageTakesBack(String here, String before, String place) {
-        return here != null && before != null && belongs(here, place) && belongs(before, place);
-    }
-
     /**
      * `path` (percent-encoded, as a URL carries it) when a browser loads it as written, else null: no
      * `.` or `..` segment, plain or percent-encoded (once or twice), no encoded `/` and no `\`, which a
@@ -375,7 +540,7 @@ final class PCStore {
         return path;
     }
 
-    private static String percentDecoded(String text) {
+    static String percentDecoded(String text) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
@@ -491,10 +656,16 @@ final class PCStore {
     static final class Check {
         final String kind;
         final String detail;
+        final boolean unverified;
 
         Check(String kind, String detail) {
+            this(kind, detail, false);
+        }
+
+        Check(String kind, String detail, boolean unverified) {
             this.kind = kind;
             this.detail = detail;
+            this.unverified = unverified;
         }
 
         boolean opens() {
@@ -510,15 +681,15 @@ final class PCStore {
      * (Cloudflare Access) answers so. The hosted app (app.ovis.sh, or a copy of it) has no
      * /api/health: its page says what it is (`<meta name="ovis-shell">`, scripts/shell-build.ts), on
      * the answer itself where every path serves it, else on `url`'s own page (its path only, never a
-     * pairing link's code). `cookies` (the WebView's for the origin, or null) go with both requests.
+     * pairing link's code). `cookiesFor` looks up the WebView's cookies for each request's URL.
      */
-    static Check check(String url, String cookies, long budgetMs) {
+    static Check check(String url, Function<String, String> cookiesFor, long budgetMs) {
         String origin = origin(url);
         if (origin == null) return new Check("no-answer", "not an http or https address");
         long deadline = System.nanoTime() + budgetMs * 1_000_000L;
         Answer health;
         try {
-            health = fetch(origin + "/api/health?scope=bridge", cookies, deadline);
+            health = fetch(origin + "/api/health?scope=bridge", cookiesFor, deadline);
         } catch (IOException failed) {
             return new Check(failureKind(failed, deadline), String.valueOf(failed.getMessage()));
         }
@@ -529,12 +700,17 @@ final class PCStore {
         if (health.status != 200 && health.status != 404) return new Check("unsure", "HTTP " + health.status);
         Answer page;
         try {
-            page = fetch(origin + cleanStart(url), cookies, deadline);
+            page = fetch(origin + cleanStart(url), cookiesFor, deadline);
         } catch (IOException noPage) {
             return new Check("unsure", null);
         }
         if (page.status == 200 && hostedApp(page.body)) return new Check("ovis", null);
-        if (page.status == 200) return new Check("not-ovis", health.status == 200 ? null : "HTTP " + health.status);
+        // A proxy may serve its sign-in page with 200 for both requests. A missing health endpoint
+        // together with a non-shell page is still enough to reject an unrelated web server.
+        if (page.status == 200) {
+            if (health.status == 404) return new Check("not-ovis", "HTTP 404");
+            return new Check("unsure", "HTTP 200", true);
+        }
         return new Check("unsure", "HTTP " + health.status);
     }
 
@@ -584,8 +760,9 @@ final class PCStore {
         }
     }
 
-    private static Answer fetch(String url, String cookies, long deadline) throws IOException {
+    private static Answer fetch(String url, Function<String, String> cookiesFor, long deadline) throws IOException {
         // rounded up, so the disconnect comes at the deadline or after it, and failureKind reads it as a timeout
+        String cookies = cookiesFor.apply(url);
         long left = (deadline - System.nanoTime() + 999_999L) / 1_000_000L;
         if (left <= 0) throw new java.net.SocketTimeoutException("no answer in time");
         HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();

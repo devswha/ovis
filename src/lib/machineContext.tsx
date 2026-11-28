@@ -1,10 +1,11 @@
-import { createContext, useContext, useMemo } from "react";
+import { createContext, useContext, useMemo, type RefObject } from "react";
 import * as api from "./api.ts";
-import type { HerdrIdentity } from "../../shared/machines.ts";
+import type { HerdrIdentity, Machine } from "../../shared/machines.ts";
 import type { CreateWorktreeRequest, OpenWorktreeRequest, PaneDirection, PluginActionRequest, RemoveWorktreeRequest, SessionHistoryAgent, SessionResumeRequest, SplitPaneDirection } from "../../shared/protocol.ts";
 import type { ZoomMode } from "./layoutMap.ts";
 import { ReorderCoordinator } from "./workspaceOrder.ts";
 export const MachineContext = createContext("local");
+export const MachineRosterContext = createContext<RefObject<readonly Machine[]> | null>(null);
 export const useMachineId = () => useContext(MachineContext);
 /**
  * Which layout calls a PC's herdr answers, so the components offer only those, as VS Code's `when`
@@ -39,7 +40,7 @@ export function useMachineApi() {
     peekPaneConversation: (pane: string, prompts?: number) => api.peekPaneConversation(pane, id, prompts),
     searchPaneConversation: (pane: string, query: string, page?: Parameters<typeof api.searchPaneConversation>[3]) => api.searchPaneConversation(pane, query, id, page),
     fetchPanePrompt: (pane: string) => api.fetchPanePrompt(pane, id),
-    fetchPanePromptState: (pane: string) => api.fetchPanePromptState(pane, id),
+    fetchPanePromptState: (pane: string, signal?: AbortSignal) => api.fetchPanePromptState(pane, id, signal),
     answerPanePrompt: (answer: Parameters<typeof api.answerPanePrompt>[0]) => api.answerPanePrompt(answer, id),
     uploadPaneImage: (pane: string, image: Blob) => api.uploadPaneImage(pane, image, id),
     fetchPaneCommands: (pane: string) => api.fetchPaneCommands(pane, id),

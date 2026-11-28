@@ -12,6 +12,7 @@ import { UsageService } from "../server/usage.ts";
 import { GJC_NATIVE_DIRECTORY, GJC_NATIVE_HEARTBEAT_MS, type GjcNativeBinding } from "../shared/gjc-native.ts";
 import type { WireMachineEvent } from "../shared/compact-agents.ts";
 import type { AgentStatus, ServerMessage, SessionSnapshot } from "../shared/protocol.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 type Status = "idle" | "working" | "done" | "blocked";
 type NativeRecord = Readonly<Record<string, unknown>>;
@@ -196,7 +197,7 @@ async function settled(paneId: string, status: Status, start?: number, expected:
       // Chat presents this key only after validating the finish and showing the last row.
       const key = JSON.stringify(["local", pushed.pane_id, pane.terminal_id, "chat", pushed.finish_epoch, pushed.finish_id]);
       await currentChat(paneId).and(page.locator(`[data-pane-content=${JSON.stringify(key)}]`))
-        .getByText(finish.answer, { exact: true }).waitFor({ state: "visible", timeout: remaining(deadline, "presented final answer") });
+        .getByRole("log").getByText(finish.answer, { exact: true }).waitFor({ state: "visible", timeout: remaining(deadline, "presented final answer") });
     }
     await agentRow(paneId).locator(`.badge[data-status="${browserStatus}"]`)
       .waitFor({ state: "visible", timeout: remaining(deadline, `browser ${browserStatus}`) });
@@ -255,6 +256,7 @@ try {
   });
   statusSocket.addEventListener("error", () => { socketError = new Error("Status WebSocket failed"); });
   await until(() => frames.some((frame) => frame.type === "snapshot"), "initial WebSocket snapshot");
+  checkChromeTmpdir();
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? "/opt/google/chrome/chrome", headless: true, args: ["--no-sandbox", "--accept-lang=en-US"] });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   await context.addInitScript((ids) => {

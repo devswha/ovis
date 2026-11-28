@@ -220,30 +220,50 @@ export class RelayPassKeeper {
         return;
       }
       if (!response.ok) return this.failed(response);
-      const body = await response.json() as { pass?: unknown; expires_in?: unknown; refresh_in?: unknown };
-      const parsed = parseRelayPass(body.pass);
-      const expiresIn = body.expires_in;
-      const refreshRaw = body.refresh_in;
-      // a lifetime the relay would honor; the renewal time held to 60 s .. 24 h and before the pass runs out
-      if (!parsed || parsed.payload.sid !== identity.server_id || typeof expiresIn !== "number" || typeof refreshRaw !== "number"
-        || !Number.isFinite(expiresIn) || !Number.isFinite(refreshRaw) || expiresIn > RELAY_PASS_LIFETIME_S
-        || expiresIn - RELAY_PASS_SKEW_S < MIN_REFRESH_S) return this.failed(null);
-      const refreshIn = Math.min(Math.max(refreshRaw, MIN_REFRESH_S), MAX_REFRESH_S, expiresIn - RELAY_PASS_SKEW_S);
-      const now = this.clock.now();
-      // timed from receipt, so this PC's own clock needs to be right only to within the relay's skew
-      const saved: Saved = { pass: body.pass as string, server_id: identity.server_id, service,
-        expires_at: now + (expiresIn - RELAY_PASS_SKEW_S) * 1000, refresh_at: now + refreshIn * 1000 };
-      this.saved = saved;
-      try { writePrivateState(this.path, saved); } catch {}
-      this.failures = 0;
-      this.notBefore = 0;
-      this.refusal = null;
-      this.replacement = this.replacing ? saved.pass : null;
-      this.state = "ok";
-      this.options.onPass(saved.pass);
-      this.schedule(refreshIn * 1000);
+      // a pass asked for under an account this PC left while the request was out is no pass of its own now: the one a
+      // move took stays, and a refresh asked meanwhile asks again under the account it is in
+      if (this.options.account() !== account) return;
+      if (!this.take(await response.json(), identity, service)) return this.failed(null);
     } catch { this.failed(null); }
     finally { if (this.inflight === inflight) this.inflight = undefined; }
+  }
+
+  /**
+   * A pass the account service issued this PC outside this keeper: a PC move asks for one under its new account before
+   * it switches (server/account/account-move.ts), and that one is kept rather than a second asked for. False when it
+   * is not one this keeper would take.
+   */
+  adopt(body: unknown): boolean {
+    const identity = this.options.identity();
+    const service = this.options.service;
+    return !this.stopped && identity !== undefined && typeof service === "string" && this.take(body, identity, service);
+  }
+
+  /** Keeps a pass the account service answered with, on disk first, and times the next one by it. */
+  private take(body: unknown, identity: RelayIdentity, service: string): boolean {
+    if (!isJsonObject(body)) return false;
+    const parsed = parseRelayPass(body.pass);
+    const expiresIn = body.expires_in;
+    const refreshRaw = body.refresh_in;
+    // a lifetime the relay would honor; the renewal time held to 60 s .. 24 h and before the pass runs out
+    if (!parsed || parsed.payload.sid !== identity.server_id || typeof expiresIn !== "number" || typeof refreshRaw !== "number"
+      || !Number.isFinite(expiresIn) || !Number.isFinite(refreshRaw) || expiresIn > RELAY_PASS_LIFETIME_S
+      || expiresIn - RELAY_PASS_SKEW_S < MIN_REFRESH_S) return false;
+    const refreshIn = Math.min(Math.max(refreshRaw, MIN_REFRESH_S), MAX_REFRESH_S, expiresIn - RELAY_PASS_SKEW_S);
+    const now = this.clock.now();
+    // timed from receipt, so this PC's own clock needs to be right only to within the relay's skew
+    const saved: Saved = { pass: body.pass as string, server_id: identity.server_id, service,
+      expires_at: now + (expiresIn - RELAY_PASS_SKEW_S) * 1000, refresh_at: now + refreshIn * 1000 };
+    this.saved = saved;
+    try { writePrivateState(this.path, saved); } catch {}
+    this.failures = 0;
+    this.notBefore = 0;
+    this.refusal = null;
+    this.replacement = this.replacing ? saved.pass : null;
+    this.state = "ok";
+    this.options.onPass(saved.pass);
+    this.schedule(refreshIn * 1000);
+    return true;
   }
 
   private failed(response: Response | null, gate = true): void {

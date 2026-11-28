@@ -8,7 +8,7 @@ import type { BridgeDescriptor } from "./bridge.ts";
 import type { CompletionTracker } from "./completion.ts";
 import { MachineManager } from "./machines.ts";
 import type { PushService } from "./push.ts";
-import { forwardSaysReady, refusalHint, SshConnection, sshClient, sshVerboseLine, sweepSshDirs } from "./ssh.ts";
+import { forwardSaysReady, refusalHint, SshConnection, sshClient, sshVerboseLine, stdioSocketForward, sweepSshDirs } from "./ssh.ts";
 import { posixHost, type HostInspection } from "./remote-host.ts";
 
 // The direct mode Windows uses (its OpenSSH has no connection sharing), run here against a
@@ -55,8 +55,10 @@ if [ -n "$FAKE_PASSPHRASE" ]; then
 fi
 if [ -n "$tunnel" ]; then
   [ -z "$forward" ] && exec sleep 30
-  port=$(printf '%s' "$forward" | cut -d: -f2)
-  rport=$(printf '%s' "$forward" | cut -d: -f4)
+  rport="${"${forward##*:}"}"; rest="${"${forward%:*}"}"
+  rhost="${"${rest##*:}"}"; rest="${"${rest%:*}"}"
+  port="${"${rest##*:}"}"; lhost="${"${rest%:*}"}"
+  [ "$lhost" = "[::1]" ] && lhost="::1"
   # a ProxyJump's ssh gets -v too, shares stderr and enters its own session in the jump host first
   [ -n "$verbose" ] && [ -n "$FAKE_JUMP" ] && printf 'debug1: Entering interactive session.\r\n' >&2
   # a ProxyCommand child that outlives ssh and keeps its stderr open
@@ -67,11 +69,11 @@ if [ -n "$tunnel" ]; then
   exec "$FAKE_BUN" -e "
 const say = (line) => require('node:fs').writeSync(2, line + '\r\n');
 const debug = (where, message) => say('debug1: ' + ('$FAKE_LOG_VERBOSE' ? where + ' ' : '') + message);
-if ('$verbose') debug('ssh.c:2015 ssh_init_forwarding():', 'Local connections to 127.0.0.1:$port forwarded to remote address 127.0.0.1:$rport');
-if ('$verbose') debug('channels.c:3810 channel_setup_fwd_listener_tcpip():', 'Local forwarding listening on 127.0.0.1 port $port.');
+if ('$verbose') debug('ssh.c:2015 ssh_init_forwarding():', 'Local connections to $lhost:$port forwarded to remote address $rhost:$rport');
+if ('$verbose') debug('channels.c:3810 channel_setup_fwd_listener_tcpip():', 'Local forwarding listening on $lhost port $port.');
 let opened = 0;
-try { Bun.listen({ hostname: '127.0.0.1', port: $port, socket: { open() { if (++opened === Number(process.env.FAKE_TUNNEL_ENDS_AT)) process.exit(0); }, data() {} } }); }
-catch { say('bind [127.0.0.1]:$port: Address already in use'); say('channel_setup_fwd_listener_tcpip: cannot listen to port: $port'); say('Could not request local forwarding.'); process.exit(255); }
+try { Bun.listen({ hostname: '$lhost', port: $port, socket: { open() { if (++opened === Number(process.env.FAKE_TUNNEL_ENDS_AT)) process.exit(0); }, data() {} } }); }
+catch { say('bind [$lhost]:$port: Address already in use'); say('channel_setup_fwd_listener_tcpip: cannot listen to port: $port'); say('Could not request local forwarding.'); process.exit(255); }
 if ('$verbose') debug('clientloop.c:1470 client_loop():', 'Entering interactive session.');
 "
 fi
@@ -248,6 +250,37 @@ describe.skipIf(process.platform === "win32")("SSH without connection sharing", 
   });
 
   describe("forwards", () => {
+    it("closes an individual browser forward without ending the machine connection", async () => {
+      const { ssh, ask, calls } = fixture();
+      await ssh.start(ask("unused"));
+      const free = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+      const port = free.port;
+      free.stop(true);
+      const forward = await ssh.forward(port, 5173, true);
+      expect(forward.listening()).toBe(true);
+      // a browser's forward reaches the remote loopback by name, so a dev server on ::1 alone is reached too
+      expect(calls().some((call) => call.includes(`127.0.0.1:${port}:localhost:5173`))).toBe(true);
+      await forward.close();
+      expect(forward.listening()).toBe(false);
+      expect(ssh.connected()).toBe(true);
+      const reclaimed = Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } });
+      reclaimed.stop(true);
+    });
+
+    it("binds an IPv6-only browser forward and recognizes OpenSSH's bare IPv6 readiness line", async () => {
+      const { ssh, ask, calls } = fixture();
+      await ssh.start(ask("unused"));
+      const free = Bun.listen({ hostname: "::1", port: 0, socket: { data() {} } });
+      const port = free.port;
+      free.stop(true);
+      const forward = await ssh.forward(port, 5173, true, "[::1]");
+      expect(calls().some((call) => call.includes(`[::1]:${port}:localhost:5173`))).toBe(true);
+      const socket = await Bun.connect({ hostname: "::1", port, socket: { data() {} } });
+      socket.end();
+      await forward.close();
+      expect(ssh.connected()).toBe(true);
+    });
+
     for (const [how, extra] of [["", {}], [" behind a ProxyJump", { FAKE_JUMP: "1" }], [" with LogVerbose", { FAKE_LOG_VERBOSE: "1" }]] as const) it(`opens the loopback port, and its ending ends the connection${how}`, async () => {
       const { ssh, ask } = fixture({ FAKE_TUNNEL_ENDS_AT: "1", ...extra });
       await ssh.start(ask("unused"));
@@ -354,6 +387,18 @@ describe("sweeping connection folders an earlier server left", () => {
       expect(["herdr-ssh-old1", "herdr-ssh-old2", "herdr-ssh-busy", "herdr-ssh-new", "other-old"].filter((name) => existsSync(join(root, name)))).toEqual(["herdr-ssh-busy", "herdr-ssh-new", "other-old"]);
       expect(await sweepSshDirs(join(root, "missing"))).toBe(0);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("which ssh reaches a Unix socket with -W", () => {
+  it("is OpenSSH 9.4 or newer, Windows' own build and Git for Windows' alike", () => {
+    expect(stdioSocketForward("OpenSSH_for_Windows_9.5p2, LibreSSL 3.8.2")).toBe(true);
+    expect(stdioSocketForward("OpenSSH_9.9p1, OpenSSL 3.2.3 3 Sep 2024")).toBe(true);
+    expect(stdioSocketForward("OpenSSH_10.2p1 Ubuntu-2ubuntu3.8, OpenSSL 3.5.5 27 Jan 2026")).toBe(true);
+    expect(stdioSocketForward("OpenSSH_9.4p1, OpenSSL 3.1.2")).toBe(true);
+    expect(stdioSocketForward("OpenSSH_9.2p1 Debian-2+deb12u3, OpenSSL 3.0.15 3 Sep 2024")).toBe(false);
+    expect(stdioSocketForward("OpenSSH_for_Windows_8.1p1, LibreSSL 3.0.2")).toBe(false);
+    expect(stdioSocketForward("ssh: not found")).toBe(false);
   });
 });
 

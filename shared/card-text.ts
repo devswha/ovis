@@ -20,6 +20,8 @@ const CARD_TEXT = [
   "Claude Code removed {count} invisible characters",
   "Command approval",
   "Choose an option",
+  "This request cannot be shown in full. Press F4 in the terminal to read it.",
+  "Show all choices",
   "Permission request",
   "Waiting for your answer",
   "Waiting for input",
@@ -48,6 +50,7 @@ const CARD_TEXT = [
   "{question}. {count} more models are listed in the terminal.",
   "{question}. More models are listed in the terminal.",
   "{question}. More levels are listed in the terminal.",
+  "{question}. More options are listed in the terminal.",
   "{answered}/{total} answered",
   "Comment: {comment}",
   "{notice}\nComment: {comment}",
@@ -71,6 +74,16 @@ const CARD_TEXT = [
   "Question {n}",
   "Approve",
   "Deny",
+  "Allow once",
+  "Answer in terminal",
+  "Always allow",
+  "Run a shell command",
+  "Edit {file}",
+  "Fetch {url}",
+  "Access a folder outside the project",
+  "Use the tool {tool}",
+  "Allows every {action} request in this project from now on",
+  "Allows these in this project from now on: {patterns}",
 ] as const;
 
 export type CardTextKey = (typeof CARD_TEXT)[number];

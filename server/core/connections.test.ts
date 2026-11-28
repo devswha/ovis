@@ -14,6 +14,7 @@ import type { SharedPreferences } from "../../shared/preferences.ts";
 import type { AgentInfo, HerdrPane, SessionSnapshot } from "../../shared/protocol.ts";
 import { expandMachineEvent, type WireMachineEvent } from "../../shared/compact-agents.ts";
 import type { MachineEvent } from "../../shared/machines.ts";
+import { LockSignal, untilLockFrom } from "../lock-boundary.ts";
 import { backlog, type Client, connectionData, connectionOf, createConnections, send, setMachineEvents } from "./connections.ts";
 
 function harness({ deviceId, readOnly = false, relay, revokedAlready = false, store, machineEvents, open = false }: { deviceId?: string; readOnly?: boolean; relay?: MachineRelay; revokedAlready?: boolean; store?: DeviceStore; open?: boolean; machineEvents?: MachineEventDocument } = {}) {
@@ -67,6 +68,35 @@ function watching() {
   return { started, frames, client, next, ...connections };
 }
 const GRID = { cols: 80, rows: 24 };
+
+it("offers blocking hook cards only to a connected driver watching that pane's Chat", () => {
+  const h = harness();
+  h.client.data.attached.set("p", { keepSize: false });
+  h.client.data.conversationWatches.add("p");
+  h.client.data.promptWatches.add("p");
+  expect(h.chatConnected("p")).toBe(false);
+  h.client.data.conversationInterests.add("p");
+  expect(h.chatConnected("p")).toBe(false); // older client: its watch survives a temporary Terminal view
+  h.client.data.attached.set("p", { keepSize: false, visibleCards: true });
+  expect(h.chatConnected("p")).toBe(true);
+  expect(h.chatConnected("other")).toBe(false);
+  h.client.data.conversationInterests.delete("p");
+  expect(h.chatConnected("p")).toBe(false);
+  h.client.data.conversationInterests.add("p");
+  h.setRole(h.client, "observe");
+  expect(h.chatConnected("p")).toBe(false);
+  h.setRole(h.client, "interact");
+  h.end(h.client, "closed");
+  expect(h.chatConnected("p")).toBe(false);
+});
+
+it("T46/S24: a lock fired between the upgrade and opening prevents admission", () => {
+  const opened = harness();
+  const signal = new LockSignal();
+  opened.client.data.untilLock = untilLockFrom(signal);
+  signal.fire();
+  expect(opened.admit(opened.client)).toBe(false);
+});
 
 it("holds no more than 64 observe processes for one connection, and ends the view of a pane past them at once", async () => {
   const w = watching();

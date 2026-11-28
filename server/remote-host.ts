@@ -147,7 +147,7 @@ async function fetchBundle(platform: string, signal: AbortSignal, options: Insta
 
 export const posixHost: RemoteHost = {
   kind: "posix",
-  bundleDescription: "Private web bridge bundle (the Ovis server, Node and node-pty; no build tools needed)",
+  bundleDescription: "Private web bridge bundle (the Ovis server and its PTY host; no build tools needed)",
   logHint: "~/.config/herdr-web-ui/bridges/bridge.log",
   async inspect(ssh, session, socket) {
     const inspection = await ssh.run(REMOTE_PATH + `printf '%s\\n' "$(uname -s)" "$(uname -m)" "$(cd -P "$HOME" && pwd -P)" "\${XDG_CONFIG_HOME:-$HOME/.config}" "$(command -v herdr || true)"; test -x "$HOME/${BUNDLE_DIR}/ovis-server" && printf 'bundle-ready\\n' || true; for d in "$HOME/.local/share/herdr-web-ui/remote-v"*; do if test -x "$d/ovis-server" || test -x "$d/bin/bun"; then printf 'bundle-older\\n'; break; fi; done; for f in "$HOME/.config/herdr-web-ui/bridges/"*.json; do test ! -f "$f" || cat "$f"; printf '\\n'; done`);
@@ -177,8 +177,8 @@ export const posixHost: RemoteHost = {
   async installBundle(ssh, platform, signal, options = {}) {
     const { asset, input } = await fetchBundle(platform, signal, options);
     // Verify on BOTH hosts, extract into staging and atomically rename. No user-wide
-    // Bun/Node/herdr installation is changed; the complete runtime lives in this dir.
-    await ssh.run(`set -eu; umask 077; base="$HOME/.local/share/herdr-web-ui"; mkdir -p "$base"; ${POSIX_INSTALL_LOCK} tmp=$(mktemp -d "$base/install.XXXXXX"); trap 'rm -rf "$tmp"; ${POSIX_INSTALL_RELEASE}' EXIT HUP INT TERM; if command -v timeout >/dev/null; then timeout ${INSTALL_UPLOAD_TIMEOUT_S} cat > "$tmp/bundle.tgz"; else cat > "$tmp/bundle.tgz"; fi; if command -v sha256sum >/dev/null; then actual=$(sha256sum "$tmp/bundle.tgz" | cut -d ' ' -f 1); else actual=$(shasum -a 256 "$tmp/bundle.tgz" | cut -d ' ' -f 1); fi; test "$actual" = ${shellQuote(asset.sha256)}; mkdir "$tmp/runtime"; tar xzf "$tmp/bundle.tgz" -C "$tmp/runtime"; test -x "$tmp/runtime/ovis-server"; test -x "$tmp/runtime/bin/node"; test -x "$tmp/runtime/bin/herdr"; "$tmp/runtime/ovis-server" remote --help >/dev/null; "$tmp/runtime/bin/herdr" --version; "$tmp/runtime/bin/node" "$tmp/runtime/pty-smoke.mjs"; release="$HOME/${BUNDLE_DIR}-${asset.sha256.slice(0, 16)}"; if test ! -d "$release"; then mv "$tmp/runtime" "$release"; fi; ln -s "$release" "$tmp/current"; if test -d "$HOME/${BUNDLE_DIR}" && test ! -L "$HOME/${BUNDLE_DIR}"; then mv "$HOME/${BUNDLE_DIR}" "$HOME/${BUNDLE_DIR}-legacy-$(date +%s)"; fi; BUN_BE_BUN=1 "$release/ovis-server" -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' "$tmp/current" "$HOME/${BUNDLE_DIR}"`, input, 30 * 60_000);
+    // Bun/herdr installation is changed; the complete runtime lives in this dir.
+    await ssh.run(`set -eu; umask 077; base="$HOME/.local/share/herdr-web-ui"; mkdir -p "$base"; ${POSIX_INSTALL_LOCK} tmp=$(mktemp -d "$base/install.XXXXXX"); trap 'rm -rf "$tmp"; ${POSIX_INSTALL_RELEASE}' EXIT HUP INT TERM; if command -v timeout >/dev/null; then timeout ${INSTALL_UPLOAD_TIMEOUT_S} cat > "$tmp/bundle.tgz"; else cat > "$tmp/bundle.tgz"; fi; if command -v sha256sum >/dev/null; then actual=$(sha256sum "$tmp/bundle.tgz" | cut -d ' ' -f 1); else actual=$(shasum -a 256 "$tmp/bundle.tgz" | cut -d ' ' -f 1); fi; test "$actual" = ${shellQuote(asset.sha256)}; mkdir "$tmp/runtime"; tar xzf "$tmp/bundle.tgz" -C "$tmp/runtime"; test -x "$tmp/runtime/ovis-server"; h="$tmp/runtime/bin/ovis-pty-sidecar"; test -x "$h"; { "$h" 2>&1 >/dev/null || true; } | grep -q "^pty-sidecar: usage:"; test -x "$tmp/runtime/bin/herdr"; "$tmp/runtime/ovis-server" remote --help >/dev/null; "$tmp/runtime/bin/herdr" --version; "$h" 1 1 /bin/sh -c : </dev/null >/dev/null; release="$HOME/${BUNDLE_DIR}-${asset.sha256.slice(0, 16)}"; if test ! -d "$release"; then mv "$tmp/runtime" "$release"; fi; ln -s "$release" "$tmp/current"; if test -d "$HOME/${BUNDLE_DIR}" && test ! -L "$HOME/${BUNDLE_DIR}"; then mv "$HOME/${BUNDLE_DIR}" "$HOME/${BUNDLE_DIR}-legacy-$(date +%s)"; fi; BUN_BE_BUN=1 "$release/ovis-server" -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' "$tmp/current" "$HOME/${BUNDLE_DIR}"`, input, 30 * 60_000);
   },
   stop: async (ssh, pid) => { await ssh.run(`kill -TERM ${pid}`); },
   async start(ssh, { session, herdrPath, inspection, herdr_socket, start_new_herdr }) {
@@ -196,14 +196,14 @@ export const posixHost: RemoteHost = {
     const result: unknown = JSON.parse(text);
     if (typeof result !== "object" || result === null || !("code" in result) || (result.code !== "herdr_sessions_found" && result.code !== "herdr_session_gone") || !("sessions" in result)) throw new Error("The PC returned an invalid startup result");
     const gone = result.code === "herdr_session_gone";
-    return { gone, sessions: gone && Array.isArray(result.sessions) && result.sessions.length === 0 ? [] : parseFoundHerdrSessions(result.sessions) };
+    return { gone, sessions: gone && Array.isArray(result.sessions) && result.sessions.length === 0 ? [] : parseFoundHerdrSessions(result.sessions, inspection.home) };
   },
   async discoverSessions(ssh, inspection) {
     const server = shellQuote(inspection.runtimeDir + "/ovis-server");
     // at most 256 sessions of a few hundred bytes each: an answer past the cap is stopped and refused, never parsed
     const text = await ssh.run(`if test -x ${server}; then ${server} remote --discover; else printf '[]'; fi`, undefined, undefined, DISCOVERY_OUTPUT_BYTES);
     const sessions: unknown = JSON.parse(text);
-    return Array.isArray(sessions) && sessions.length === 0 ? [] : parseFoundHerdrSessions(sessions);
+    return Array.isArray(sessions) && sessions.length === 0 ? [] : parseFoundHerdrSessions(sessions, inspection.home);
   },
   async chosenSocketStatus(ssh, inspection, socket) {
     // the installed bundle holds the rule; an older or missing one cannot say

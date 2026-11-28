@@ -1,5 +1,5 @@
-import type { Terminal } from "@xterm/xterm";
 import { promptHasCursor, secretPrompt } from "../../shared/secret-prompt.ts";
+import { screenRows } from "./terminalScreen.ts";
 
 /**
  * A script that asks twice prints its second prompt under the first, and that is all that tells the two apart.
@@ -13,7 +13,7 @@ function sameAsking(seen: Asking, now: Asking): boolean {
 }
 
 /**
- * The masked prompt a terminal's screen shows now, if any (shared/secret-prompt.ts), read off xterm's screen for
+ * The masked prompt a terminal's screen shows now, if any (shared/secret-prompt.ts), read off its screen for
  * `pane`. `cursorKnown`: whether the screen's cursor is the program's (an attached pane). A mirrored pane's
  * repaints carry none, so its prompt counts while it is the last text; so does one not known to be attached.
  *
@@ -24,7 +24,7 @@ function sameAsking(seen: Asking, now: Asking): boolean {
  * first seen after the answer. What was seen is one pane's: it is kept while that pane's screen is drawn again (a
  * reconnect, a phone that let the pane go while hidden), and dropped when the terminal shows another pane.
  */
-export function createSecretScreen(term: Terminal, cursorKnown: () => boolean): { read: (pane: string) => string | null } {
+export function createSecretScreen(term: Parameters<typeof screenRows>[0] & { readonly cols: number }, cursorKnown: () => boolean): { read: (pane: string) => string | null } {
   let seen: Asking | null = null;
   let seenOn: string | null = null;
   return {
@@ -32,7 +32,7 @@ export function createSecretScreen(term: Terminal, cursorKnown: () => boolean): 
       if (pane !== seenOn) { seen = null; seenOn = pane; }
       const lines: string[] = [];
       const starts: number[] = [];
-      const buffer = term.buffer.active;
+      const buffer = screenRows(term);
       // the screen only: a prompt is on its last lines, and a herdr-core pane's history (syncHistory) would
       // cost every output frame a pass over its 2,000 lines
       for (let row = buffer.baseY; row < buffer.length; row++) {
@@ -43,14 +43,18 @@ export function createSecretScreen(term: Terminal, cursorKnown: () => boolean): 
         if (line?.isWrapped && lines.length) lines[lines.length - 1] += text;
         else { lines.push(text); starts.push(row); }
       }
-      const prompt = secretPrompt(lines.join("\n"), term.cols);
+      // sudo's pwfeedback echoes a star for each key typed after the prompt: the prompt still asks while they grow
+      let tail = lines.length - 1;
+      while (tail >= 0 && !lines[tail]!.trim()) tail--;
+      const asked = tail < 0 ? lines : lines.map((text, row) => row === tail ? text.replace(/([:：]) ?\*+\s*$/, "$1 ") : text);
+      const prompt = secretPrompt(asked.join("\n"), term.cols);
       if (!cursorKnown()) return prompt;
       if (prompt === null) { seen = null; return null; }
-      let last = lines.length - 1;
-      while (last >= 0 && !lines[last]!.trim()) last--;
-      const words = lines[last]!.trimEnd();
+      let last = asked.length - 1;
+      while (last >= 0 && !asked[last]!.trim()) last--;
+      const words = asked[last]!.trimEnd();
       let first = last;
-      while (first > 0 && lines[first - 1]!.trimEnd() === words) first--;
+      while (first > 0 && asked[first - 1]!.trimEnd() === words) first--;
       const asking: Asking = { prompt, repeats: last - first, cut: first === 0 };
       if (promptHasCursor(lines, starts, buffer.baseY + buffer.cursorY, buffer.cursorX, term.cols)) { seen = asking; return prompt; }
       return seen !== null && sameAsking(seen, asking) ? null : prompt;

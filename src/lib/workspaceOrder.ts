@@ -1,6 +1,7 @@
 import type { WorkspaceMoved } from "../../shared/protocol.ts";
 import { isBackgroundRole, ROLE_TOKEN } from "../../shared/pane-tokens.ts";
 import { movedTabOrder } from "./tabOrder.ts";
+export { worktreeGroups } from "../../shared/worktree-groups.ts";
 
 /**
  * One herdr `workspace.move`. Like `tab.move`, its `insert_index` counts insertion boundaries
@@ -39,31 +40,6 @@ export function workspaceMoves(current: readonly string[], next: readonly string
   return moves;
 }
 
-interface GroupedWorkspace {
-  workspace_id: string;
-  worktree?: { is_linked_worktree: boolean; repo_key: string } | null;
-}
-
-export function worktreeGroups<W extends GroupedWorkspace>(ordered: readonly W[]): { workspace: W; children: W[] }[] {
-  const firstByRepo = new Map<string, W>();
-  for (const workspace of ordered) {
-    if (workspace.worktree && !workspace.worktree.is_linked_worktree && !firstByRepo.has(workspace.worktree.repo_key)) firstByRepo.set(workspace.worktree.repo_key, workspace);
-  }
-  const nearestByRepo = new Map<string, W>();
-  const childrenOf = new Map<string, W[]>();
-  const top: W[] = [];
-  for (const workspace of ordered) {
-    const worktree = workspace.worktree;
-    if (worktree && !worktree.is_linked_worktree) nearestByRepo.set(worktree.repo_key, workspace);
-    const parent = worktree?.is_linked_worktree ? nearestByRepo.get(worktree.repo_key) ?? firstByRepo.get(worktree.repo_key) : undefined;
-    if (!parent) { top.push(workspace); continue; }
-    const children = childrenOf.get(parent.workspace_id) ?? [];
-    children.push(workspace);
-    childrenOf.set(parent.workspace_id, children);
-  }
-  return top.map((workspace) => ({ workspace, children: childrenOf.get(workspace.workspace_id) ?? [] }));
-}
-
 /**
  * A workspace a launcher tagged `role=background` (`herdr workspace report-metadata --token`, any case),
  * as a pane is tagged for the Agents list's background part (shared/pane-tokens.ts). herdr's fact, never a guess.
@@ -92,6 +68,7 @@ export type RosterSource = { kind: "load"; started: number } | { kind: "event" }
 export type SourceProofQuery = (machineId: string, signal: AbortSignal) => Promise<{ machines: OrderRosterEntry[]; boot_id: string } | null>;
 
 interface Evidence { epoch: string; seq: number }
+interface OrderRead { ids: string[]; evidence: Evidence | null }
 const evidenceOf = (snapshot: OrderRosterEntry["snapshot"]): Evidence | null =>
   snapshot && typeof snapshot.order_epoch === "string" && snapshot.order_epoch !== "" && Number.isSafeInteger(snapshot.read_seq) && snapshot.read_seq! >= 0
     ? { epoch: snapshot.order_epoch, seq: snapshot.read_seq! } : null;
@@ -101,10 +78,17 @@ interface Hold {
   receipts: number;
   legacy: boolean;
   settleMark: number | null;
+  /** the last roster's evidence when the newest move with a receipt since the hold last settled was sent; undefined until one */
+  sent?: Evidence | null;
+  inFlight?: Evidence | null;
+  /** Keep a possible restart read even if the old boot sends another roster before recovery. */
+  restart?: OrderRead;
+  /** A recovered batch can have a different set of workspaces from what later drags saw. */
+  rebased?: string[];
 }
 interface PcOrder {
   shown: string[] | null;
-  last: { ids: string[]; evidence: Evidence | null } | null;
+  last: OrderRead | null;
   generation: number;
   pending: Set<number>;
   desired: string[] | null;
@@ -118,7 +102,9 @@ interface PcOrder {
   failed: boolean;
   waiters: { generation: number; resolve: (ids: string[]) => void; reject: (error: Error) => void }[];
   gone: boolean;
-  check: { key: string; abort: AbortController } | null;
+  check: { key: string; abort: AbortController; candidate: OrderRead | null; updated: boolean } | null;
+  /** the server lifetime the last answered verification was asked about: asking again would spend the PC's interval for nothing */
+  answered: string | null;
 }
 
 export class ReorderCoordinator {
@@ -135,7 +121,7 @@ export class ReorderCoordinator {
   private pc(id: string): PcOrder {
     let pc = this.pcs.get(id);
     if (!pc) {
-      pc = { shown: null, last: null, generation: 0, pending: new Set(), desired: null, hold: null, floors: new Map(), protectedEpoch: null, guard: null, retired: new Set(), receipts: 0, chain: Promise.resolve(), failed: false, waiters: [], gone: false, check: null };
+      pc = { shown: null, last: null, generation: 0, pending: new Set(), desired: null, hold: null, floors: new Map(), protectedEpoch: null, guard: null, retired: new Set(), receipts: 0, chain: Promise.resolve(), failed: false, waiters: [], gone: false, check: null, answered: null };
       this.pcs.set(id, pc);
     }
     return pc;
@@ -168,6 +154,7 @@ export class ReorderCoordinator {
     if (pc.gone) return;
     pc.gone = true;
     this.invalidateCheck(pc);
+    if (pc.hold) pc.hold.restart = undefined;
     for (const waiter of pc.waiters.splice(0)) { pc.pending.delete(waiter.generation); waiter.reject(new Error("This PC was removed")); }
     if (pc.pending.size === 0) { pc.hold = null; pc.desired = null; }
   }
@@ -181,20 +168,28 @@ export class ReorderCoordinator {
     const pc = this.pc(id);
     const ids = snapshot.workspaces.map((workspace) => workspace.workspace_id);
     const evidence = evidenceOf(snapshot);
-    pc.last = { ids, evidence };
     if (evidence && pc.retired.has(evidence.epoch)) return;
-    if (pc.waiters.length > 0 && this.qualifies(pc, evidence)) for (const waiter of pc.waiters.splice(0)) waiter.resolve(ids);
+    if (evidence && pc.last?.evidence?.epoch === evidence.epoch && pc.last.evidence.seq > evidence.seq) return;
+    const read = { ids, evidence };
+    pc.last = read;
+    const hold = pc.hold;
+    if (hold && pc.pending.size > 0 && evidence && evidence.epoch !== (pc.protectedEpoch ?? hold.inFlight?.epoch)
+      && (pc.protectedEpoch !== null || hold.inFlight !== undefined)) {
+      const previous = hold.restart?.evidence;
+      if (previous?.epoch !== evidence.epoch || previous.seq <= evidence.seq) hold.restart = read;
+    }
+    if (!pc.check && this.qualifies(pc, evidence)) for (const waiter of pc.waiters.splice(0)) waiter.resolve(ids);
     if (pc.pending.size > 0 || pc.hold) {
       if (pc.pending.size === 0 && this.releases(pc, evidence, source)) { pc.hold = null; pc.desired = null; pc.shown = ids; return; }
       if (this.qualifies(pc, evidence)) pc.shown = ids;
-      else this.mismatch(id, pc, evidence);
+      else this.mismatch(id, pc, read);
       return;
     }
     if (pc.protectedEpoch === null || (evidence && evidence.epoch === pc.protectedEpoch)) {
       if (this.qualifies(pc, evidence)) pc.shown = ids;
       return;
     }
-    this.mismatch(id, pc, evidence);
+    this.mismatch(id, pc, read);
   }
 
   private releases(pc: PcOrder, evidence: Evidence | null, source: RosterSource): boolean {
@@ -205,19 +200,36 @@ export class ReorderCoordinator {
       && (pc.protectedEpoch === null || this.qualifies(pc, evidence)));
   }
 
-  private mismatch(id: string, pc: PcOrder, evidence: Evidence | null): void {
+  private mismatch(id: string, pc: PcOrder, read: OrderRead): void {
+    const { evidence } = read;
     const verify = this.options.verify;
     if (!verify || !evidence || pc.protectedEpoch === null || evidence.epoch === pc.protectedEpoch) return;
-    const key = `${pc.receipts}:${pc.guard?.version ?? 0}:${pc.generation}:${pc.protectedEpoch}`;
-    if (pc.check?.key === key) return;
+    const key = `${pc.receipts}:${pc.guard?.version ?? 0}:${pc.protectedEpoch}`;
+    if (pc.check?.key === key) {
+      const previous = pc.check.candidate?.evidence;
+      if (previous?.epoch === evidence.epoch && evidence.seq >= previous.seq) {
+        pc.check.candidate = read;
+        pc.check.updated = true;
+      }
+      return;
+    }
     pc.check?.abort.abort();
-    const check = { key, abort: new AbortController() };
+    const check = { key, abort: new AbortController(), candidate: read, updated: false };
     pc.check = check;
-    void verify(id, check.abort.signal).then((answer) => {
+    const finish = (answer: Awaited<ReturnType<SourceProofQuery>>) => {
       if (pc.check !== check) return;
       pc.check = null;
-      if (answer && !check.abort.signal.aborted && key === `${pc.receipts}:${pc.guard?.version ?? 0}:${pc.generation}:${pc.protectedEpoch}`) this.proved(id, pc, answer);
-    }, () => { if (pc.check === check) pc.check = null; });
+      if (answer && !check.abort.signal.aborted) {
+        pc.answered = evidence.epoch;
+        this.proved(id, pc, answer, check.candidate, check.updated);
+      }
+      const cached = pc.last;
+      for (const waiter of pc.waiters.splice(0)) {
+        if (cached && this.qualifies(pc, cached.evidence)) waiter.resolve(cached.ids);
+        else waiter.reject(new Error("Could not confirm the PC's workspace order"));
+      }
+    };
+    void verify(id, check.abort.signal).then(finish, () => finish(null));
   }
 
   private invalidateCheck(pc: PcOrder): void {
@@ -225,21 +237,33 @@ export class ReorderCoordinator {
     pc.check = null;
   }
 
-  private proved(id: string, pc: PcOrder, answer: { machines: OrderRosterEntry[]; boot_id: string }): void {
+  private proved(id: string, pc: PcOrder, answer: { machines: OrderRosterEntry[]; boot_id: string }, candidate: OrderRead | null, updated: boolean): void {
     const boot = answer.boot_id;
     const old = pc.protectedEpoch;
-    if (old === null || boot === old || pc.retired.has(boot)) return;
-    pc.retired.add(old);
-    pc.floors.delete(old);
-    if (pc.hold?.epoch === old) {
-      if (pc.pending.size === 0) { pc.shown = pc.desired ?? pc.shown; pc.hold = null; pc.desired = null; }
-      else pc.hold.epoch = null;
+    if (old === null || pc.retired.has(boot)) return;
+    if (boot !== old) {
+      pc.retired.add(old);
+      pc.floors.delete(old);
+      if (pc.hold?.epoch === old) {
+        if (pc.pending.size === 0) { pc.shown = pc.desired ?? pc.shown; pc.hold = null; pc.desired = null; }
+        else pc.hold.epoch = null;
+      }
+      pc.guard = { epoch: boot, version: (pc.guard?.version ?? 0) + 1 };
+      pc.protectedEpoch = boot;
     }
-    pc.guard = { epoch: boot, version: (pc.guard?.version ?? 0) + 1 };
-    pc.protectedEpoch = boot;
-    const entry = answer.machines.find((machine) => machine.id === id);
-    const evidence = entry?.snapshot ? evidenceOf(entry.snapshot) : null;
-    if (entry?.snapshot && evidence?.epoch === boot && pc.pending.size === 0 && !pc.hold) pc.shown = entry.snapshot.workspaces.map((workspace) => workspace.workspace_id);
+    const snapshot = answer.machines.find((machine) => machine.id === id)?.snapshot;
+    const evidence = snapshot ? evidenceOf(snapshot) : null;
+    const cached = pc.last?.evidence?.epoch === boot && (candidate?.evidence?.epoch !== boot || pc.last.evidence.seq > candidate.evidence.seq) ? pc.last : candidate;
+    let chosen: OrderRead | null = snapshot && evidence?.epoch === boot
+      ? { ids: snapshot.workspaces.map((workspace) => workspace.workspace_id), evidence } : null;
+    if (cached?.evidence?.epoch === boot && (chosen
+      ? (cached.evidence.seq > (evidence?.seq ?? -1) || (updated && cached.evidence.seq === evidence?.seq))
+      : pc.waiters.length > 0)) chosen = cached;
+    if (chosen && this.qualifies(pc, chosen.evidence)) {
+      pc.shown = chosen.ids;
+      pc.last = chosen;
+      for (const waiter of pc.waiters.splice(0)) waiter.resolve(chosen.ids);
+    }
     this.notify();
   }
 
@@ -252,25 +276,44 @@ export class ReorderCoordinator {
     if (pc.shown === null) pc.shown = [...current];
     if (pc.hold) pc.hold.settleMark = null;
     else pc.hold = { epoch: null, receipts: 0, legacy: false, settleMark: null };
-    pc.receipts++;
-    this.invalidateCheck(pc);
+    // A drag behind a parked batch cannot send a move until that batch has its recovery proof.
+    if (pc.waiters.length === 0) {
+      pc.receipts++;
+      this.invalidateCheck(pc);
+    }
     this.notify();
     const run = pc.chain.then(async () => {
-      const base = pc.failed ? await this.qualifiedBase(pc, generation) : [...current];
+      const recover = pc.failed || pc.hold?.rebased !== undefined;
+      const base = pc.failed ? await this.qualifiedBase(machineId, pc, generation) : pc.hold?.rebased ?? [...current];
       pc.failed = false;
-      for (const step of workspaceMoves(base, mergeOrder(next, base))) this.acknowledge(pc, await move(step));
+      const target = mergeOrder(next, base);
+      for (const step of workspaceMoves(base, target)) {
+        const sent = pc.last?.evidence ?? null;
+        const hold = pc.hold;
+        if (hold) hold.inFlight = sent;
+        try {
+          this.acknowledge(pc, await move(step), sent);
+        } finally {
+          if (hold) hold.inFlight = undefined;
+        }
+      }
+      if (recover && pc.hold) pc.hold.rebased = target;
     });
     pc.chain = run.catch(() => { pc.failed = true; });
     return run.then(() => this.settle(machineId, pc, generation, null), (error: unknown) => this.settle(machineId, pc, generation, error));
   }
 
-  private qualifiedBase(pc: PcOrder, generation: number): Promise<string[]> {
-    if (pc.last && this.qualifies(pc, pc.last.evidence)) return Promise.resolve(pc.last.ids);
+  private qualifiedBase(machineId: string, pc: PcOrder, generation: number): Promise<string[]> {
     if (pc.gone) return Promise.reject(new Error("This PC was removed"));
-    return new Promise((resolve, reject) => pc.waiters.push({ generation, resolve, reject }));
+    const sent = pc.hold?.sent;
+    if (sent !== undefined) this.recheck(machineId, pc, sent);
+    if (!pc.check && pc.last && this.qualifies(pc, pc.last.evidence)) return Promise.resolve(pc.last.ids);
+    return new Promise((resolve, reject) => {
+      pc.waiters.push({ generation, resolve, reject });
+    });
   }
 
-  private acknowledge(pc: PcOrder, receipt: WorkspaceMoved | void): void {
+  private acknowledge(pc: PcOrder, receipt: WorkspaceMoved | void, sent: Evidence | null): void {
     pc.receipts++;
     this.invalidateCheck(pc);
     const hold = pc.hold!;
@@ -282,6 +325,7 @@ export class ReorderCoordinator {
     pc.floors.set(epoch, Math.max(pc.floors.get(epoch) ?? 0, seq!));
     pc.protectedEpoch = epoch;
     hold.epoch = epoch;
+    hold.sent = sent;
   }
 
   private settle(machineId: string, pc: PcOrder, generation: number, error: unknown): void {
@@ -289,6 +333,7 @@ export class ReorderCoordinator {
     const latest = generation === pc.generation;
     if (error !== null && latest) pc.desired = null;
     const hold = pc.hold;
+    if (pc.pending.size === 0 && hold) hold.rebased = undefined;
     if (pc.pending.size === 0 && hold && pc.gone) { pc.hold = null; pc.desired = null; }
     else if (pc.pending.size === 0 && hold) {
       if (hold.receipts === 0 || (hold.epoch === null && !hold.legacy)) {
@@ -297,10 +342,32 @@ export class ReorderCoordinator {
       } else {
         hold.settleMark = this.loads;
         this.options.onSettled?.(machineId);
+        const sent = hold.sent;
+        hold.sent = undefined;
+        if (sent !== undefined) this.recheck(machineId, pc, sent);
+        hold.restart = undefined;
       }
     }
     this.notify();
     if (error !== null && latest) throw error;
+  }
+
+  /**
+   * A roster that arrived while the moves were on their way was let through or had its check cut short by a later receipt.
+   * Once they settle it is checked as one arriving now would be: one of another server lifetime may come from a restart
+   * after a move. Not when it is of the server lifetime read when the newest move with a receipt was sent (no restart
+   * since; also a repeated or delayed older read), nor of one a verification already answered about.
+   */
+  private recheck(machineId: string, pc: PcOrder, sent: Evidence | null): void {
+    if (pc.check) return;
+    const eligible = (read: OrderRead | null | undefined): read is OrderRead => {
+      const evidence = read?.evidence;
+      return !!evidence && !pc.retired.has(evidence.epoch) && evidence.epoch !== pc.protectedEpoch
+        && evidence.epoch !== sent?.epoch && evidence.epoch !== pc.answered;
+    };
+    const restart = pc.hold?.restart;
+    if (eligible(restart)) this.mismatch(machineId, pc, restart);
+    else if (eligible(pc.last)) this.mismatch(machineId, pc, pc.last);
   }
 }
 

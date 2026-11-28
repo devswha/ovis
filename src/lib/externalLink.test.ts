@@ -1,7 +1,8 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createWebLinkOpener, ExternalLink, isWebLink, openExternal, reserveTab } from "./externalLink.ts";
+import { getTransport, nativeTransport, setTransport } from "./transport.ts";
 
 /** Runs `run` with `window.open` answering `answer`, and gives back each call's arguments. */
 function withWindowOpen(answer: (url: string) => unknown, run: () => void): unknown[][] {
@@ -36,6 +37,139 @@ describe("openExternal", () => {
     const calls = withWindowOpen(() => null, () => openExternal("mailto:team@ovis.sh", "link", true));
     expect(calls).toEqual([["mailto:team@ovis.sh", "_blank", "noopener,noreferrer"]]);
   });
+
+  it("forwards SSH links only into the built-in browser and preserves the original HTTPS hostname", async () => {
+    const opened: string[] = [];
+    const builtIn: string[] = [];
+    let available = true;
+    const originals = { window: Object.getOwnPropertyDescriptor(globalThis, "window"), location: Object.getOwnPropertyDescriptor(globalThis, "location") };
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {
+      ovisBrowsers: {
+        list: async () => null, choose: async () => {}, open: (url: string) => opened.push(url),
+        canForward: () => available, openForwarded: async (url: string) => { if (!available) return false; builtIn.push(url); return true; },
+      },
+    } });
+    Object.defineProperty(globalThis, "location", { configurable: true, value: new URL("http://127.0.0.1:7317") });
+    const request = spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ url: "http://127.0.0.1:42001" }));
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    const transport = getTransport();
+    try {
+      setTransport(nativeTransport);
+      await openExternal("https://localhost:5173/preview?q=one#two", "link", false, { id: "ssh-pc", kind: "ssh" });
+      expect(builtIn).toEqual(["https://localhost:42001/preview?q=one#two"]);
+      expect(opened).toEqual([]);
+      expect(request).toHaveBeenCalledWith("/api/machines/ssh-pc/forward", expect.objectContaining({
+        method: "POST", body: JSON.stringify({ port: 5173 }),
+      }));
+      request.mockClear();
+      await openExternal("http://localhost:5173/local", "link", false, { id: "local", kind: "local" });
+      await openExternal("http://localhost:5173/relay", "link", false, { id: "paired-pc", kind: "relay" });
+      await openExternal("https://example.com/", "link", false, { id: "ssh-pc", kind: "ssh" });
+      Object.defineProperty(globalThis, "location", { configurable: true, value: new URL("https://ovis.example.com") });
+      await openExternal("http://localhost:5173/nonlocal", "link", false, { id: "ssh-pc", kind: "ssh" });
+      Object.defineProperty(globalThis, "location", { configurable: true, value: new URL("capacitor://localhost") });
+      await openExternal("http://localhost:5173/packaged", "link", false, { id: "ssh-pc", kind: "ssh" });
+      Object.defineProperty(globalThis, "location", { configurable: true, value: new URL("http://localhost:7317") });
+      setTransport({ ...nativeTransport, kind: "relay" });
+      await openExternal("http://localhost:5173/relayed", "link", false, { id: "ssh-pc", kind: "ssh" });
+      setTransport(nativeTransport);
+      expect(request).not.toHaveBeenCalled();
+      expect(opened).toEqual([
+        "http://localhost:5173/local", "http://localhost:5173/relay", "https://example.com/", "http://localhost:5173/nonlocal",
+        "http://localhost:5173/packaged", "http://localhost:5173/relayed",
+      ]);
+      Object.defineProperty(globalThis, "location", { configurable: true, value: new URL("http://[::1]:7317") });
+      available = false;
+      await openExternal("http://127.0.0.1:8080/system-browser", "link", false, { id: "ssh-pc", kind: "ssh" });
+      expect(request).not.toHaveBeenCalled();
+      expect(opened.at(-1)).toBe("http://127.0.0.1:8080/system-browser");
+      available = true;
+      request.mockResolvedValueOnce(Response.json({ url: "http://[::1]:42002" }));
+      await openExternal("http://[::1]:8080/ipv6", "link", false, { id: "ssh-pc", kind: "ssh" });
+      expect(builtIn.at(-1)).toBe("http://[::1]:42002/ipv6");
+      expect(request).toHaveBeenLastCalledWith("/api/machines/ssh-pc/forward", expect.objectContaining({
+        body: JSON.stringify({ port: 8080, bind: "[::1]" }),
+      }));
+      const beforeFailure = [...opened];
+      const beforeBuiltInFailure = [...builtIn];
+      request.mockResolvedValueOnce(Response.json({ url: "http://127.0.0.1:7317" }));
+      await openExternal("http://127.0.0.1:8080/", "link", false, { id: "ssh-pc", kind: "ssh" });
+      request.mockRejectedValueOnce(new Error("connection failed"));
+      await openExternal("http://[::1]:8080/", "link", false, { id: "ssh-pc", kind: "ssh" });
+      request.mockResolvedValueOnce(Response.json({ url: "http://127.0.0.1:42001" }));
+      const switching = openExternal("http://localhost:8080/", "link", false, { id: "ssh-pc", kind: "ssh" });
+      available = false;
+      await switching;
+      expect(opened).toEqual(beforeFailure);
+      expect(builtIn).toEqual(beforeBuiltInFailure);
+      expect(warn).toHaveBeenCalledTimes(3);
+    } finally {
+      setTransport(transport);
+      request.mockRestore();
+      warn.mockRestore();
+      for (const name of ["window", "location"] as const) {
+        if (originals[name]) Object.defineProperty(globalThis, name, originals[name]);
+        else Reflect.deleteProperty(globalThis, name);
+      }
+    }
+  });
+});
+
+describe("the desktop app's browser for links", () => {
+  /** Runs `run` in a page the desktop app gave its ovisBrowsers bridge, and gives back what reached it, a new tab's link and window.open. */
+  function inDesktopApp(run: () => void): { bridged: string[]; tabs: unknown[][] } {
+    const bridged: string[] = [];
+    const tabs: unknown[][] = [];
+    const originals = { window: Object.getOwnPropertyDescriptor(globalThis, "window"), document: Object.getOwnPropertyDescriptor(globalThis, "document"), location: Object.getOwnPropertyDescriptor(globalThis, "location") };
+    const ovisBrowsers = { list: async () => null, choose: async () => {}, open: (url: string) => { bridged.push(url); } };
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { ovisBrowsers, open: (...args: unknown[]) => { tabs.push(args); return null; } } });
+    Object.defineProperty(globalThis, "location", { configurable: true, value: { origin: "http://127.0.0.1:7317" } });
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { createElement: () => {
+      const link = { href: "", target: "", rel: "", click: () => tabs.push([link.href, link.target, link.rel]) };
+      return link;
+    } } });
+    try {
+      run();
+    } finally {
+      for (const name of ["window", "document", "location"] as const) {
+        if (originals[name]) Object.defineProperty(globalThis, name, originals[name]);
+        else Reflect.deleteProperty(globalThis, name);
+      }
+    }
+    return { bridged, tabs };
+  }
+
+  it("hands a web link to the app, and keeps sign-ins, this app's own pages and other schemes on their old path", () => {
+    const { bridged, tabs } = inDesktopApp(() => {
+      openExternal("https://example.com/", "link");
+      openExternal("https://github.com/login/device", "sign-in");
+      openExternal("http://127.0.0.1:7317/?pane=t3", "link");
+      openExternal("mailto:team@ovis.sh", "link");
+    });
+    expect(bridged).toEqual(["https://example.com/"]);
+    expect(tabs).toEqual([["https://github.com/login/device", "_blank", "noopener noreferrer"], ["http://127.0.0.1:7317/?pane=t3", "_blank", "noopener noreferrer"], ["mailto:team@ovis.sh", "_blank", "noopener,noreferrer"]]);
+  });
+
+  it("takes over a plain click on a web ExternalLink to another site only", () => {
+    const click = (props: Parameters<typeof ExternalLink>[0], event: { button: number; defaultPrevented?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; shiftKey?: boolean }) => {
+      const fired = { ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...event, defaultPrevented: event.defaultPrevented ?? false, preventDefault() { fired.defaultPrevented = true; } };
+      (ExternalLink(props).props as { onClick: (event: unknown) => void }).onClick(fired);
+      return fired.defaultPrevented;
+    };
+    let seen = 0;
+    const { bridged } = inDesktopApp(() => {
+      expect(click({ kind: "link", href: "https://ovis.sh/", onClick: () => { seen++; } }, { button: 0 })).toBe(true);
+      expect(click({ kind: "link", href: "https://ovis.sh/middle" }, { button: 1 })).toBe(false);
+      for (const modifier of ["ctrlKey", "metaKey", "altKey", "shiftKey"] as const) expect(click({ kind: "link", href: "https://ovis.sh/modified" }, { button: 0, [modifier]: true })).toBe(false);
+      expect(click({ kind: "link", href: "http://127.0.0.1:7317/?pane=t3" }, { button: 0 })).toBe(false);
+      expect(click({ kind: "sign-in", href: "https://github.com/login/device" }, { button: 0 })).toBe(false);
+      expect(click({ kind: "ovis", href: "https://pc.example/" }, { button: 0 })).toBe(false);
+      expect(click({ kind: "link", href: "mailto:team@ovis.sh" }, { button: 0 })).toBe(false);
+      expect(click({ kind: "link", href: "https://ovis.sh/handled" }, { button: 0, defaultPrevented: true })).toBe(true);
+    });
+    expect(bridged).toEqual(["https://ovis.sh/"]);
+    expect(seen).toBe(1);
+  });
 });
 
 describe("reserveTab", () => {
@@ -48,6 +182,7 @@ describe("reserveTab", () => {
     withWindowOpen(() => null, () => { reserved = reserveTab(); });
     expect(reserved).toBeNull();
   });
+
 });
 
 
@@ -107,6 +242,35 @@ describe("openWebLink", () => {
       if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
       else Reflect.deleteProperty(globalThis, "window");
     }
+  });
+
+  it.each([
+    ["iOS 26", "Mozilla/5.0 (iPhone; CPU iPhone OS 26_1 like Mac OS X)", true],
+    ["iOS 16", "Mozilla/5.0 (iPhone; CPU iPhone OS 16_7 like Mac OS X)", false],
+    ["iOS with no version", "Mozilla/5.0 (iPhone) AppleWebKit/605.1.15 Mobile/15E148", false],
+  ])("opens a terminal or chat link with tab reuse on in the %s Home Screen app", (_, userAgent, handOff) => {
+    const clicked: string[] = [];
+    const opened: string[] = [];
+    const saved = ["document", "window", "navigator", "location"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
+    const values: Record<string, unknown> = {
+      document: { createElement: () => { const link = { href: "", target: "", rel: "", click: () => clicked.push(link.href) }; return link; } },
+      window: { open: (uri: string) => { opened.push(uri); return null; } },
+      navigator: { userAgent, maxTouchPoints: 5, standalone: true },
+      location: { origin: "https://ovis.example.com" },
+    };
+    for (const [key] of saved) Object.defineProperty(globalThis, key, { configurable: true, value: values[key] });
+    try {
+      openExternal("https://gitlab.com/issues/7", "link", true);
+      openExternal("https://ovis.example.com/x", "link");
+    } finally {
+      for (const [key, descriptor] of saved) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+      }
+    }
+    expect({ clicked, opened }).toEqual(handOff
+      ? { clicked: ["x-safari-https://gitlab.com/issues/7", "https://ovis.example.com/x"], opened: [] }
+      : { clicked: ["https://gitlab.com/issues/7", "https://ovis.example.com/x"], opened: ["https://gitlab.com/issues/7"] });
   });
 });
 

@@ -9,6 +9,13 @@ with what is installed there (see `shared/protocol.ts`). A version flag gets 5 s
 whose flag is slower (Hermes loads the whole agent for it) sets `detect.version_timeout_ms`, at most
 30 s. The first catalog read waits for every agent's flag, so it can take that long.
 
+Clients send `providers=<comma-separated usage provider IDs>` on `GET /api/agent-catalog`,
+`GET /api/usage` and `GET /api/usage/login` (provider discovery). The server ignores unknown IDs.
+If `providers` is omitted, it assumes the providers clients knew before Devin. Usage and sign-in
+discovery omit providers the client does not know; the catalog keeps the agent but sets its
+`sign_in.provider` to `null`. The same query on `GET /api/usage/login/prompt` limits which providers'
+sign-in prompts the client can read.
+
 A version is read only from what the version flag prints on stdout when it succeeds. A flag that
 exits with an error or does not start is `version_error: "failed"`, and one that hangs is
 `"timeout"`: such an agent is there but does not run (`agentRuns()`), as a wrapper whose target was
@@ -62,3 +69,9 @@ flag with no input and a 5 s limit (longer where the entry sets `detect.version_
 modification time), so an install or update shows on the next read; a run that times out is tried
 again after a minute. On Windows, Command Code's `cmd` is the name of Windows' own command prompt,
 so Ovis does not say whether it is installed there.
+
+On Unix, the interactive shell's PATH is also kept. A regular agent lookup can refresh it when a
+tracked shell profile changes, without regularly rerunning an unchanged profile. For fish this
+includes `config.fish`, `fish_variables`, and additions or removals in the user's `conf.d` directory.
+Use **Check again** after editing an existing `conf.d` script in place, a file sourced indirectly
+by a profile, or a system file such as one in `/etc/paths.d`.

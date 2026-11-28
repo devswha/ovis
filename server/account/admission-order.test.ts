@@ -6,8 +6,10 @@ import { join } from "node:path";
 import { DeviceStore, readDeviceRegistry, type StoredDevice } from "../devices.ts";
 import { mergeRegistries } from "../state-merge.ts";
 import { relayFixture } from "../relay/test-helpers.ts";
-import { ADMISSION_FILE, AdmissionOrder, compareAdmission, isRowOrigin, remoteReach } from "./admission-order.ts";
-import { DEVICE_JOURNAL_FILE } from "./safety-log.ts";
+import { ADMISSION_FILE, compareAdmission, isRowOrigin, remoteReach } from "./admission-order.ts";
+import { PcAccountState } from "./pc-binding.ts";
+import { CatchUpGate } from "./catch-up-gate.ts";
+import { DEVICE_JOURNAL_FILE, SafetyLog } from "./safety-log.ts";
 
 const dirs: string[] = [];
 const fixtures: ReturnType<typeof relayFixture>[] = [];
@@ -27,7 +29,7 @@ async function key(): Promise<string> {
   return Buffer.from(await crypto.subtle.exportKey("spki", pair.publicKey)).toString("base64url");
 }
 
-const store = (dir: string) => new DeviceStore(dir, null, null, { admissions: AdmissionOrder.open(dir) });
+const store = (dir: string) => new DeviceStore(dir, null, null, { pc: PcAccountState.open(dir) });
 
 async function pairRelay(devices: DeviceStore, now: number): Promise<string> {
   const paired = devices.pairRelay(devices.startPairing(now).code, "Phone", await key(), now);
@@ -47,6 +49,32 @@ function legacyRow(created_at: string, extra: Partial<StoredDevice> = {}): Store
 }
 
 describe("one admission order per PC (origin and admit_no)", () => {
+  test.each(["order", "catch-up"] as const)("a new cookie issued during service opt-out retains its real %s", async check => {
+    const dir = stateDir();
+    const pc = PcAccountState.open(dir);
+    pc.migrate("acct_1", true);
+    const devices = new DeviceStore(dir, null, null, { pc, safety: SafetyLog.open(dir) });
+    const older = await pairRelay(devices, Date.now() - 1000);
+    expect(pc.setServiceStep2Off(true)).toBe(true);
+    const browser = devices.pair(devices.startPairing().code, "Opt-out browser", "drive");
+    if (!browser) throw new Error("Missing locally issued cookie");
+    const id = browser.device.id;
+    expect(devices.match(browser.token)?.id).toBe(id);
+    expect(pc.setServiceStep2Off(false)).toBe(true);
+    const reopened = new DeviceStore(dir, null, null, { pc: PcAccountState.open(dir), safety: SafetyLog.open(dir) });
+    if (check === "order") {
+      expect({ olderMemberReachesNewRow: remoteReach(row(dir, older), row(dir, id)),
+        cookieMayRevokeOlderMember: reopened.remoteRevoke(id, older) === "allowed" })
+        .toEqual({ olderMemberReachesNewRow: true, cookieMayRevokeOlderMember: false });
+    } else {
+      const gate = new CatchUpGate(() => pc.binding()?.bind_id ?? null);
+      reopened.attachCatchUp(gate);
+      expect(reopened.catchingUp(id)).toBe(true);
+      gate.wholeRead();
+      expect(reopened.match(browser.token)?.id).toBe(id);
+    }
+  });
+
   test("P21: PC admission order wins when service or journal order disagrees", async () => {
     const dir = stateDir();
     const devices = store(dir);
@@ -100,9 +128,9 @@ describe("one admission order per PC (origin and admit_no)", () => {
     const journalled = stateDir();
     writeFileSync(join(journalled, "devices.json"), JSON.stringify({ gate_closed_at: older.created_at, devices: [older] }), { mode: 0o600 });
     writeFileSync(join(journalled, DEVICE_JOURNAL_FILE), JSON.stringify({ v: 1, entries: [] }), { mode: 0o600 });
-    const admissions = AdmissionOrder.open(journalled);
+    const admissions = PcAccountState.open(journalled);
     expect(admissions.strict).toContain(ADMISSION_FILE);
-    const closed = new DeviceStore(journalled, null, null, { admissions });
+    const closed = new DeviceStore(journalled, null, null, { pc: admissions });
     expect(closed.pair(closed.startPairing().code, "New", "drive")).toBeNull();
     expect(row(journalled, older.id).origin).toBeUndefined();
     expect(existsSync(join(journalled, ADMISSION_FILE))).toBe(false);
@@ -147,7 +175,7 @@ describe("one admission order per PC (origin and admit_no)", () => {
   });
 
   test("P22: with the release flag off no row gets an origin and no order file is written", async () => {
-    const fixture = relayFixture(false, {});
+    const fixture = relayFixture(false, { accountOpensAll: false });
     fixtures.push(fixture);
     const devices = fixture.app.context.services.devices;
     const id = devices.pairRelay(devices.startPairing().code, "Phone", await key())!.device.id;
@@ -199,10 +227,10 @@ describe("one admission order per PC (origin and admit_no)", () => {
   });
 
   test("T50: nothing is numbered before the one-time legacy pass has run", () => {
-    const order = AdmissionOrder.open(stateDir());
-    expect(order.fresh).toBe(true);
+    const order = PcAccountState.open(stateDir());
+    expect(order.migrating).toBe(true);
     expect(() => order.admit("remote", "code", null, Date.now())).toThrow();
-    order.settleFresh();
+    order.migrate(null, false);
     expect(order.admit("remote", "code", null, Date.now()).admit_no).toBe(1);
   });
 

@@ -27,6 +27,7 @@ import { loadRelayIdentity, relayIdentityPath } from "./identity.ts";
 import { handleRelayRequest } from "./routes.ts";
 import { RelayService } from "./service.ts";
 import type { RelayServiceOptions } from "./service.ts";
+import { MIN_SUPPORTED_CLIENT_VERSION } from "./client-floor.ts";
 import { bounded, deferred, TestClock } from "./test-helpers.ts";
 import { relayClock } from "./session.ts";
 import { unitHerdrOnly } from "../../scripts/test-herdr.ts";
@@ -51,7 +52,7 @@ async function fixture(serveOnly?: boolean, options: Partial<RelayServiceOptions
   cleanup.push(() => rmSync(stateDir, { recursive: true, force: true }));
   let synced = deferred<void>();
   let controlLost = deferred<void>();
-  let dataOpened = deferred<WebSocket>();
+  let dataServed = deferred<WebSocket>();
   const opened: { kind: "control" | "data" | "warm"; socket: WebSocket }[] = [];
   const heard: string[] = [];
   const warmOpened: ReturnType<typeof deferred<WebSocket>>[] = [deferred<WebSocket>(), deferred<WebSocket>()];
@@ -62,8 +63,10 @@ async function fixture(serveOnly?: boolean, options: Partial<RelayServiceOptions
       const socket = new WebSocket(`ws://127.0.0.1:${localRelay.port}${target.pathname}${target.search}`);
       const kind = target.searchParams.has("connection_id") ? "data" : target.searchParams.has("warm") ? "warm" : "control";
       opened.push({ kind, socket });
-      if (kind === "warm") {
-        const proved = warmOpened[opened.filter((entry) => entry.kind === "warm").length - 1];
+      if (kind !== "control") {
+        // A data socket serves its client once it sent the PC's proof: the relay ignores the close of one still
+        // proving (relay/core.ts finish), so a client must not be timed out before that.
+        const proved = kind === "warm" ? warmOpened[opened.filter((entry) => entry.kind === "warm").length - 1] : dataServed;
         const send = socket.send.bind(socket);
         socket.send = (data) => {
           send(data);
@@ -71,13 +74,11 @@ async function fixture(serveOnly?: boolean, options: Partial<RelayServiceOptions
         };
       }
       if (kind === "control") socket.addEventListener("message", (event) => { if (typeof event.data === "string") heard.push(event.data); });
-      if (target.searchParams.has("connection_id")) {
-        socket.addEventListener("open", () => dataOpened.resolve(socket));
-      } else if (target.searchParams.has("warm")) {
+      if (kind === "warm") {
         socket.addEventListener("message", (event) => {
-          if (typeof event.data === "string" && event.data.includes('"bound"')) dataOpened.resolve(socket);
+          if (typeof event.data === "string" && event.data.includes('"bound"')) dataServed.resolve(socket);
         });
-      } else socket.addEventListener("close", () => controlLost.resolve());
+      } else if (kind === "control") socket.addEventListener("close", () => controlLost.resolve());
       socket.addEventListener("message", (event) => {
         if (typeof event.data === "string" && JSON.parse(event.data).type === "sync") synced.resolve();
       });
@@ -85,8 +86,11 @@ async function fixture(serveOnly?: boolean, options: Partial<RelayServiceOptions
     }, ...options,
   };
   let service = new RelayService(relayOptions);
-  let app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null,
-    sidecar: false, tailscaleServeOnly: serveOnly, ...appOptions, relay: service });
+  // The transport fixtures use the released Step 1 QR/code admission, not screen-confirmed Step 2 grants.
+  const account = new FakeAccountService();
+  const accountService = { url: "https://account.fixture.test", fetch: (request: Request) => account.fetch(request) };
+  let app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, accountOpensAll: false,
+    sidecar: false, tailscaleServeOnly: serveOnly, accountService, ...appOptions, relay: service });
   cleanup.push(async () => { await service.shutdown(); app.stop(); });
   return {
     stateDir,
@@ -94,7 +98,7 @@ async function fixture(serveOnly?: boolean, options: Partial<RelayServiceOptions
     get app() { return app; },
     get service() { return service; },
     get attempts() { return attempts; },
-    get dataOpened() { return dataOpened.promise; },
+    get dataServed() { return dataServed.promise; },
     get controlLost() { return controlLost.promise; },
     opened, heard, warmOpened: warmOpened.map((entry) => entry.promise),
     get base() { return `http://127.0.0.1:${app.port}`; },
@@ -127,7 +131,7 @@ async function fixture(serveOnly?: boolean, options: Partial<RelayServiceOptions
       app.stop();
       synced = deferred<void>();
       service = new RelayService(relayOptions);
-      app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, ...appOptions, relay: service });
+      app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, accountOpensAll: false, accountService, ...appOptions, relay: service });
     },
     async interruptRelay(clock: TestClock) {
       synced = deferred<void>();
@@ -135,7 +139,7 @@ async function fixture(serveOnly?: boolean, options: Partial<RelayServiceOptions
       await localRelay.stop();
       await bounded(lost);
       controlLost = deferred<void>();
-      dataOpened = deferred<WebSocket>();
+      dataServed = deferred<WebSocket>();
       localRelay = startBunRelay(hostOptions);
       expect(service.status().phase).toBe("error");
       clock.advance(999);
@@ -211,7 +215,7 @@ async function client(f: Awaited<ReturnType<typeof fixture>>, offer: RelayOffer,
   }
   const principal = (await bounded(admitted.promise)).payload;
   return {
-    device: { id: principal.device_id, keys }, error: error.promise, goaway: goaway.promise, closed: closed.promise, mux: engine,
+    device: { id: principal.device_id, keys }, welcome: greeting, error: error.promise, goaway: goaway.promise, closed: closed.promise, mux: engine,
     close: () => channel.close(),
     /** `body`: sent as the request's body, which `init.body` then says is a stream */
     async http(target: string, init: Partial<Omit<HttpRequest, "target" | "device_id">> = {}, body?: string) {
@@ -674,6 +678,15 @@ it("starts, decodes an offer, pairs, authenticates, and carries full HTTP and WS
   }
 });
 
+it("names the oldest client it supports in its WELCOME: the one floor, or the one a test gives it", async () => {
+  const f = await fixture();
+  await f.start();
+  expect((await client(f, await f.offer())).welcome.min_supported_client).toBe(MIN_SUPPORTED_CLIENT_VERSION);
+  const raised = await fixture(false, { minSupportedClient: "9.8.7" });
+  await raised.start();
+  expect((await client(raised, await raised.offer())).welcome.min_supported_client).toBe("9.8.7");
+});
+
 it("hands a phone the PC's proven warm socket, so the PC opens none for it, and keeps the next one ready", async () => {
   const f = await fixture();
   await f.start();
@@ -756,6 +769,23 @@ it("rejects CSRF before connecting or closing the device gate", async () => {
   expect(foreign.status).toBe(403);
   expect(f.attempts).toBe(0);
   expect(f.app.context.services.devices.gated).toBe(false);
+});
+
+it("a bound PC with an unreadable registry refuses identity reset before closing its relay or changing its binding", async () => {
+  const f = await fixture(false, {}, { accountOpensAll: true });
+  await f.start();
+  f.app.context.services.devices.bindByService("acct_fixture");
+  const binding = () => readFileSync(join(f.stateDir, "account-pc.json"), "utf8");
+  const identity = () => readFileSync(relayIdentityPath(f.stateDir), "utf8");
+  const before = [binding(), identity()];
+  const registry = join(f.stateDir, "devices.json");
+  writeFileSync(registry, "not JSON", { mode: 0o600 });
+  await f.restart();
+  expect(f.app.context.services.devices.error).not.toBeNull();
+  const priorPhase = f.service.status().phase;
+  const response = await f.request("/reset-identity", "POST");
+  expect([response.status, (await response.json()).error?.code, f.service.status().phase, binding() === before[0],
+    identity() === before[1], readFileSync(registry, "utf8") === "not JSON"]).toEqual([503, "gate_unavailable", priorPhase, true, true, true]);
 });
 
 it("rotates identity, closes old sessions, revokes only relay devices and reconnects", async () => {
@@ -890,7 +920,7 @@ it("bounds a client's incomplete protected handshake to fifteen seconds", async 
   raw.onclose = (event) => closed.resolve(event.code);
   const opened = deferred<void>();
   raw.onopen = () => opened.resolve();
-  await bounded(Promise.all([f.dataOpened, opened.promise]));
+  await bounded(Promise.all([f.dataServed, opened.promise]));
   clock.advance(14_999);
   expect(raw.readyState).toBe(WebSocket.OPEN);
   clock.advance(1);
@@ -1026,7 +1056,7 @@ async function regionalFixture({ rtt = { global: 130, regional: 13 } as { global
       return socket;
     },
   });
-  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir: dir, token: "", tailscaleOwner: null, sidecar: false, relay: service });
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir: dir, token: "", tailscaleOwner: null, sidecar: false, relay: service, accountOpensAll: false });
   cleanup.push(async () => { await service.shutdown(); app.stop(); });
   const base = `http://127.0.0.1:${app.port}`;
   const post = (path: string) => fetch(`${base}/api/relay${path}`, { method: "POST", headers: { origin: base, "x-herdr-update": "1" } });
@@ -1421,6 +1451,9 @@ it("machine profile reuses its key, saved state and paired device across a resta
 it("machine profile opens no direct listener even when the relay service is given one", async () => {
   let bound = 0;
   const f = await machineFixture({ token: "owner-token" }, { direct: { addresses: () => { bound++; return ["127.0.0.1"]; }, peerAllowed: () => true, preferredPort: 0 } });
+  // turned on, as an ordinary PC's owner could: the profile, not the default, keeps the listener closed
+  mkdirSync(join(f.stateDir, "relay"), { recursive: true });
+  writeFileSync(join(f.stateDir, "relay", "direct.json"), '{"on":true}');
   f.service.start();
   expect(f.service.directAvailable).toBe(false);
   expect(bound).toBe(0);

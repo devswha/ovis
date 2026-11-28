@@ -1,18 +1,30 @@
 /** The core and its terminals keep running, as for every hc client. */
 import { app, autoUpdater as squirrel, BrowserWindow, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, session, shell, Tray, type MenuItemConstructorOptions } from "electron";
-import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, rmSync, type WriteStream } from "node:fs";
+import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, rmSync, watch, type FSWatcher, type WriteStream } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { ChildProcess } from "node:child_process";
-import { choosePort, coreEnv, endLeftover, installCore, isFile, layout, openLog, processCommand, processStartSync, readSaved, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { readSaved } from "../../../shared/desktop-command-listener.ts";
+import { isFile, processStartSync } from "../../../shared/desktop-process.ts";
+import { choosePort, coreEnv, coreSession, endLeftover, installCore, layout, openLog, processCommand, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
 import { accountServiceOf, startLoopbackSignIn, type LoopbackSignIn } from "./accountSignIn.ts";
 import { awakeLabel, DESKTOP_ACTIVITY_FILE, holdAwake, readAwakeSettings, readWorking, writeAwakeSettings, type AwakeSettings } from "./awake.ts";
-import { checkForUpdates, debInstallCommand, downloadsUpdate, nextOffer, NO_OFFER, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices, type HeldUpdate, type UpdateNotices, type UpdateOffer, type UpdaterEvent } from "./updates.ts";
+import { appUpdateState, checkFeeds, checkForUpdates, debInstallCommand, downloadsUpdate, nextOffer, NO_OFFER, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices, type AppCheck, type AppUpdateState, type CheckOutcome, type FeedSource, type HeldUpdate, type UpdateNotices, type UpdateOffer, type UpdaterEvent } from "./updates.ts";
 import { extractedAppDir, othersRunFrom } from "./appimage.ts";
 import { desktopLocale, desktopText } from "./text.ts";
 import { hideWindow } from "./windowClose.ts";
 import { argvLinkQuery, LINK_SCHEME, openLinkQuery, tellsLink } from "./openLink.ts";
 import { openOutside } from "./openOutside.ts";
+import { choosableLinkBrowser, findBrowsers, linkBrowserChoices, readLinkBrowser, webAddress, writeLinkBrowser, type FoundBrowsers, type LinkBrowser } from "./browsers.ts";
+import { BrowserTabs, type BrowserBounds } from "./browserTabs.ts";
+import { debuggingSwitch, ownAddresses, readBrowserState } from "./browserState.ts";
+import { homedir, networkInterfaces } from "node:os";
+import { commandState, installCommand, READ_TERMINAL_PATH, SHELL_PATH_SCRIPT, shellPath, writeLauncher, type CommandHost } from "./terminalCommand.ts";
+import { BrowserBroker, brokerPath } from "./browserBroker.ts";
+import { readStagingProfile } from "./stagingProfile.ts";
+import { BROWSER_TOKENS_DIR } from "../../../shared/browser-broker.ts";
+import { BUILT_IN_LINK_BROWSER } from "../../../shared/browser-policy.ts";
+import { isForwardLoopbackHost } from "../../../shared/machines.ts";
 
 type StepState = "pending" | "ok" | "failed";
 export interface Status {
@@ -29,6 +41,15 @@ export interface UpdateLine {
 }
 
 const resources = app.isPackaged ? join(process.resourcesPath, "ovis") : process.env["OVIS_DESKTOP_STAGE"] || join(app.getAppPath(), "stage");
+const staging = app.isPackaged && process.platform === "darwin" ? readStagingProfile({ resources, env: process.env }) : null;
+if (staging) {
+  Object.assign(process.env, staging.env);
+  if (!app.commandLine.hasSwitch("user-data-dir")) {
+    mkdirSync(staging.userData, { recursive: true, mode: 0o700 });
+    app.setPath("userData", staging.userData);
+    app.setPath("sessionData", staging.userData);
+  }
+}
 const programs = layout(resources);
 const versions = (() => {
   try { return JSON.parse(readFileSync(join(resources, "versions.json"), "utf8")) as { hc: string; bun: string }; } catch { return null; }
@@ -53,6 +74,9 @@ let stopped = false;
 let offer: UpdateOffer = NO_OFFER;
 let installOffer: (() => void) | null = null;
 let installWaiters: (() => void)[] = [];
+/** the app's own check (Settings → About), and the check itself once updates are on */
+let appCheck: AppCheck = { is: "idle" };
+let checkNow: (() => Promise<void>) | null = null;
 const noticesPath = join(app.getPath("userData"), "update-notice.json");
 let notices = readUpdateNotices(noticesPath);
 /** held so its click still arrives: a notification nothing holds is collected, and its click with it */
@@ -63,11 +87,26 @@ const awakePath = join(app.getPath("userData"), "awake.json");
 let awake = readAwakeSettings(awakePath);
 let awakeBlocker: number | null = null;
 let awakeWorking = 0;
+const linkBrowserPath = join(app.getPath("userData"), "link-browser.json");
+let linkBrowser = readLinkBrowser(linkBrowserPath);
+let browsersFound: Promise<FoundBrowsers> | null = null;
 let text = desktopText("en");
 /** the pane an `ovis://open` link names (openLink.ts), as its query: told to the server's page once it shows */
 let pendingLink: string | null = null;
+/** the built-in browser while its setting is on (browserTabs.ts), and the port of the server it keeps out */
+let browser: BrowserTabs | null = null;
+let browserPort: number | null = null;
+/** whether the server's page can show a built-in browser tab now (a wide window, not in a mode): it says so on each change */
+let tabsShowable = false;
+let stateWatch: FSWatcher | null = null;
+/** the agents' way into it (browserBroker.ts), open only while it is on; none where there is no local-only socket (Windows) */
+const brokerSocket = brokerPath(app.getPath("userData"), process.platform);
+const broker = brokerSocket === null ? null : new BrowserBroker(() => browser, join(stateDir, BROWSER_TOKENS_DIR), brokerSocket);
 
 const accountService = accountServiceOf(process.env);
+/** the `ovis` command (terminalCommand.ts): written on each start, linked onto the PATH from Settings → About */
+const commandDir = join(app.getPath("userData"), "cli");
+let commandLauncher: string | null = null;
 
 const accountProviders = (process.env["OVIS_ACCOUNT_PROVIDERS"] ?? "").split(",").map((name) => name.trim()).filter((name) => name === "github" || name === "google" || name === "apple");
 
@@ -75,8 +114,53 @@ function serverOrigin(): string | null {
   return server ? new URL(server.url).origin : null;
 }
 
+function writeCommand(): void {
+  if (!isFile(programs.serverBinary)) return;
+  try {
+    commandLauncher = writeLauncher(commandDir, process.platform, {
+      serverBinary: programs.serverBinary,
+      desktopJson: savedPath,
+      stateDir,
+      configDir: join(app.getPath("userData"), "cli-settings"),
+      coreSession: coreSession(process.env),
+      accountService: process.env["OVIS_ACCOUNT_SERVICE_URL"]?.trim() || null,
+    });
+  } catch (error) {
+    console.error(`Writing the ovis command in ${commandDir} failed: ${message(error)}`);
+  }
+}
+
+function programOutput(program: string, args: readonly string[], timeoutMs: number, env: Record<string, string> = {}): Promise<{ code: number | null; out: string }> {
+  return new Promise((resolve) => {
+    execFile(program, args, { env: { ...process.env, ...env }, timeout: timeoutMs, windowsHide: true }, (error, stdout) => {
+      resolve({ code: error === null ? 0 : typeof error.code === "number" ? error.code : null, out: String(stdout) });
+    });
+  });
+}
+
+async function terminalPath(): Promise<string> {
+  if (process.platform === "win32") {
+    const { code, out } = await programOutput("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", READ_TERMINAL_PATH], 15_000);
+    return code === 0 ? out : process.env["PATH"] ?? "";
+  }
+  const { out } = await programOutput(process.env["SHELL"] || "/bin/sh", ["-ilc", SHELL_PATH_SCRIPT], 5_000);
+  return shellPath(out) ?? process.env["PATH"] ?? "";
+}
+
+function commandHost(launcher: string): CommandHost {
+  return { platform: process.platform, home: homedir(), shell: process.env["SHELL"] || "/bin/zsh", launcher, isFile, terminalPath, run: async (program, args, env) => (await programOutput(program, args, 60_000, env)).code };
+}
+
 function ours(url: string): boolean {
   try { return new URL(url).origin === serverOrigin(); } catch { return false; }
+}
+
+/**
+ * The server's own page, by its frame's real origin, not its address: the server also shows a file's HTML at its
+ * own address, in an opaque origin.
+ */
+function serverPage(frame: Electron.WebFrameMain | null | undefined): boolean {
+  return frame != null && frame.parent === null && frame.origin === serverOrigin() && ours(frame.url);
 }
 
 function setStatus(next: Partial<Status>): void {
@@ -86,7 +170,52 @@ function setStatus(next: Partial<Status>): void {
 }
 
 function showConnect(): void {
+  browser?.hide();
   if (window && !window.webContents.getURL().startsWith("file:")) void window.loadFile(connectPage);
+}
+
+/**
+ * The built-in browser follows its setting in the server's state folder, read again on each change
+ * there: off, it has no tab and no profile in use; on, a new block list closes the tabs it refuses.
+ */
+function updateBrowser(): void {
+  const state = readBrowserState(stateDir, browserPort, debuggingSwitch((name) => app.commandLine.hasSwitch(name)));
+  const was = browser !== null;
+  if (!state.enabled) {
+    if (browser) broker?.stop();
+    browser?.closeAll();
+    browser = null;
+  } else if (browser) {
+    browser.setPolicy(state.policy);
+    // a quit that did not happen (a refused update) stopped the socket: it listens again once that quit is over (start
+    // is a no-op while it listens); never while the app is on its way out
+    if (!quitting) broker?.start().catch((error: unknown) => console.error(`The built-in browser's agent socket did not open: ${message(error)}`));
+  } else {
+    browser = new BrowserTabs(() => window, state.policy, join(app.getPath("userData"), "browser-downloads"), tellBrowser, () => ownAddresses(networkInterfaces()));
+    broker?.start().catch((error: unknown) => console.error(`The built-in browser's agent socket did not open: ${message(error)}`));
+  }
+  if (was !== (browser !== null)) tellBrowser();
+}
+
+function watchState(): void {
+  if (stateWatch) return;
+  try {
+    stateWatch = watch(stateDir, (_event, name) => {
+      if (name === null || name === "preferences.json" || name === "address-pcs.json") updateBrowser();
+    });
+  } catch (error) {
+    console.error(`Watching ${stateDir} failed: ${message(error)}`);
+  }
+}
+
+function browserView(): { tabs: ReturnType<BrowserTabs["list"]>; results: ReturnType<BrowserTabs["results"]> } | null {
+  return browser ? { tabs: browser.list(), results: browser.results() } : null;
+}
+
+/** to the server's own page alone */
+function tellBrowser(): void {
+  const contents = window?.webContents;
+  if (contents && serverPage(contents.mainFrame)) contents.send("ovis:tabs", browserView());
 }
 
 function showWindow(): void {
@@ -158,9 +287,10 @@ async function launch(): Promise<void> {
     if (quitting) return;
     try {
       // recorded as soon as it runs, so a crash of the app before it listens still leaves its pid behind
-      const running = await startServer(programs, serverEnv(process.env, { hc, stateDir, port }), log, 60_000, (child) => {
+      const running = await startServer(programs, { ...serverEnv(process.env, { hc, stateDir, port }), OVIS_DESKTOP_COMMAND_RECORD: savedPath }, log, 60_000, (child) => {
         spawning = child;
-        writeSaved(savedPath, { port, server: { pid: child.pid!, bun: programs.serverBinary, started: processStartSync(child.pid!) } });
+        if (child.pid === undefined) return;
+        writeSaved(savedPath, { port, server: { pid: child.pid, bun: programs.serverBinary, started: processStartSync(child.pid), ready: false } });
       });
       spawning = null;
       if (quitting) {
@@ -169,6 +299,13 @@ async function launch(): Promise<void> {
         return;
       }
       server = running;
+      const listeningRecord = readSaved(savedPath).server;
+      if (listeningRecord !== null && listeningRecord.pid === running.child.pid) {
+        writeSaved(savedPath, { port, server: { ...listeningRecord, ready: true } });
+      }
+      browserPort = port;
+      watchState();
+      updateBrowser();
       const runLog = log;
       void running.exited.then((code) => {
         runLog.end();
@@ -201,6 +338,7 @@ async function waitUntilEnded(pid: number, timeoutMs: number): Promise<void> {
 
 async function stopForQuit(): Promise<void> {
   quitting = true;
+  broker?.stop(true);
   spawning?.kill("SIGTERM");
   await busy;
   const running = server;
@@ -235,6 +373,7 @@ function createWindow(): void {
   window.on("closed", () => { window = null; cancelHide = null; });
   guard(window.webContents);
   window.webContents.on("did-finish-load", () => tellLink(true));
+  window.webContents.on("did-start-navigation", (details) => { if (details.isMainFrame && !details.isSameDocument) { browser?.hide(); tabsShowable = false; } });
   void window.loadFile(connectPage);
 }
 
@@ -258,6 +397,75 @@ function guard(contents: Electron.WebContents, blank?: BrowserWindow): void {
     openOutside(url);
     blank?.close();
   });
+}
+
+/** the browsers as last found, or found now: Settings finds them again each time it lists them */
+function browsers(again = false): Promise<FoundBrowsers> {
+  if (again || browsersFound === null) browsersFound = findBrowsers();
+  return browsersFound;
+}
+
+/**
+ * A web link of the server's page, in the browser chosen in Settings. When that browser is gone or
+ * cannot start (or quits within two seconds with an error), the system browser opens it and a notification says so.
+ */
+async function openWebLink(url: string): Promise<void> {
+  const address = webAddress(url);
+  const chosen = linkBrowser;
+  if (address === null || chosen === null) return openOutside(url);
+  if (chosen === BUILT_IN_LINK_BROWSER) return openInBuiltIn(address);
+  const browser = (await browsers()).browsers.find((found) => found.id === chosen);
+  if (browser === undefined) return openInstead(null, address);
+  const [program, ...args] = browser.command(address);
+  const started = Date.now();
+  let failed = false;
+  const fail = () => {
+    if (failed) return;
+    failed = true;
+    openInstead(browser, address);
+  };
+  try {
+    const child = spawn(program!, args, { detached: true, stdio: "ignore", windowsHide: true });
+    child.once("error", fail);
+    // a launcher that hands the link to a running browser exits at once with 0; one that cannot start fails (or crashes) within a moment
+    child.once("exit", (code, signal) => { if ((code !== 0 || signal !== null) && Date.now() - started < 2_000) fail(); });
+    child.unref();
+  } catch {
+    fail();
+  }
+}
+
+/**
+ * A web link in a tab of the person's own in the built-in browser, which the page then shows beside the pane. When
+ * the page cannot show a tab now (a narrow window, a mode), the browser was turned off since, or its policy refuses
+ * the address (an Ovis server) or the page does not load, the system browser opens it, so a click never opens a tab
+ * nobody sees or an empty one.
+ */
+async function openInBuiltIn(address: string): Promise<void> {
+  if (await showBuiltInLink(address)) return;
+  openOutside(address);
+  updateLog("The built-in browser could not show a link: the system browser opened it.");
+}
+
+async function showBuiltInLink(address: string, stillAllowed = () => true): Promise<boolean> {
+  const contents = window?.webContents;
+  const tabs = browser;
+  if (!contents || !tabs || !tabsShowable || !serverPage(contents.mainFrame) || !stillAllowed()) return false;
+  const id = await tabs.openLoaded(address, "mine");
+  // the page may have stopped being able to show it (a narrower window, a lock) while it loaded
+  if (id === null || contents.isDestroyed() || browser !== tabs || !stillAllowed() || !tabsShowable || !serverPage(contents.mainFrame)) {
+    if (id !== null) tabs.close(id);
+    return false;
+  }
+  contents.send("ovis:tabs-opened", id);
+  return true;
+}
+
+function openInstead(browser: LinkBrowser | null, address: string): void {
+  openOutside(address);
+  updateLog(`The browser chosen for links (${browser?.name ?? linkBrowser}) could not open a link: the system browser opened it.`);
+  if (!Notification.isSupported()) return;
+  new Notification({ title: text("The link opened in the system browser"), body: browser ? text("{name} could not open it.", { name: browser.name }) : text("The browser chosen for links is no longer on this computer."), silent: true }).show();
 }
 
 function updateAwake(): void {
@@ -372,12 +580,30 @@ function sendUpdateLine(): void {
   window?.webContents.send("ovis:update", updateLine());
 }
 
+/** an update whose file is gone is not offered here either (heldUpdate), checked each time this is told */
+function appUpdate(): AppUpdateState {
+  heldUpdate();
+  return appUpdateState(app.getVersion(), checkNow !== null, appCheck, offer);
+}
+
+/** to the server's own page alone, as About is drawn only there (tellBrowser) */
+function sendAppUpdate(): void {
+  const contents = window?.webContents;
+  if (contents && serverPage(contents.mainFrame)) contents.send("ovis:update-state", appUpdate());
+}
+
+function setAppCheck(next: AppCheck): void {
+  appCheck = next;
+  sendAppUpdate();
+}
+
 function heldUpdate(): HeldUpdate | null {
   if (offer.ready !== null && stillHeld(offer.ready, existsSync) === null) {
     updateLog(`The downloaded update ${offer.ready.version} is gone from the updater's folder: no longer offered until it is downloaded again.`);
     offer = { ...offer, ready: null };
     rebuildTrayMenu();
     sendUpdateLine();
+    sendAppUpdate();
   }
   return offer.ready;
 }
@@ -453,7 +679,8 @@ async function startUpdates(): Promise<void> {
     try { accessSync(folder, constants.W_OK | constants.X_OK); return true; } catch { return false; }
   };
   const plan = updatePlan({ packaged: app.isPackaged, env: process.env, platform: process.platform, builtWithFeed: existsSync(join(process.resourcesPath, "app-update.yml")),
-    channel: updateChannel(process.env, stateDir), linuxPackage, execPath: process.execPath, writable });
+    // a staging (preview) build reads only the preview feed it was built with: the beta channel would swap in the public beta feed
+    channel: staging ? "stable" : updateChannel(process.env, stateDir), linuxPackage, execPath: process.execPath, writable });
   if (!plan.enabled) {
     updateLog(`Updates are off: ${plan.reason}.`);
     return;
@@ -480,11 +707,15 @@ async function startUpdates(): Promise<void> {
     }
   }
   const autoUpdater = plan.installer === "deb" ? new OvisDebUpdater() : plan.installer === "appimage" ? new updater.AppImageUpdater() : updater.autoUpdater;
-  if (plan.feed) autoUpdater.setFeedURL({ provider: "generic", url: plan.feed });
-  // beta-mac.yml and beta-linux.yml on beta, latest-*.yml otherwise; setting a channel allows downgrades, which stay off
-  autoUpdater.channel = plan.channel === "beta" ? "beta" : "latest";
-  autoUpdater.allowPrerelease = plan.channel === "beta";
-  autoUpdater.allowDowngrade = false;
+  const feeds = checkFeeds(plan);
+  const readFrom = (source: FeedSource) => {
+    if (source.feed) autoUpdater.setFeedURL({ provider: "generic", url: source.feed });
+    // beta-mac.yml and beta-linux.yml on beta, latest-*.yml otherwise; setting a channel allows downgrades, which stay off
+    autoUpdater.channel = source.channel;
+    autoUpdater.allowPrerelease = source.prerelease;
+    autoUpdater.allowDowngrade = false;
+  };
+  readFrom(feeds[0]!);
   autoUpdater.autoDownload = false;
   updateLog(`Updates: ${plan.channel} channel.`);
   // a .deb installs behind a password prompt: only when asked for (the tray's or a line's Restart to Update), never on a plain quit
@@ -493,6 +724,7 @@ async function startUpdates(): Promise<void> {
   const told = (event: UpdaterEvent) => {
     const before = offer.ready;
     offer = nextOffer(offer, event, process.platform);
+    sendAppUpdate();
     if (offer.ready === before) return;
     rebuildTrayMenu();
     announceUpdate();
@@ -500,6 +732,7 @@ async function startUpdates(): Promise<void> {
   autoUpdater.on("error", (error) => {
     failed = true;
     updateLog(`Update failed: ${message(error)}`);
+    appCheck = { is: "failed", error: message(error) };
     told({ is: "error" });
     // a download that failed emptied the updater's folder, the update held until now with it
     heldUpdate();
@@ -521,13 +754,35 @@ async function startUpdates(): Promise<void> {
       told({ is: "staged" });
     });
   }
-  const check = () => {
+  autoUpdater.on("download-progress", (progress) => {
+    if (appCheck.is === "downloading") setAppCheck({ ...appCheck, percent: Math.floor(progress.percent) });
+  });
+  // one check at a time: the hourly one and About's button join a check under way
+  let checking: Promise<void> | null = null;
+  const check = (): Promise<void> => {
     // not once the app is on its way out: a download that fails then empties the folder the install reads
-    if (quitting) return;
-    void checkForUpdates(autoUpdater, updateLog, (version) => !quitting && downloadsUpdate({ found: version, held: offer.staging ?? heldUpdate(), failed, exists: existsSync }));
+    if (quitting) return Promise.resolve();
+    checking ??= (async () => {
+      setAppCheck({ is: "checking" });
+      let outcome: CheckOutcome = { is: "latest" };
+      // the next feed only when this one has nothing newer (updates.ts checkFeeds)
+      for (const source of feeds) {
+        if (feeds.length > 1) readFrom(source);
+        outcome = await checkForUpdates(autoUpdater, updateLog, (version) => {
+          const wanted = !quitting && downloadsUpdate({ found: version, held: offer.staging ?? heldUpdate(), failed, exists: existsSync });
+          if (wanted) setAppCheck({ is: "downloading", version, percent: null });
+          return wanted;
+        });
+        if (outcome.is !== "latest") break;
+      }
+      // a downloaded or held update is the offer's to show (updates.ts appUpdateState)
+      setAppCheck(outcome.is === "failed" ? { is: "failed", error: outcome.error } : outcome.is === "latest" ? { is: "latest" } : { is: "idle" });
+    })().finally(() => { checking = null; });
+    return checking;
   };
-  check();
-  setInterval(check, UPDATE_CHECK_INTERVAL_MS);
+  checkNow = check;
+  void check();
+  setInterval(() => void check(), UPDATE_CHECK_INTERVAL_MS);
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -563,6 +818,12 @@ if (!app.requestSingleInstanceLock()) {
     // cancelled, with Ovis running on (or a .deb installed, a moment before it quits)
     return quitting ? new Promise<void>((answer) => { installWaiters.push(answer); }) : undefined;
   });
+  // Settings → About: the app's version and its own check, which the button there starts now
+  // only the server's own page by its frame's origin: the server also shows a file's HTML at its own address
+  ipcMain.handle("ovis:update-state", (event) => serverPage(event.senderFrame) ? appUpdate() : null);
+  ipcMain.handle("ovis:update-check", (event) => {
+    if (serverPage(event.senderFrame)) void checkNow?.();
+  });
   ipcMain.on("ovis:update-close", (event, version: unknown) => {
     if (!ownPage(event.senderFrame?.url) || !offer.ready || version !== offer.ready.version) return;
     saveNotices({ ...notices, closed: offer.ready.version });
@@ -587,6 +848,80 @@ if (!app.requestSingleInstanceLock()) {
     waiting.expect(state);
     openOutside(url);
     try { return await waiting.returned; } finally { if (signIn === waiting) signIn = null; }
+  });
+  // Settings → Browser for links: the server's own page lists the browsers, chooses one by its id and opens its web links in it.
+  ipcMain.handle("ovis:browsers", async (event) => {
+    if (!serverPage(event.senderFrame)) return null;
+    const found = await browsers(true);
+    return { browsers: linkBrowserChoices(found.browsers, browser !== null), systemDefault: found.systemDefault, chosen: linkBrowser };
+  });
+  ipcMain.handle("ovis:browser-choose", async (event, id: unknown) => {
+    if (!serverPage(event.senderFrame)) throw new Error("Choosing a browser is not offered here");
+    if (!choosableLinkBrowser(id, (await browsers()).browsers, browser !== null)) throw new Error("That browser is not on this computer");
+    writeLinkBrowser(linkBrowserPath, id);
+    linkBrowser = id;
+  });
+  ipcMain.on("ovis:browser-open", (event, url: unknown) => {
+    if (serverPage(event.senderFrame) && typeof url === "string") void openWebLink(url);
+  });
+  // Only our own desktop window can forward a link, and only into the separate browser profile.
+  const canForward = (event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) => event.sender === window?.webContents
+    && serverPage(event.senderFrame) && linkBrowser === BUILT_IN_LINK_BROWSER && browser !== null && tabsShowable;
+  ipcMain.on("ovis:browser-can-forward", (event) => { event.returnValue = canForward(event); });
+  ipcMain.handle("ovis:browser-open-forwarded", async (event, url: unknown) => {
+    if (!canForward(event) || typeof url !== "string") return false;
+    const address = webAddress(url);
+    if (address === null || !isForwardLoopbackHost(new URL(address).hostname)) return false;
+    // The setting or current page can change while either the SSH forward or the tab is loading.
+    // Never fall back to a browser that could attach the user's localhost cookies.
+    return showBuiltInLink(address, () => canForward(event));
+  });
+  // Settings → About → Terminal command (terminalCommand.ts): only the server's own page, and only once the launcher is written
+  ipcMain.handle("ovis:command", (event) => serverPage(event.senderFrame) && commandLauncher !== null ? commandState(commandHost(commandLauncher)) : null);
+  ipcMain.handle("ovis:command-install", (event) => {
+    if (!serverPage(event.senderFrame) || commandLauncher === null) throw new Error("Adding the ovis command is not offered here");
+    return installCommand(commandHost(commandLauncher));
+  });
+
+  // the built-in browser (browserTabs.ts): only the server's own page reaches it, and only while its setting is on.
+  // The page opens tabs of the person's own profile; it steers an agent's tab only while the person holds it
+  const browserFor = (event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) => serverPage(event.senderFrame) ? browser : null;
+  const tabId = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+  const steered = (tabs: BrowserTabs, id: number | null) => id !== null && tabs.list().some((tab) => tab.id === id && (tab.profile === "mine" || tab.held));
+  ipcMain.handle("ovis:tabs", (event) => browserFor(event) ? browserView() : null);
+  ipcMain.handle("ovis:tabs-open", (event, url: unknown) => typeof url === "string" ? browserFor(event)?.open(url, "mine") ?? null : null);
+  ipcMain.on("ovis:tabs-show", (event, id: unknown, bounds: unknown) => {
+    const box = bounds as Partial<BrowserBounds> | null;
+    const numbers = box !== null && typeof box === "object" && [box.x, box.y, box.width, box.height].every((value) => typeof value === "number" && Number.isFinite(value));
+    const tabs = browserFor(event), tab = tabId(id);
+    if (tabs && tab !== null && numbers) tabs.show(tab, box as BrowserBounds);
+  });
+  ipcMain.on("ovis:tabs-hide", (event) => browserFor(event)?.hide());
+  ipcMain.on("ovis:tabs-showable", (event, showable: unknown) => { if (serverPage(event.senderFrame)) tabsShowable = showable === true; });
+  ipcMain.handle("ovis:tabs-thumbnail", (event, id: unknown) => {
+    const tab = tabId(id);
+    return tab === null ? null : browserFor(event)?.thumbnail(tab) ?? null;
+  });
+  // shows a kept download in its folder; main never opens it
+  ipcMain.on("ovis:tabs-reveal", (event, id: unknown) => {
+    const path = typeof id === "string" ? browserFor(event)?.resultPath(id) ?? null : null;
+    if (path !== null) shell.showItemInFolder(path);
+  });
+  ipcMain.on("ovis:tabs-close", (event, id: unknown) => {
+    const tab = tabId(id);
+    if (tab !== null) browserFor(event)?.close(tab);
+  });
+  ipcMain.handle("ovis:tabs-navigate", (event, id: unknown, url: unknown) => {
+    const tabs = browserFor(event), tab = tabId(id);
+    return tabs !== null && tab !== null && typeof url === "string" && steered(tabs, tab) && tabs.navigate(tab, url);
+  });
+  ipcMain.on("ovis:tabs-go", (event, id: unknown, step: unknown) => {
+    const tabs = browserFor(event), tab = tabId(id);
+    if (tabs && tab !== null && steered(tabs, tab) && (step === "back" || step === "forward" || step === "reload" || step === "stop")) tabs.go(tab, step);
+  });
+  ipcMain.on("ovis:tabs-hold", (event, id: unknown, held: unknown) => {
+    const tab = tabId(id);
+    if (tab !== null && typeof held === "boolean") browserFor(event)?.hold(tab, held);
   });
   app.on("before-quit", (event) => {
     if (stopped) return;
@@ -621,6 +956,9 @@ if (!app.requestSingleInstanceLock()) {
       app.setAsDefaultProtocolClient(LINK_SCHEME, process.execPath, ["--"]);
     }
     pendingLink ??= argvLinkQuery(process.argv);
+    writeCommand();
+    // found before the first link: on Windows that takes several registry reads
+    if (linkBrowser !== null) void browsers();
     allowPermissions();
     createMenu();
     createWindow();
