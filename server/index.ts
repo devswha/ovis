@@ -526,6 +526,7 @@ export function createServer(
     ...(opensAll ? { snapshot: { account: () => devices.account(), ports: (readmission?: Readmission) => readPorts?.(readmission) ?? null, used: () => accountRows?.store()?.usedReport() ?? [] } } : {}),
     devices, identity: () => ovisRelay.currentIdentity(), ...(accountList ? { list: accountList } : {}),
     service: (() => { try { return accountServiceUrl(options.accountService?.url); } catch (error) { return error instanceof Error ? error : new Error(String(error)); } })(), ...(options.accountService?.fetch ? { fetch: options.accountService.fetch } : {}),
+    movingOut: () => accountMove?.status().into != null,
   });
   const accountMove = pcAccount === null ? null : AccountMove.open({ stateDir, sibling: sibling ?? null, devices, relay: ovisRelay,
     mailbox: accountMailbox, holds: accountHolds, safety: safetyLog });
