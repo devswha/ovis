@@ -415,22 +415,26 @@ export class HcConnection {
   private end(line: Line, kind: string, message: string): void {
     if (line.dead) return;
     line.dead = true;
-    this.onEnd?.(kind, message);
-    if (this.line === line) this.line = null;
-    for (const call of line.pending.values()) {
-      clearTimeout(call.timer);
-      call.reject(new HcError(kind, message));
+    // told first; what it throws still reaches the caller, but only once the line is cleaned up (a dead line is never ended again)
+    try {
+      this.onEnd?.(kind, message);
+    } finally {
+      if (this.line === line) this.line = null;
+      for (const call of line.pending.values()) {
+        clearTimeout(call.timer);
+        call.reject(new HcError(kind, message));
+      }
+      line.pending.clear();
+      line.early.clear();
+      line.abandoned.clear();
+      const channels = [...line.channels.values()];
+      line.channels.clear();
+      for (const open of channels) {
+        open.closing?.();
+        open.handlers.onClose({ reason: "connection_lost" });
+      }
+      try { line.transport.kill(); } catch { }
     }
-    line.pending.clear();
-    line.early.clear();
-    line.abandoned.clear();
-    const channels = [...line.channels.values()];
-    line.channels.clear();
-    for (const open of channels) {
-      open.closing?.();
-      open.handlers.onClose({ reason: "connection_lost" });
-    }
-    try { line.transport.kill(); } catch { }
   }
 }
 

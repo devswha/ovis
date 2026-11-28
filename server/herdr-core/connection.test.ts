@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { legacyName } from "../legacy-env.ts";
 import { spawnHcConnect } from "./hc-connect.ts";
+import { HcConnection, HcError } from "./connection.ts";
+import { FakeHcCore } from "./core.fake.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "ovis-hc-connect-env-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -37,4 +39,18 @@ it.skipIf(process.platform === "win32")("runs hc connect without the server's ow
   } finally {
     for (const [name, value] of Object.entries(saved)) if (value === undefined) delete process.env[name]; else process.env[name] = value;
   }
+});
+
+it("ends a line whole though its onEnd throws: the call waiting on it is refused and the transport killed, then the error reaches the caller", async () => {
+  const core = new FakeHcCore();
+  let kills = 0;
+  const hc = new HcConnection(() => {
+    const transport = core.transport();
+    const kill = transport.kill.bind(transport);
+    transport.kill = () => { kills++; kill(); };
+    return transport;
+  }, { onEnd: () => { throw new Error("the owner broke"); } });
+  const waiting = hc.call("machine.list", {}).then(() => "answered", (error: unknown) => (error instanceof HcError ? error.kind : "other"));
+  expect(() => hc.close()).toThrow("the owner broke");
+  expect({ call: await waiting, kills }).toEqual({ call: "closed", kills: 1 });
 });
