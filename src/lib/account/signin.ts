@@ -13,8 +13,11 @@ import type { AccountProvider, AccountSession, AccountStore, LinkSignIn, Pending
 export const SIGN_IN_MS = 10 * 60_000;
 
 export class SignInError extends Error {
-  /** `in_use`: a sign-in that was to add a method found an identity another account already has */
-  constructor(readonly code: "no_sign_in" | "expired" | "denied" | "unsupported" | "in_use", message: string) {
+  /**
+   * `in_use`: a sign-in that was to add a method found an identity another account already has; `email_unavailable`: the
+   * service could not check the email of a new sign-in that asked to be linked by it, which is no refusal: try again
+   */
+  constructor(readonly code: "no_sign_in" | "expired" | "denied" | "unsupported" | "in_use" | "email_unavailable", message: string) {
     super(message);
     this.name = "SignInError";
   }
@@ -29,7 +32,10 @@ function random(bytes: number): string {
 /**
  * Where to send the browser to sign in; the verifier and state wait in the store for the return.
  * `linkToken` (AccountService.addMethod) adds the provider to the signed-in account instead. `pairing` waits in the
- * same record, so only this sign-in's return takes it, and it goes when the sign-in does.
+ * same record, so only this sign-in's return takes it, and it goes when the sign-in does. A first sign-in, on a device
+ * signed in to nothing, asks the service to link it by its verified email (`link=auto`), beside `create=ask`, which only a
+ * service with linking off answers; a sign-in again
+ * and one that adds a way in ask nothing of the kind.
  */
 export async function beginSignIn(provider: AccountProvider, options: { store: AccountStore; service: string; redirectUri: string | (() => Promise<string>); now?: () => number; linkToken?: string; link?: LinkSignIn; pairing?: PendingPairing; pc?: string; signOutEverywhere?: string; generation?: string; resumeAdd?: ResumeAdd } & (SignInCreation | { readonly create?: undefined })): Promise<string> {
   let creation = isEmailHintProvider(provider) && options.linkToken === undefined && options.link === undefined
@@ -46,7 +52,10 @@ export async function beginSignIn(provider: AccountProvider, options: { store: A
     if (connectEpoch === undefined) throw new SignedOutError();
   }
   const redirectUri = typeof options.redirectUri === "string" ? options.redirectUri : await options.redirectUri();
-  if (creation?.create === "ask" && await options.store.get("session") !== undefined) creation = undefined;
+  const signedIn = await options.store.get("session") !== undefined;
+  if (creation?.create === "ask" && signedIn) creation = undefined;
+  const linkByEmail = !signedIn && options.linkToken === undefined && options.link === undefined && options.resumeAdd === undefined
+    && options.signOutEverywhere === undefined && creation?.create !== "never";
   const verifier = random(32);
   const state = random(16);
   const challenge = toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
@@ -66,6 +75,8 @@ export async function beginSignIn(provider: AccountProvider, options: { store: A
   url.searchParams.set("code_challenge", challenge);
   url.searchParams.set("code_challenge_method", "S256");
   if (options.linkToken !== undefined) url.searchParams.set("link_token", options.linkToken);
+  if (linkByEmail) url.searchParams.set("link", "auto");
+  // a service with linking off still answers create=ask with the hint; with it on, it ignores create for a linked sign-in
   if (creation?.create !== undefined) url.searchParams.set("create", creation.create);
   return url.href;
 }
@@ -136,6 +147,7 @@ export async function redeemSignIn(pending: PendingSignIn | undefined, returned:
       }
     }
     if (returned.error === "invalid_link") throw new SignInError("expired", "The link to add a sign-in method ran out");
+    if (returned.error === "email_unavailable") throw new SignInError("email_unavailable", "The account service could not check the email");
     if (linking && returned.error === "identity_in_use") throw new SignInError("in_use", "That sign-in already belongs to another account");
     if (linking && ["identity_exists", "reauth_required", "two_step_required", "two_step_unknown", "merge_open"].includes(returned.error)) {
       throw new AccountServiceError(400, returned.error, "The sign-in method was refused");

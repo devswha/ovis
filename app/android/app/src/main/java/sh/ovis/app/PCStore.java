@@ -24,6 +24,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.json.JSONArray;
@@ -40,6 +41,9 @@ final class PCStore {
 
     /** The address to open instead of the bare origin until a PC page loads: a pairing link keeps its code through Try again. In memory only, as it can hold that code. */
     static String pendingStart;
+
+    /** A new address that answered 200 without identifying itself. Open in this process only until verified. */
+    private static volatile String trying;
 
     /**
      * The connect screen is up to pick another way or PC, the current PC kept (HerdrShell chooseAnother, a PC page's
@@ -117,9 +121,10 @@ final class PCStore {
      * hosted app at `appOrigin` is the current PC from here on, as it is after a sign-in from the app's own page, so
      * Back and the next start are that PC's.
      */
-    static void keepHosted(Context context, String appOrigin) {
+    static synchronized void keepHosted(Context context, String appOrigin) {
         choosing = false;
         prefs(context).edit().putString("current", appOrigin).putString("last", appOrigin).apply();
+        trying = null;
         if (names(context).optString(appOrigin, "").isEmpty()) setName(context, appOrigin, "Ovis");
     }
 
@@ -397,13 +402,15 @@ final class PCStore {
     }
 
     static String current(Context context) {
-        return prefs(context).getString("current", null);
+        String candidate = trying;
+        return candidate == null ? prefs(context).getString("current", null) : candidate;
     }
 
-    static void setCurrent(Context context, String origin) {
+    static synchronized void setCurrent(Context context, String origin) {
         choosing = false;
         demo = false;
         prefs(context).edit().putString("current", origin).apply();
+        trying = null;
     }
 
     static String last(Context context) {
@@ -411,12 +418,40 @@ final class PCStore {
     }
 
     static void open(Context context, String key, String start) {
+        open(context, key, start, false);
+    }
+
+    static synchronized void open(Context context, String key, String start, boolean unverified) {
         choosing = false;
         demo = false;
         manage = false;
         homeStart = null;
-        prefs(context).edit().putString("current", key).putString("last", key).apply();
+        if (unverified && !saved(context).contains(key)) {
+            trying = key;
+        } else {
+            prefs(context).edit().putString("current", key).putString("last", key).apply();
+            trying = null;
+        }
         pendingStart = start;
+    }
+
+    static boolean trying(String key) {
+        return key.equals(trying);
+    }
+
+    static synchronized void confirm(Context context, String key) {
+        if (!trying(key)) return;
+        prefs(context).edit().putString("current", key).putString("last", key).apply();
+        remember(context, key);
+        trying = null;
+    }
+
+    static synchronized boolean stopTrying() {
+        if (trying == null) return false;
+        trying = null;
+        pendingStart = null;
+        answerBy = 0;
+        return true;
     }
 
     static synchronized void remember(Context context, String key) {
@@ -445,6 +480,7 @@ final class PCStore {
     /** Forgets `key` in `prefs`: off the saved list, with its name and the relay ID its page said, and as current or last. */
     static synchronized void forget(SharedPreferences prefs, String key) {
         forgottenAt.put(key, ++forgets);
+        if (trying(key)) stopTrying();
         List<String> list = saved(prefs);
         list.remove(key);
         JSONObject names = names(prefs), ids = ids(prefs);
@@ -620,10 +656,16 @@ final class PCStore {
     static final class Check {
         final String kind;
         final String detail;
+        final boolean unverified;
 
         Check(String kind, String detail) {
+            this(kind, detail, false);
+        }
+
+        Check(String kind, String detail, boolean unverified) {
             this.kind = kind;
             this.detail = detail;
+            this.unverified = unverified;
         }
 
         boolean opens() {
@@ -639,15 +681,15 @@ final class PCStore {
      * (Cloudflare Access) answers so. The hosted app (app.ovis.sh, or a copy of it) has no
      * /api/health: its page says what it is (`<meta name="ovis-shell">`, scripts/shell-build.ts), on
      * the answer itself where every path serves it, else on `url`'s own page (its path only, never a
-     * pairing link's code). `cookies` (the WebView's for the origin, or null) go with both requests.
+     * pairing link's code). `cookiesFor` looks up the WebView's cookies for each request's URL.
      */
-    static Check check(String url, String cookies, long budgetMs) {
+    static Check check(String url, Function<String, String> cookiesFor, long budgetMs) {
         String origin = origin(url);
         if (origin == null) return new Check("no-answer", "not an http or https address");
         long deadline = System.nanoTime() + budgetMs * 1_000_000L;
         Answer health;
         try {
-            health = fetch(origin + "/api/health?scope=bridge", cookies, deadline);
+            health = fetch(origin + "/api/health?scope=bridge", cookiesFor, deadline);
         } catch (IOException failed) {
             return new Check(failureKind(failed, deadline), String.valueOf(failed.getMessage()));
         }
@@ -658,12 +700,17 @@ final class PCStore {
         if (health.status != 200 && health.status != 404) return new Check("unsure", "HTTP " + health.status);
         Answer page;
         try {
-            page = fetch(origin + cleanStart(url), cookies, deadline);
+            page = fetch(origin + cleanStart(url), cookiesFor, deadline);
         } catch (IOException noPage) {
             return new Check("unsure", null);
         }
         if (page.status == 200 && hostedApp(page.body)) return new Check("ovis", null);
-        if (page.status == 200) return new Check("not-ovis", health.status == 200 ? null : "HTTP " + health.status);
+        // A proxy may serve its sign-in page with 200 for both requests. A missing health endpoint
+        // together with a non-shell page is still enough to reject an unrelated web server.
+        if (page.status == 200) {
+            if (health.status == 404) return new Check("not-ovis", "HTTP 404");
+            return new Check("unsure", "HTTP 200", true);
+        }
         return new Check("unsure", "HTTP " + health.status);
     }
 
@@ -713,8 +760,9 @@ final class PCStore {
         }
     }
 
-    private static Answer fetch(String url, String cookies, long deadline) throws IOException {
+    private static Answer fetch(String url, Function<String, String> cookiesFor, long deadline) throws IOException {
         // rounded up, so the disconnect comes at the deadline or after it, and failureKind reads it as a timeout
+        String cookies = cookiesFor.apply(url);
         long left = (deadline - System.nanoTime() + 999_999L) / 1_000_000L;
         if (left <= 0) throw new java.net.SocketTimeoutException("no answer in time");
         HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();

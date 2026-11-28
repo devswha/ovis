@@ -51,7 +51,7 @@ export function pullRequestErrorMessage(t: Translate, error: unknown, pc?: strin
     case "gh_missing": return `${pcPrefix}${t("GitHub CLI (gh) is not installed on this PC. Install it and sign in with gh auth login to see pull requests here.")}`;
     case "gh_signed_out": return `${pcPrefix}${t("GitHub CLI (gh) on this PC is not signed in. Run gh auth login there to see pull requests here.")}`;
     case "no_pull_request": return t("This branch has no pull request.");
-    case "no_github_remote": return t("This repository has no GitHub remote.");
+    case "no_github_remote": return `${pcPrefix}${t("No remote of this repository is on a GitHub host gh knows. For GitHub Enterprise, run gh auth login --hostname with its host there.")}`;
     case "not_a_repository": return t("This folder is not in a git repository.");
     case "gh_timeout": return `${pcPrefix}${t("gh took too long to answer.")}`;
     case "merge_queue": return t("This base branch merges through a merge queue; merge it on GitHub.");

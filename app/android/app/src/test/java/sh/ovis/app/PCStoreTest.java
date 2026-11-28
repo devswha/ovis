@@ -34,6 +34,7 @@ public class PCStoreTest {
     private final List<ServerSocket> servers = new ArrayList<>();
 
     private final List<String> requestLines = Collections.synchronizedList(new ArrayList<>());
+    private final List<String> cookieHeaders = Collections.synchronizedList(new ArrayList<>());
 
     private String serve(int status, String location, String body) throws IOException {
         return serve(status, location, body.getBytes(StandardCharsets.UTF_8));
@@ -77,7 +78,11 @@ public class PCStoreTest {
                     BufferedReader request = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
                     String first = request.readLine();
                     requestLines.add(first);
-                    for (String line = request.readLine(); line != null && !line.isEmpty(); line = request.readLine()) { }
+                    String cookies = "";
+                    for (String line = request.readLine(); line != null && !line.isEmpty(); line = request.readLine()) {
+                        if (line.regionMatches(true, 0, "Cookie:", 0, 7)) cookies = line.substring(7).trim();
+                    }
+                    cookieHeaders.add(cookies);
                     OutputStream out = socket.getOutputStream();
                     answer.write(first, out);
                     out.flush();
@@ -112,7 +117,7 @@ public class PCStoreTest {
     }
 
     private static PCStore.Check check(String url) {
-        return PCStore.check(url, null, PCStore.ANSWER_SECONDS * 1000L);
+        return PCStore.check(url, request -> null, PCStore.ANSWER_SECONDS * 1000L);
     }
 
     @After
@@ -135,14 +140,11 @@ public class PCStoreTest {
     @Test
     public void anotherWebServerIsNotOvisAndItsPageIsAskedWithoutThePairingCode() throws IOException {
         requestLines.clear();
-        PCStore.Check page = check(servePaths("<!doctype html><title>Router</title>", "<!doctype html><title>Router</title>") + "/?pair=123456");
+        PCStore.Check page = check(servePaths(null, "<!doctype html><title>Router</title>") + "/?pair=123456");
         assertEquals("not-ovis", page.kind);
-        assertNull(page.detail);
+        assertEquals("HTTP 404", page.detail);
         assertEquals(java.util.Arrays.asList("GET /api/health?scope=bridge HTTP/1.1", "GET / HTTP/1.1"), requestLines);
-        PCStore.Check missing = check(servePaths(null, "<!doctype html><title>Dev server</title>") + "/");
-        assertEquals("not-ovis", missing.kind);
-        assertEquals("HTTP 404", missing.detail);
-        assertEquals("not-ovis", check(serve(200, null, "{\"ok\":true}") + "/").kind);
+        assertEquals("unsure", check(serve(200, null, "{\"ok\":true}") + "/").kind);
     }
 
     @Test
@@ -190,13 +192,35 @@ public class PCStoreTest {
     }
 
     @Test
+    public void aProxyServingItsLoginPageWithStatus200IsLeftToTheWebView() throws IOException {
+        String login = "<!doctype html><title>Sign in</title><form><input type=\"password\"></form>";
+        PCStore.Check signIn = check(servePaths(login, login) + "/");
+        assertEquals("unsure", signIn.kind);
+        assertTrue(signIn.opens());
+        assertTrue(signIn.unverified);
+    }
+
+    @Test
+    public void eachProbeSendsOnlyCookiesForItsOwnPath() throws IOException {
+        String pc = servePaths(null, "<meta name=\"ovis-shell\">");
+        String page = pc + "/pc/console";
+        PCStore.Check result = PCStore.check(page, request -> {
+            if (request.equals(pc + "/api/health?scope=bridge")) return "health_session=health";
+            if (request.equals(page)) return "page_session=page";
+            return null;
+        }, PCStore.PROBE_BUDGET_MS);
+        assertEquals("ovis", result.kind);
+        assertEquals(java.util.Arrays.asList("health_session=health", "page_session=page"), cookieHeaders);
+    }
+
+    @Test
     public void saysWhyNoAnswerCame() throws IOException {
         ServerSocket closed = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"));
         int port = closed.getLocalPort();
         closed.close();
         assertEquals("refused", check("http://127.0.0.1:" + port + "/").kind);
         assertEquals("unknown-host", check("http://no-such-pc.invalid:7317/").kind);
-        PCStore.Check slow = PCStore.check(serveSlowly(true) + "/", null, 300);
+        PCStore.Check slow = PCStore.check(serveSlowly(true) + "/", request -> null, 300);
         assertEquals("timeout", slow.kind);
         assertFalse(slow.opens());
     }

@@ -157,6 +157,19 @@ test.each(["wheel", "touch", "key", "scrollbar", "scrollbar track click", "layou
   },
 );
 
+test("a mounted Chat withdraws its card watch during Terminal peek and restores it on return", async () => {
+  const changes: boolean[] = [];
+  const watch = (_id: string, enabled: boolean) => { changes.push(enabled); };
+  const render = (covered: boolean) => page.render(createElement(SettingsProvider, null, createElement(ChatView, {
+    paneId: "peek-watch", refreshKey: 0, connected: true, ended: false, agent: null, agentStatus: "idle", covered, onConversationWatch: watch,
+  })));
+  await render(false);
+  await render(true);
+  expect(changes).toEqual([true, false]);
+  await render(false);
+  expect(changes).toEqual([true, false, true]);
+});
+
 async function mountVirtualChat(paneId: string, pageScroll?: ComponentProps<typeof ChatView>["pageScroll"]) {
   await loadChatTimeline();
   fetchSpy.mockImplementation(Object.assign(async () => Response.json({ source: "grok-transcript", turns: [{ role: "assistant", parts: [{ kind: "text", text: "A transcript to read" }] }] }),

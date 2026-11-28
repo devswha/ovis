@@ -71,8 +71,6 @@ const VERSION_RETRY_MS = 60 * 60_000;
  * Hence two paces. A terminal a page in use shows is read on every tick: someone is looking at it, and its card
  * should show within a second. Every other one is read on every third tick only: its card counts as waiting within
  * 3 s, and its alert waits for push's short wait (10 s) after that anyway, so a faster read would only cost requests.
- * No device is alerted while a page is in use (push.ts `inUse`), so an open page that shows other terminals speeds
- * nothing up for this one.
  */
 const CARD_READ_MS = 1000;
 const CARD_UNWATCHED_EVERY = 3;
@@ -971,6 +969,14 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       return;
     }
     if (kind === "copilot") return copilotHookTurn(paneId, event);
+    if (kind === "cmd") {
+      if (agentNow.get(paneId) !== kind) return;
+      // The mod reports the run, not readiness of the terminal's input. Only herdr drains its queue.
+      const status = completions.observe(paneId, turn === "began" ? "working" : "idle", kind);
+      broadcastAll(paneStatus(paneId, status));
+      alert(paneId, status);
+      return;
+    }
     if (kind !== "claude" || agentNow.get(paneId) !== "claude" || omo.runs(paneId) || gjc.runs(paneId)) return;
     const open = hookPrompts.get(paneId) ?? [];
     if (turn === "began") {

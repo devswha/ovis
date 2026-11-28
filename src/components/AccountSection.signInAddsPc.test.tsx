@@ -176,6 +176,77 @@ describe("signing in on a PC's own page", () => {
     expect(asked.slice(before).map((request) => request.path).filter((path) => path !== "/api/account/status" && path !== "/api/health")).toEqual([]);
   });
 
+  it.each([true, false])("asks the link page to link a first sign-in by its email only where the service offers it (%p)", async (offered) => {
+    if (offered) fake.emailLink = true;
+    await mount();
+    await until(() => buttons().includes("Sign in and add this PC"));
+    await press("Sign in and add this PC");
+    await until(() => buttons().includes("Stop waiting"));
+    expect(fake.deviceStartLinks).toEqual([offered]);
+  });
+
+  it("offers no Not me to a sign-in made with a code, which the service refuses it", async () => {
+    fake.addedByEmail(ACCOUNT, "github");
+    const token = fake.issueToken(ACCOUNT, { device: true, provider: "github" });
+    await indexedAccountStore.set("session", { service: SERVICE, account: ACCOUNT, provider: "github", sign_in_id: "code", access_token: token, refresh_token: "r", expires_at: Date.now() + 3_600_000 });
+    ahead = 25 * 3_600_000;
+    fake.addedByEmail(ACCOUNT, "google");
+    await mount();
+    await until(() => buttons().includes("Manage account"));
+    await press("Manage account");
+    await until(() => document.body.querySelector('[data-testid="account-method-attached"]') !== null);
+    expect(document.body.querySelector('[data-testid="account-method-attached"] button')).toBeNull();
+    expect(text(document.body.querySelector('[data-testid="account-method-attached"]')!)).toContain("Use Not me in the Ovis app or at app.ovis.sh.");
+  });
+
+  const signedInWith = async (provider: "github" | "google"): Promise<void> => {
+    const token = fake.issueToken(ACCOUNT, { device: true, provider });
+    await indexedAccountStore.set("session", { service: SERVICE, account: ACCOUNT, provider, sign_in_id: "code", access_token: token, refresh_token: "r", expires_at: Date.now() + 3_600_000 });
+    await mount();
+    await until(() => buttons().includes("Manage account"));
+    await press("Manage account");
+  };
+  const chips = (): string[] => [...document.body.querySelectorAll("li.account-method")].map((chip) => chip.getAttribute("data-provider") ?? "");
+
+  it("offers deleting the account again when this sign-in's own way in settles while Manage account is open", async () => {
+    fake.addedByEmail(ACCOUNT, "github");
+    // settles in 1.5 s, while the sheet stays open with nothing else happening
+    ahead = -(24 * 3_600_000 - 1_500);
+    fake.addedByEmail(ACCOUNT, "google");
+    ahead = 0;
+    await signedInWith("google");
+    await until(() => document.body.querySelector('[data-testid="account-method-settling"]') !== null);
+    expect(document.body.querySelector(".account-delete")).toBeNull();
+    const deadline = Date.now() + 5_000;
+    while (document.body.querySelector(".account-delete") === null && Date.now() < deadline) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(document.body.querySelector(".account-delete")).not.toBeNull();
+    expect(document.body.querySelector('[data-testid="account-method-settling"]')).toBeNull();
+  });
+
+  it("shows the ways in of the latest read when an earlier one answers last", async () => {
+    fake.addedByEmail(ACCOUNT, "github");
+    await signedInWith("github");
+    await until(() => chips().length === 1);
+    const identities = AccountService.prototype.identities;
+    const first = Promise.withResolvers<void>();
+    const reads: Promise<unknown>[] = [];
+    // the first read's answer, made before the second read's, comes back after it
+    spyOn(AccountService.prototype, "identities").mockImplementation(function (this: AccountService) {
+      const answer = identities.call(this);
+      const read = reads.length === 0 ? answer.then(async (list) => { await first.promise; return list; }) : answer;
+      reads.push(read);
+      return read;
+    });
+    await act(async () => { page.window.dispatchEvent(new page.window.Event("focus")); });
+    await until(() => reads.length === 1);
+    fake.addedByEmail(ACCOUNT, "google");
+    await act(async () => { page.window.dispatchEvent(new page.window.Event("focus")); });
+    await until(() => chips().length === 2);
+    first.resolve();
+    await act(async () => { await reads[0]; });
+    expect(chips()).toEqual(["github", "google"]);
+  });
+
   it.each([true, false])("retrying a stale listing uses the local binding at write time (bound: %s)", async (bound) => {
     // an account service from before listings had IDs: a stale invitation is renewed by listing the PC again
     fake.completions = false;

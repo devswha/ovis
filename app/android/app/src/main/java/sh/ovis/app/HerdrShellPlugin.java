@@ -132,15 +132,15 @@ public class HerdrShellPlugin extends Plugin {
         String name = call.getString("name");
         int mine = openings.start();
         if (!Boolean.TRUE.equals(call.getBoolean("check", false))) {
-            openChecked(call, key, text, name, mine, 0);
+            openChecked(call, key, text, name, mine, 0, false);
             return;
         }
         String pc = key;
-        String cookies = android.webkit.CookieManager.getInstance().getCookie(PCStore.origin(text));
+        android.webkit.CookieManager cookies = android.webkit.CookieManager.getInstance();
         long answerBy = android.os.SystemClock.elapsedRealtime() + PCStore.ANSWER_SECONDS * 1000L;
         new Thread(() -> {
-            PCStore.Check found = PCStore.check(text, cookies, PCStore.ANSWER_SECONDS * 1000L);
-            if (found.opens()) openChecked(call, pc, text, name, mine, answerBy);
+            PCStore.Check found = PCStore.check(text, cookies::getCookie, PCStore.ANSWER_SECONDS * 1000L);
+            if (found.opens()) openChecked(call, pc, text, name, mine, answerBy, found.unverified);
             else call.reject(found.detail == null ? found.kind : found.detail, found.kind);
         }, "ovis-check").start();
     }
@@ -150,7 +150,7 @@ public class HerdrShellPlugin extends Plugin {
      * PC's page landing in the hosted screen) can be written over it in between. An open that was cancelled, or that
      * answers once the app is already going elsewhere (Try again, another open), writes nothing.
      */
-    private void openChecked(PluginCall call, String key, String text, String name, int mine, long answerBy) {
+    private void openChecked(PluginCall call, String key, String text, String name, int mine, long answerBy, boolean unverified) {
         MainActivity activity = (MainActivity) getActivity();
         if (activity == null) {
             call.reject("Cancelled", "cancelled");
@@ -163,7 +163,7 @@ public class HerdrShellPlugin extends Plugin {
                     return;
                 }
                 if (name != null && !name.isEmpty()) PCStore.setName(getContext(), key, Home.capped(name, 64));
-                PCStore.open(getContext(), key, text);
+                PCStore.open(getContext(), key, text, unverified);
                 PCStore.fail(null, null);
                 PCStore.redirects = 0;
                 PCStore.answerBy = answerBy;

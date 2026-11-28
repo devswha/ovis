@@ -69,3 +69,9 @@ flag with no input and a 5 s limit (longer where the entry sets `detect.version_
 modification time), so an install or update shows on the next read; a run that times out is tried
 again after a minute. On Windows, Command Code's `cmd` is the name of Windows' own command prompt,
 so Ovis does not say whether it is installed there.
+
+On Unix, the interactive shell's PATH is also kept. A regular agent lookup can refresh it when a
+tracked shell profile changes, without regularly rerunning an unchanged profile. For fish this
+includes `config.fish`, `fish_variables`, and additions or removals in the user's `conf.d` directory.
+Use **Check again** after editing an existing `conf.d` script in place, a file sourced indirectly
+by a profile, or a system file such as one in `/etc/paths.d`.

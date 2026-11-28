@@ -13,7 +13,7 @@ import { SHARED_SETTING_KEYS } from "../../shared/preferences.ts";
 import { TELEMETRY_SETTINGS_KEYS, TELEMETRY_THEME_SIDE_KEYS, telemetrySettings } from "../../shared/telemetry.ts";
 import { NOTICE_VERSION } from "../../shared/telemetry-notice.ts";
 import { SETTING_SCOPE, telemetrySettingsSnapshot, alertPrefs, CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_LANE_MAX_REM, CHAT_LANE_MIN, CHAT_WIDTHS, chatFontSize, chatLaneLength, chatLaneWidth, DEFAULT_SETTINGS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, quickReplyButtons, sanitizeSettings, terminalTheme, forgetPaneViews, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, wantsVoiceInput } from "./settings.ts";
-import { applyToDocument, loadSettings, pcLoadOn, PHONE_INBOX_STORAGE_KEY, phoneInboxOn, saveBootRows, saveSettings } from "./settings.ts";
+import { applyToDocument, loadSettings, pcLoadOn, PHONE_INBOX_STORAGE_KEY, phoneInboxOn, saveBootRows, saveSettings, secretFieldOn, TERMINAL_SECRET_FIELD_STORAGE_KEY } from "./settings.ts";
 import { customRow, NO_CUSTOM_THEMES, readThemeFile, withTheme } from "./customThemes.ts";
 import { CUSTOM_ROWS_STORAGE_KEY, CUSTOM_THEMES_STORAGE_KEY } from "./themeBoot.ts";
 import { sanitizeSettings as oldSanitizeSettings, saveSettings as oldSaveSettings } from "./settings.legacy-fixture.ts";
@@ -209,6 +209,22 @@ describe("saved theme migration", () => {
     records.delete(PHONE_INBOX_STORAGE_KEY);
     putOld({ ...JSON.parse(records.get(main) ?? "{}"), phoneInbox: true });
     expect(loadSettings().phoneInbox).toBeNull();
+  });
+
+  it("keeps the password field choice in its own key, unchosen until chosen: on with touch, off with a mouse", () => {
+    expect(loadSettings().terminalSecretField).toBeNull();
+    expect([secretFieldOn(loadSettings(), true), secretFieldOn(loadSettings(), false)]).toEqual([true, false]);
+    for (const terminalSecretField of [true, false]) {
+      saveSettings(sanitizeSettings({ terminalSecretField }));
+      expect(records.get(TERMINAL_SECRET_FIELD_STORAGE_KEY)).toBe(JSON.stringify(terminalSecretField));
+      expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalSecretField");
+      oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+      expect(loadSettings().terminalSecretField).toBe(terminalSecretField);
+      expect([secretFieldOn(loadSettings(), true), secretFieldOn(loadSettings(), false)]).toEqual([terminalSecretField, terminalSecretField]);
+    }
+    expect(sanitizeSettings({ terminalSecretField: "on" }).terminalSecretField).toBeNull();
+    records.set(TERMINAL_SECRET_FIELD_STORAGE_KEY, "\"true\"");
+    expect(loadSettings().terminalSecretField).toBeNull();
   });
 
   it("keeps the agent groups off until chosen, in keys of their own, out of an old tab's whole-record save", () => {

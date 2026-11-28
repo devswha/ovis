@@ -197,10 +197,66 @@ process.stdin.on("data", chunk => {
         };
         (window as any).dropTestSockets = () => { for (const socket of sockets) socket.close(); };
       }, pane);
+      // With a mouse the prompt is answered in the grid, as in any terminal: no masked field takes the grid's place
+      // (the field is the phone's, where the keyboard would learn what is typed), and the grid keeps the keyboard
+      const view = await desktop.newPage();
+      view.setDefaultTimeout(10_000);
+      await view.addInitScript(() => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", terminalInputMode: "direct" })); });
+      await view.goto(`${origin}/?pane=${encodeURIComponent(pane)}`);
+      await view.locator(".pane-terminal .xterm-screen").waitFor();
+      const masked = view.getByLabel("Password or PIN", { exact: true });
+      // the prompt read: the chat lens has no grid to type in, so the field stands there; back on the grid it goes,
+      // and the grid has the keyboard (regression: the field stayed over a desktop's grid)
+      const promptRead = async (): Promise<void> => {
+        await openLens(view, "chat");
+        await masked.waitFor();
+        await openLens(view, "terminal");
+        await masked.waitFor({ state: "detached" });
+        assert.equal(await view.locator(".secret-input").count(), 0, "no masked field over a desktop's grid");
+      };
+      rmSync(result, { force: true });
+      await paneSendText(pane, "\u0010");
+      await promptRead();
+      await view.waitForFunction(() => document.activeElement?.closest(".pane-terminal") !== null);
+      await view.keyboard.type("typed-secret");
+      await view.keyboard.press("Enter");
+      await accepted("typed-secret", "the grid did not take the password typed at its prompt");
+      // control: typed into the pty only, never into a draft or the page
+      assert.equal(await view.evaluate(() => JSON.stringify({ ...localStorage }).includes("typed-secret")), false);
+      assert.equal(await view.locator("body").innerText().then((text) => text.includes("typed-secret")), false);
+      assert.equal(await view.locator(".terminal-banner-draft").count(), 0);
+      // Offline, a secret keystroke is refused with a note, never held for later like other
+      // typing (regression: the note; control: nothing held, nothing delivered afterwards).
+      await paneSendText(pane, "\u0010");
+      await promptRead();
+      await desktop.setOffline(true);
+      await view.evaluate(() => (window as any).dropTestSockets());
+      await view.locator(".pane-terminal .xterm-screen").click();
+      await view.keyboard.type("offline-secret");
+      await view.keyboard.press("Enter");
+      await view.locator(".terminal-banner", { hasText: "Not sent: the terminal is not ready, and a password is never held for later." }).waitFor();
+      assert.equal(await view.evaluate(() => JSON.stringify({ ...localStorage }).includes("offline-secret")), false);
+      assert.equal(await view.locator(".terminal-banner-draft").count(), 0);
+      assert.equal(await view.locator(".draft-held").count(), 0);
+      await desktop.setOffline(false);
+      // back online, the prompt read again; the one key then typed is all the program gets: nothing typed offline
+      // came with the reconnect, with or without its Enter
+      await promptRead();
+      assert.equal(await view.locator(".terminal-banner-draft").count(), 0, "nothing typed offline is held for the reconnect");
+      await view.locator(".pane-terminal .xterm-screen").click();
+      await view.keyboard.type("z");
+      await view.keyboard.press("Enter");
+      await accepted("z", "nothing typed offline reached the program");
+      await view.close();
+      // chosen on for a desktop, or in place of the input line, which a prompt puts away, the field stands over the
+      // grid's last rows without taking any
       for (const mode of ["direct", "line"] as const) {
         const view = await desktop.newPage();
         view.setDefaultTimeout(10_000);
-        await view.addInitScript((mode) => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", terminalInputMode: mode })); }, mode);
+        await view.addInitScript((mode) => {
+          localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", terminalInputMode: mode }));
+          if (mode === "direct") localStorage.setItem("ovis:terminal-password-field", "true");
+        }, mode);
         await view.goto(`${origin}/?pane=${encodeURIComponent(pane)}`);
         await view.locator(".pane-terminal .xterm-screen").waitFor();
         if (mode === "line") await view.getByRole("textbox", { name: "Terminal input line", exact: true }).waitFor();
@@ -219,36 +275,6 @@ process.stdin.on("data", chunk => {
         await frame();
         assert.equal(await gridHeight(), resting, `the masked input keeps the grid's height (${mode} input)`);
         assert.equal(await view.evaluate(() => (window as any).gridResized), 0, `the grid's observer never fired (${mode} input)`);
-        if (mode === "direct") {
-          rmSync(result, { force: true });
-          await view.locator(".pane-terminal .xterm-screen").click();
-          await view.keyboard.type("typed-secret");
-          await view.keyboard.press("Enter");
-          await accepted("typed-secret", "regression: the grid did not take the typed secret while the masked input was up");
-          await masked.waitFor({ state: "detached" });
-          // control: typed into the pty only, never into a draft or the page
-          assert.equal(await view.evaluate(() => JSON.stringify({ ...localStorage }).includes("typed-secret")), false);
-          assert.equal(await view.locator("body").innerText().then((text) => text.includes("typed-secret")), false);
-          assert.equal(await view.locator(".terminal-banner-draft").count(), 0);
-          // Offline, a secret keystroke is refused with a note, never held for later like other
-          // typing (regression: the note; control: nothing held, nothing delivered afterwards).
-          await paneSendText(pane, "\u0010");
-          await masked.waitFor();
-          await desktop.setOffline(true);
-          await view.evaluate(() => (window as any).dropTestSockets());
-          await masked.waitFor({ state: "detached" });
-          await view.locator(".pane-terminal .xterm-screen").click();
-          await view.keyboard.type("offline-secret");
-          await view.keyboard.press("Enter");
-          await view.locator(".terminal-banner", { hasText: "Not sent: the terminal is not ready, and a password is never held for later." }).waitFor();
-          assert.equal(await view.evaluate(() => JSON.stringify({ ...localStorage }).includes("offline-secret")), false);
-          assert.equal(await view.locator(".terminal-banner-draft").count(), 0);
-          assert.equal(await view.locator(".draft-held").count(), 0);
-          await desktop.setOffline(false);
-          await masked.waitFor();
-          assert.equal(await view.locator(".terminal-banner-draft").count(), 0, "nothing typed offline is held for the reconnect");
-          assert.equal(readFileSync(result, "utf8"), String("typed-secret\r".length), "nothing typed offline reached the program");
-        }
         await view.locator(".secret-input").getByRole("button", { name: "Cancel", exact: true }).click();
         await masked.waitFor({ state: "detached" });
         await view.close();

@@ -44,12 +44,16 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
   // a PC pinned to the account's signed list takes its devices from that list: a record still removes one, and adds none
   if (record.kind === "add" && store.listFollowed()) return refused("list_followed");
   const account = store.account();
-  if (account !== null && account !== record.account) return refused("account_mismatch");
+  // Only a self-leave can act on a kept row of another account, and never while locked.
+  const oldSigner = record.kind === "remove" && record.signer === record.key
+    ? store.beforeMoveSigner(record.key, record.account) : null;
+  if (account !== null && account !== record.account && oldSigner === null) return refused("account_mismatch");
+  if (oldSigner !== null && store.accountLocked()) return refused("signer_not_member");
   // A lock can hide the signer as well. It is a final refusal, not a missing signer to retry.
   const closed = record.kind === "add" && !store.admits(record.key);
   // a member of any role may sign the remove of its own key: that is how a device leaves (docs/account.md)
   const leaving = record.kind === "remove" && record.signer === record.key;
-  const signer = store.accountSigner(record.signer, record.account, leaving);
+  const signer = oldSigner ?? store.accountSigner(record.signer, record.account, leaving);
   if (!signer) return refused(closed ? "closed" : "signer_not_member");
   if (record.kind === "remove" && store.opensAll()) {
     if (gates?.held(record.signer, !leaving)) return refused("removal_pending");

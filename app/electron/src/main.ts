@@ -15,7 +15,7 @@ import { desktopLocale, desktopText } from "./text.ts";
 import { hideWindow } from "./windowClose.ts";
 import { argvLinkQuery, LINK_SCHEME, openLinkQuery, tellsLink } from "./openLink.ts";
 import { openOutside } from "./openOutside.ts";
-import { findBrowsers, readLinkBrowser, webAddress, writeLinkBrowser, type FoundBrowsers, type LinkBrowser } from "./browsers.ts";
+import { choosableLinkBrowser, findBrowsers, linkBrowserChoices, readLinkBrowser, webAddress, writeLinkBrowser, type FoundBrowsers, type LinkBrowser } from "./browsers.ts";
 import { BrowserTabs, type BrowserBounds } from "./browserTabs.ts";
 import { debuggingSwitch, ownAddresses, readBrowserState } from "./browserState.ts";
 import { homedir, networkInterfaces } from "node:os";
@@ -23,6 +23,8 @@ import { commandState, installCommand, READ_TERMINAL_PATH, SHELL_PATH_SCRIPT, sh
 import { BrowserBroker, brokerPath } from "./browserBroker.ts";
 import { readStagingProfile } from "./stagingProfile.ts";
 import { BROWSER_TOKENS_DIR } from "../../../shared/browser-broker.ts";
+import { BUILT_IN_LINK_BROWSER } from "../../../shared/browser-policy.ts";
+import { isForwardLoopbackHost } from "../../../shared/machines.ts";
 
 type StepState = "pending" | "ok" | "failed";
 export interface Status {
@@ -94,6 +96,8 @@ let pendingLink: string | null = null;
 /** the built-in browser while its setting is on (browserTabs.ts), and the port of the server it keeps out */
 let browser: BrowserTabs | null = null;
 let browserPort: number | null = null;
+/** whether the server's page can show a built-in browser tab now (a wide window, not in a mode): it says so on each change */
+let tabsShowable = false;
 let stateWatch: FSWatcher | null = null;
 /** the agents' way into it (browserBroker.ts), open only while it is on; none where there is no local-only socket (Windows) */
 const brokerSocket = brokerPath(app.getPath("userData"), process.platform);
@@ -369,7 +373,7 @@ function createWindow(): void {
   window.on("closed", () => { window = null; cancelHide = null; });
   guard(window.webContents);
   window.webContents.on("did-finish-load", () => tellLink(true));
-  window.webContents.on("did-start-navigation", (details) => { if (details.isMainFrame && !details.isSameDocument) browser?.hide(); });
+  window.webContents.on("did-start-navigation", (details) => { if (details.isMainFrame && !details.isSameDocument) { browser?.hide(); tabsShowable = false; } });
   void window.loadFile(connectPage);
 }
 
@@ -409,6 +413,7 @@ async function openWebLink(url: string): Promise<void> {
   const address = webAddress(url);
   const chosen = linkBrowser;
   if (address === null || chosen === null) return openOutside(url);
+  if (chosen === BUILT_IN_LINK_BROWSER) return openInBuiltIn(address);
   const browser = (await browsers()).browsers.find((found) => found.id === chosen);
   if (browser === undefined) return openInstead(null, address);
   const [program, ...args] = browser.command(address);
@@ -428,6 +433,32 @@ async function openWebLink(url: string): Promise<void> {
   } catch {
     fail();
   }
+}
+
+/**
+ * A web link in a tab of the person's own in the built-in browser, which the page then shows beside the pane. When
+ * the page cannot show a tab now (a narrow window, a mode), the browser was turned off since, or its policy refuses
+ * the address (an Ovis server) or the page does not load, the system browser opens it, so a click never opens a tab
+ * nobody sees or an empty one.
+ */
+async function openInBuiltIn(address: string): Promise<void> {
+  if (await showBuiltInLink(address)) return;
+  openOutside(address);
+  updateLog("The built-in browser could not show a link: the system browser opened it.");
+}
+
+async function showBuiltInLink(address: string, stillAllowed = () => true): Promise<boolean> {
+  const contents = window?.webContents;
+  const tabs = browser;
+  if (!contents || !tabs || !tabsShowable || !serverPage(contents.mainFrame) || !stillAllowed()) return false;
+  const id = await tabs.openLoaded(address, "mine");
+  // the page may have stopped being able to show it (a narrower window, a lock) while it loaded
+  if (id === null || contents.isDestroyed() || browser !== tabs || !stillAllowed() || !tabsShowable || !serverPage(contents.mainFrame)) {
+    if (id !== null) tabs.close(id);
+    return false;
+  }
+  contents.send("ovis:tabs-opened", id);
+  return true;
 }
 
 function openInstead(browser: LinkBrowser | null, address: string): void {
@@ -822,16 +853,28 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle("ovis:browsers", async (event) => {
     if (!serverPage(event.senderFrame)) return null;
     const found = await browsers(true);
-    return { browsers: found.browsers.map(({ id, name }) => ({ id, name })), systemDefault: found.systemDefault, chosen: linkBrowser };
+    return { browsers: linkBrowserChoices(found.browsers, browser !== null), systemDefault: found.systemDefault, chosen: linkBrowser };
   });
   ipcMain.handle("ovis:browser-choose", async (event, id: unknown) => {
     if (!serverPage(event.senderFrame)) throw new Error("Choosing a browser is not offered here");
-    if (id !== null && (typeof id !== "string" || !(await browsers()).browsers.some((browser) => browser.id === id))) throw new Error("That browser is not on this computer");
+    if (!choosableLinkBrowser(id, (await browsers()).browsers, browser !== null)) throw new Error("That browser is not on this computer");
     writeLinkBrowser(linkBrowserPath, id);
     linkBrowser = id;
   });
   ipcMain.on("ovis:browser-open", (event, url: unknown) => {
     if (serverPage(event.senderFrame) && typeof url === "string") void openWebLink(url);
+  });
+  // Only our own desktop window can forward a link, and only into the separate browser profile.
+  const canForward = (event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) => event.sender === window?.webContents
+    && serverPage(event.senderFrame) && linkBrowser === BUILT_IN_LINK_BROWSER && browser !== null && tabsShowable;
+  ipcMain.on("ovis:browser-can-forward", (event) => { event.returnValue = canForward(event); });
+  ipcMain.handle("ovis:browser-open-forwarded", async (event, url: unknown) => {
+    if (!canForward(event) || typeof url !== "string") return false;
+    const address = webAddress(url);
+    if (address === null || !isForwardLoopbackHost(new URL(address).hostname)) return false;
+    // The setting or current page can change while either the SSH forward or the tab is loading.
+    // Never fall back to a browser that could attach the user's localhost cookies.
+    return showBuiltInLink(address, () => canForward(event));
   });
   // Settings → About → Terminal command (terminalCommand.ts): only the server's own page, and only once the launcher is written
   ipcMain.handle("ovis:command", (event) => serverPage(event.senderFrame) && commandLauncher !== null ? commandState(commandHost(commandLauncher)) : null);
@@ -854,6 +897,7 @@ if (!app.requestSingleInstanceLock()) {
     if (tabs && tab !== null && numbers) tabs.show(tab, box as BrowserBounds);
   });
   ipcMain.on("ovis:tabs-hide", (event) => browserFor(event)?.hide());
+  ipcMain.on("ovis:tabs-showable", (event, showable: unknown) => { if (serverPage(event.senderFrame)) tabsShowable = showable === true; });
   ipcMain.handle("ovis:tabs-thumbnail", (event, id: unknown) => {
     const tab = tabId(id);
     return tab === null ? null : browserFor(event)?.thumbnail(tab) ?? null;

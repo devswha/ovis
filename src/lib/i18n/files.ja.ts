@@ -182,7 +182,7 @@ export const FILES_JA: Record<string, string> = {
   "This PC's bridge cannot show pull requests yet.": "この PC のブリッジはまだプルリクエストを表示できません。",
   "This branch has no pull request.": "このブランチにはプルリクエストがありません。",
   "This pull request is closed.": "このプルリクエストはクローズされています。",
-  "This repository has no GitHub remote.": "このリポジトリには GitHub のリモートがありません。",
+  "No remote of this repository is on a GitHub host gh knows. For GitHub Enterprise, run gh auth login --hostname with its host there.": "このリポジトリのリモートは、gh が知っている GitHub ホストにありません。GitHub Enterprise なら、その PC でそのホストを指定して gh auth login --hostname を実行してください。",
   "Too long for the message box; shorten the draft first.": "入力欄には長すぎます。先に下書きを短くしてください。",
   "gh took too long to answer.": "gh の応答に時間がかかりすぎました。",
   "{count} more on GitHub": "GitHub にさらに {count} 件",

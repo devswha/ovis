@@ -136,6 +136,7 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
       return new Response("not found", { status: 404 });
     }, websocket: { open(ws) { if (away) ws.close(); else sockets.add(ws); }, close(ws) { sockets.delete(ws); }, message() {} } });
     relays.push(relay);
+    return { listening: () => relay.port !== undefined, close: async () => { relay.stop(true); } };
   };
   const ovis = {
     stop(how: "removed" | "stale") { away = how; for (const socket of sockets) socket.close(); },

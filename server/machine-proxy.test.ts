@@ -78,7 +78,7 @@ const remote = Bun.serve({
       summaryAsked.push({ search: new URL(request.url).search, authorization: request.headers.get("authorization") });
       return Response.json({ server_time: "2026-11-12T10:00:00.000Z", summaries: { "w1:p1": { role: "assistant", text: "Done.", at: "2026-11-12T09:59:00Z", asked_at: null } } }, { headers: { "cache-control": "no-store" } });
     }
-    if (path === "/api/agent-catalog") {
+    if (path === "/api/agent-catalog" || path === "/api/agents") {
       catalogAsked.push(new URL(request.url).search);
       return Response.json({ platform: "macos", agents: [] });
     }
@@ -136,11 +136,14 @@ it("passes a pane summary request to the PC with its query, for a watching devic
   ]);
 });
 
-it("never has a PC run its shell profile again for a watching device's Check again: the PC sees this server's full token", async () => {
+it("suppresses profile refreshes for watching devices without suppressing them for drivers", async () => {
   const url = "http://127.0.0.1/api/machines/pc1/agent-catalog?recheck=1";
   expect((await handleMachineRequest(new Request(url), manager, undefined, undefined, true)).status).toBe(200);
   expect((await handleMachineRequest(new Request(url), manager, undefined, undefined, false)).status).toBe(200);
-  expect(catalogAsked).toEqual(["", "?recheck=1"]);
+  const agents = "http://127.0.0.1/api/machines/pc1/agents";
+  expect((await handleMachineRequest(new Request(agents), manager, undefined, undefined, true)).status).toBe(200);
+  expect((await handleMachineRequest(new Request(agents), manager, undefined, undefined, false)).status).toBe(200);
+  expect(catalogAsked).toEqual(["?profile-recheck=0", "?recheck=1", "?profile-recheck=0", ""]);
 });
 
 it("never forwards a PC's session history to a watching device, nor a route spelled with a trailing, doubled or encoded slash", async () => {
