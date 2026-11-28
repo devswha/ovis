@@ -4,7 +4,8 @@ import type { OwnJoinRequest, PendingKey, RelayPairingRequest } from "../../shar
 import { useOwnJoins } from "../components/OwnJoins.tsx";
 import { firstJoinPrompts, listAddPrompts, pendingKeyPrompts, tailnetPrompts, type PromptPairing } from "../components/RelayPairingPrompt.tsx";
 import { listNumberHeld, onListNumbersHeld } from "./account/addThisPc.ts";
-import { resumePcMove } from "./account/movePc.ts";
+import { GONE_CHECK_MS, moveFromGoneAccount, resumePcMove } from "./account/movePc.ts";
+import { ACCOUNT_SESSION_EVENT } from "./account/store.ts";
 import type { MachineSessionRegistry } from "./machineSession.ts";
 import { useListAdd } from "./useListAdd.ts";
 import { useTailnetNodes } from "./useTailnetNodes.ts";
@@ -41,7 +42,30 @@ export function useOwnWindowPrompts(relayPairings: readonly RelayPairingRequest[
     void resumePcMove(resume.signal).catch((error: unknown) => {
       if (!resume.signal.aborted) console.warn("Ovis: the pending PC move could not resume", error instanceof Error ? error.name : error);
     });
-    return () => resume.abort();
+    // a PC whose account no longer exists goes into the account this window is signed in to, with no question
+    let moving = false;
+    let again: boolean | null = null;
+    // `fresh`: the PC reads the service first (at the start and after a sign-in here), else it answers from its last read
+    const fromGone = (fresh: boolean): void => {
+      // a sign-in while one look is out is looked at right after it, not a minute later
+      if (moving) { again = (again ?? false) || fresh; return; }
+      moving = true;
+      void moveFromGoneAccount(resume.signal, { fresh }).catch((error: unknown) => {
+        if (!resume.signal.aborted) console.warn("Ovis: this PC could not leave the account that no longer exists", error instanceof Error ? error.name : error);
+      }).finally(() => {
+        moving = false;
+        const next = again;
+        again = null;
+        if (next !== null && !resume.signal.aborted) fromGone(next);
+      });
+    };
+    const signedIn = (): void => fromGone(true);
+    const look = (): void => fromGone(false);
+    fromGone(true);
+    // a sign-in made here moves it at once; the PC itself learns its account is gone on its own reads, so it is asked again
+    window.addEventListener(ACCOUNT_SESSION_EVENT, signedIn);
+    const timer = window.setInterval(look, GONE_CHECK_MS);
+    return () => { resume.abort(); window.removeEventListener(ACCOUNT_SESSION_EVENT, signedIn); window.clearInterval(timer); };
   }, [ownWindow, unlocked]);
   const addAsks = useMemo(() => listAddPrompts(listAdd).filter((ask) => !listNumberHeld(ask.run)), [listAdd?.state, listAdd !== null && listAdd.state === "number" ? `${listAdd.run} ${listAdd.digits} ${listAdd.until}` : null, holds]); // eslint-disable-line react-hooks/exhaustive-deps
   const prompts = useMemo(() => [...relayPairings, ...firstJoins, ...(ownWindow ? [...addAsks, ...pendingKeyPrompts(pendingKeys), ...tailnetAsks] : [])], [relayPairings, firstJoins, ownWindow, addAsks, pendingKeys, tailnetAsks]);

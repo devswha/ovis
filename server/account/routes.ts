@@ -189,6 +189,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       account: devices.account(), ...(named === null ? {} : { account_provider: named }), ...(devices.accountPolicyActive() ? { pc_add_from_account: devices.accountError === null ? true : "unavailable" } : {}),
       // a PC its account stopped listing: a device sends it no link, and an add at the PC brings it back (docs/account.md)
       ...(devices.addAtPcRequired() ? { pc_add_required: true } : {}),
+      // its account no longer exists (deleted, or folded into another): its own window signed in to an account moves it there
+      ...(mailbox.accountGone() ? { account_gone: true } : {}),
       ...devices.accountRows(), removals: devices.accountRemovals(), adds: devices.accountAdds(), blocked,
       enrolling: context.services.accountHolds.enrolling(), blocked_all: mailbox.holdsEveryAdd(), ...(fresh === undefined ? {} : { fresh }), mailbox: { last_pull_at: mailbox.lastPullAt, error: mailbox.error },
       // a yes or no only, never the account asked for: the account is named here once this PC is in it
@@ -386,10 +388,10 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       const move = context.services.accountMove;
       if (move === null || !devices.opensAll()) return fail("not_found", "Unknown account action", 404);
       if (peer.kind === "relay") return fail("owner_only", "Move this PC from its own window.", 403);
-      const { into, stage, provider } = body;
+      const { into, stage, provider, from } = body;
       if (typeof into !== "string" || !isAccountId(into) || (stage !== undefined && stage !== "prepare" && stage !== "cancel")
-        || (provider !== undefined && !isSignInMethod(provider))) return fail("invalid_move", "Name the destination account and the move step", 400);
-      const answer = await move.order({ into, ...(stage === undefined ? {} : { stage }), ...(provider === undefined ? {} : { provider }) });
+        || (provider !== undefined && !isSignInMethod(provider)) || (from !== undefined && (typeof from !== "string" || !isAccountId(from)))) return fail("invalid_move", "Name the destination account and the move step", 400);
+      const answer = await move.order({ into, ...(stage === undefined ? {} : { stage }), ...(provider === undefined ? {} : { provider }), ...(from === undefined ? {} : { from }) });
       if ("error" in answer) return fail(answer.error.code, answer.error.message, answer.status);
       return reply(answer, answer.state === "pending" ? 202 : 200);
     }

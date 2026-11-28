@@ -119,6 +119,56 @@ test("moving a bound PC preserves local rows and leaves its W listing only after
   expect(f.journal()).toBe(false);
 });
 
+test("a move out of an account that no longer exists finishes into the destination", async () => {
+  const f = await fixture();
+  await f.ready();
+  // the source account is deleted (or folded into another) while the move waits: the service lists the PC there no more
+  expect((await f.send("/v1/account", "DELETE", undefined, f.pc.account.issueToken(FROM))).status).toBe(204);
+  expect(await f.move()).toMatchObject({ status: 200, body: { state: "moved", account: INTO } });
+  expect(f.pc.devices.account()).toBe(INTO);
+  expect(f.keptRows()).toEqual(f.original);
+  expect(f.journal()).toBe(false);
+});
+
+test("a removal by the living source during a move still makes the PC leave it, and gives the move up", async () => {
+  const f = await fixture();
+  await f.ready();
+  expect((await f.send(f.path, "DELETE", undefined, f.pc.account.issueToken(FROM, { twoStep: true }))).status).toBe(204);
+  expect(await f.move()).toMatchObject({ status: 200, body: { state: "aborted", account: INTO, reason: "binding_changed" } });
+  expect(f.pc.devices.account()).toBeNull();
+  expect(f.journal()).toBe(false);
+});
+
+test("a PC whose account no longer exists stays in it, rows and all, and says so until a read of it commits", async () => {
+  const f = await fixture();
+  const mailbox = f.pc.app.context.services.accountMailbox;
+  await mailbox.pull();
+  expect((await f.pc.local("/api/account/status")).body).not.toHaveProperty("account_gone");
+  expect((await f.send("/v1/account", "DELETE", undefined, f.pc.account.issueToken(FROM))).status).toBe(204);
+  await mailbox.pull();
+  expect(f.pc.devices.account()).toBe(FROM);
+  expect(f.keptRows()).toEqual(f.original);
+  expect((await f.pc.local("/api/account/status")).body).toMatchObject({ account: FROM, account_gone: true });
+});
+
+test("a PC its living account removed leaves it, and is not said to be in a gone account", async () => {
+  const f = await fixture();
+  const mailbox = f.pc.app.context.services.accountMailbox;
+  await mailbox.pull();
+  expect((await f.send(f.path, "DELETE", undefined, f.pc.account.issueToken(FROM, { twoStep: true }))).status).toBe(204);
+  await mailbox.pull();
+  expect(f.pc.devices.account()).toBeNull();
+  expect((await f.pc.local("/api/account/status")).body).not.toHaveProperty("account_gone");
+});
+
+test("an automatic move out of an account the PC is no longer in starts nothing", async () => {
+  const f = await fixture();
+  expect(await f.pc.local("/api/account/move", { method: "POST", headers, body: { into: INTO, stage: "prepare", from: "acct_seen_gone" } }))
+    .toMatchObject({ status: 409, body: { error: { code: "source_changed" } } });
+  expect(f.journal()).toBe(false);
+  expect((await f.pc.local("/api/account/move", { method: "POST", headers, body: { into: INTO, stage: "prepare", from: FROM } })).status).toBe(200);
+});
+
 test("a drive device cannot start a move through the relay", async () => {
   const f = await fixture();
   const link = await relayConnection(f.pc, { serverId: f.identity.server_id });

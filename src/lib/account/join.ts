@@ -69,6 +69,8 @@ export interface PcAccountStatus {
   readonly needsKeys?: true;
   /** its account stopped listing it: only an add made at the PC brings it into one again, so a device sends it no link */
   readonly pcAddRequired?: true;
+  /** its account no longer exists (deleted, or folded into another): its own window signed in to an account moves it there */
+  readonly accountGone?: true;
 }
 
 /** `fresh`: the PC reads its mailbox first, so a removal waiting there is counted (docs/account.md, "PC API"). */
@@ -89,6 +91,7 @@ export async function pcAccountStatus(fetch: PcFetch, options: { fresh?: boolean
     ...((body as { blocked_all?: unknown }).blocked_all === true ? { blockedAll: true } : {}),
     ...(typeof (body as { enrolling?: unknown }).enrolling === "boolean" ? { enrolling: (body as { enrolling: boolean }).enrolling } : {}),
     ...((body as { pc_add_required?: unknown }).pc_add_required === true ? { pcAddRequired: true as const } : {}),
+    ...((body as { account_gone?: unknown }).account_gone === true ? { accountGone: true as const } : {}),
     ...((body as { list?: { needs_keys?: unknown } | null }).list?.needs_keys === true ? { needsKeys: true as const } : {}),
   };
 }

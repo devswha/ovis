@@ -577,7 +577,9 @@ making them members of the destination):
   the service, and answers `200 { "state": "prepare", "pc": { "server_id", "public_key", "relay",
   "name"? } }`: what the window lists in the destination (`PUT /v1/pcs/{server_id}`) before it
   admits it (`POST /v1/pcs/{server_id}/admit`) with its own sign-in. `provider` is how that sign-in
-  was made; the PC names it for its relay pass once it is in the destination.
+  was made; the PC names it for its relay pass once it is in the destination. `from`, sent by the
+  automatic move out of a gone account, is the account it saw gone: a PC no longer in it answers
+  `409 source_changed` and starts nothing.
 - `{ "into" }` takes the destination's admission, asks for a relay pass under it, and switches the
   binding in one write: `200 { "state": "moved", "account" }`. `200 { "state": "sign_in", "account" }`
   when no admission waits yet (the window lists and admits the PC first); `202 { "state": "pending" }`
@@ -593,8 +595,14 @@ the old account (`POST /v1/pcs/{server_id}/leave`) until that answers 204, and o
 journal. A move given up answers `aborted` with its `reason`: `cancelled`, `relay_limit` (the
 destination has no relay slot for another PC), `list_account` (either account keeps a signed list,
 which this move does not support), `listing_changed` (the destination's listing changed before the
-switch) or `binding_changed` (the PC left its account meanwhile). A move given up never removes the
-destination's listing: the window says the PC is still listed there, to remove there if it is not
+switch) or `binding_changed` (the PC left its account meanwhile). An old account that no longer
+exists (`403 not_listed` with `account_gone`: deleted, or folded into the account of its verified
+email) does not stop the switch: there is nothing left to apply from it. Outside a move such a PC stays
+bound to it, rows and all, and `GET /api/account/status` says `account_gone: true`: its own window,
+signed in to another account, moves it there with no question, at once after a sign-in there, else
+within a minute, unless a move there was given up. A removal by an account that still exists never
+says `account_gone`: the PC leaves as before, during a move too (`binding_changed`). A move given up
+never removes the destination's listing: the window says the PC is still listed there, to remove there if it is not
 wanted. `GET` answers `{ "into" }`, the destination of a move under way (else `null`), and while the
 PC stays in its account the last move given up as `aborted`. One press still refuses to move a PC
 that is already in an account.
