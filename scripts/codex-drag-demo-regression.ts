@@ -10,7 +10,7 @@ import { withDemoBrowser } from "./demo-browser.ts";
 import { appFaces } from "./app-faces.ts";
 
 interface Frame { type: string; pane_id?: string; text?: string }
-declare global { interface Window { dragFixture: { inputs: Frame[] } } }
+declare global { interface Window { dragFixture: { inputs: Frame[]; glideFinished?: boolean } } }
 
 function installDragFixture(): void {
   const params = new URL(location.href).searchParams;
@@ -123,9 +123,20 @@ await withDemoBrowser({ tempPrefix: "codex-drag-demo-", afterTransport: `\n<scri
       assert.equal(await reports(), 1);
       await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
       if (oneRow) {
-        const started = await page.evaluate(({ x, y, rowHeight }) => {
+        await page.evaluate(({ x, y, rowHeight }) => {
           const target = document.elementFromPoint(x, y)!;
           const now = performance.now();
+          // Observe completion rather than timing a Playwright polling round trip. The unit
+          // test with a controlled frame clock checks the actual spacing and cutoff.
+          window.dragFixture.glideFinished = false;
+          const watch = new MutationObserver((changes) => {
+            if (changes.some((change) => change.oldValue !== null &&
+                !(change.target as Element).hasAttribute("data-touch-fling"))) {
+              watch.disconnect();
+              window.dragFixture.glideFinished = true;
+            }
+          });
+          watch.observe(document.body, { subtree: true, attributes: true, attributeOldValue: true, attributeFilter: ["data-touch-fling"] });
           const send = (type: string, y: number, at: number) => {
             const points = type === "touchend" ? [] : [new Touch({ identifier: 1, target, clientX: x, clientY: y })];
             const event = new TouchEvent(type, { bubbles: true, cancelable: true, touches: points });
@@ -135,12 +146,8 @@ await withDemoBrowser({ tempPrefix: "codex-drag-demo-", afterTransport: `\n<scri
           send("touchstart", y, now - 80);
           send("touchmove", y + rowHeight * 4, now);
           send("touchend", y + rowHeight * 4, now);
-          return now;
         }, { x, y, rowHeight: row.height });
-        await page.locator(".pane-frame.is-current [data-touch-fling]").waitFor({ state: "attached" });
-        await page.locator(".pane-frame.is-current [data-touch-fling]").waitFor({ state: "detached" });
-        const elapsed = await page.evaluate((started) => performance.now() - started, started);
-        assert.ok(elapsed < 1250, `${kind}: a ${name} flick stops before a sparse tail (${elapsed.toFixed()} ms)`);
+        await page.waitForFunction(() => window.dragFixture.glideFinished === true, undefined, { timeout: 5000 });
         assert.ok(await reports() > 5, `${kind}: a flick still coasts after the finger lifts`);
       }
       console.log(`PASS ${kind}: ${name} uses the ${oneRow ? "one" : "three"}-row wheel report step`);
