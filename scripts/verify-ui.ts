@@ -194,6 +194,8 @@ function safeLabel(raw: string): string {
   return cleaned;
 }
 
+const firstLine = (error: unknown): string => (error instanceof Error ? error.message.split("\n")[0]! : String(error));
+
 function requireFlagValue(flag: string, next: string | undefined): string {
   if (!next || next.startsWith("-")) throw new Error(`${flag} requires a value`);
   return next;
@@ -252,24 +254,30 @@ async function probeCells(
         }, undefined, { timeout: 20_000 });
       } catch (error) {
         // A page that never loads or never mounts is this cell's failure: keep probing the rest.
-        failures.push(`load: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
+        failures.push(`load: ${firstLine(error)}`);
       }
 
-      const metrics = await page.evaluate(() => {
-        const root = document.getElementById("root");
-        const doc = document.documentElement;
-        return {
-          resolvedTheme: doc.dataset["theme"] ?? null,
-          crashed: root?.querySelector(".app-crash") !== null,
-          mountedShell: root !== null && root.childElementCount > 0 && root.querySelector(":scope > .boot") === null && root.querySelector(".app-crash") === null,
-          horizontalOverflowPx: Math.max(0, Math.round(doc.scrollWidth - window.innerWidth)),
-        };
-      });
-
+      let metrics = { resolvedTheme: null as string | null, crashed: false, mountedShell: false, horizontalOverflowPx: 0 };
       let screenshot: string | null = null;
-      if (options.evidenceDir !== null) {
-        screenshot = join(options.evidenceDir, `${options.label}-${cell.id}.png`);
-        await page.screenshot({ path: screenshot, timeout: 10_000 });
+      try {
+        metrics = await page.evaluate(() => {
+          const root = document.getElementById("root");
+          const doc = document.documentElement;
+          return {
+            resolvedTheme: doc.dataset["theme"] ?? null,
+            crashed: root?.querySelector(".app-crash") !== null,
+            mountedShell: root !== null && root.childElementCount > 0 && root.querySelector(":scope > .boot") === null && root.querySelector(".app-crash") === null,
+            horizontalOverflowPx: Math.max(0, Math.round(doc.scrollWidth - window.innerWidth)),
+          };
+        });
+        if (options.evidenceDir !== null) {
+          const path = join(options.evidenceDir, `${options.label}-${cell.id}.png`);
+          await page.screenshot({ path, timeout: 10_000 });
+          screenshot = path;
+        }
+      } catch (error) {
+        // A failed navigation leaves no page to measure or capture.
+        failures.push(`probe: ${firstLine(error)}`);
       }
 
       if (metrics.crashed) failures.push("#root rendered .app-crash");
