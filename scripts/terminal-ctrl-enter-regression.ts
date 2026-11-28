@@ -102,7 +102,9 @@ process.stdin.on("data", (data) => {
     since = reads().length;
     await press("Alt+k", typed(mirrored ? "\x1bk" : MODIFIED_ALT_K));
     await read(mirrored ? "\x1bk" : MODIFIED_ALT_K, since);
+    since = reads().length;
     await press("Alt+Shift+K", typed(mirrored ? "\x1bK" : MODIFIED_ALT_SHIFT_K));
+    await read(mirrored ? "\x1bK" : MODIFIED_ALT_SHIFT_K, since);
     for (const [shortcut, expected] of [["Enter", "\r"], ["Shift+Enter", "\x1b\r"], ["Alt+Enter", "\x1b\r"]]) {
       await press(shortcut!, typed(expected!));
     }

@@ -194,13 +194,16 @@ export function modifyOtherKeysLevel(level: number, final: "m" | "n", params: Re
  * Alt with a character key under modifyOtherKeys level 2, as xterm and Ghostty encode it (#4898):
  * CSI 27 ; modifier ; code point ~, Alt+K as CSI 27;3;107~ and Alt+Shift+K as CSI 27;4;75~. `typed` is
  * what the input layer made of the key, ESC before the character. null keeps it: below level 2,
- * for a control character (Alt+Enter, Ctrl+Alt+K) and for any other key.
+ * for a control character (Alt+Enter, Ctrl+Alt+K) and for any key that is not a character, such as
+ * macOS Option+Left/Right, typed as ESC b / ESC f as Ghostty sends them. A dead key (Alt+N on a Mac
+ * with Option as Meta) is the letter the input layer typed.
  */
-export function altOtherKeySequence(typed: string, shift: boolean, modifyOtherKeys: number): string | null {
-  const character = modifyOtherKeys >= 2 && typed.startsWith("\u001b") ? [...typed.slice(1)] : [];
+export function altOtherKeySequence(event: Pick<KeyboardEvent, "key" | "shiftKey">, typed: string, modifyOtherKeys: number): string | null {
+  const characterKey = event.key === "Dead" || [...event.key].length === 1;
+  const character = characterKey && modifyOtherKeys >= 2 && typed.startsWith("\u001b") ? [...typed.slice(1)] : [];
   const code = character.length === 1 ? character[0]!.codePointAt(0)! : 0;
   if (code < 0x20 || code === 0x7f) return null;
-  return `\u001b[27;${shift ? 4 : 3};${code}~`;
+  return `\u001b[27;${event.shiftKey ? 4 : 3};${code}~`;
 }
 
 /** Ctrl+Enter under modifyOtherKeys, as xterm encodes it; null keeps xterm.js's own CR. */
