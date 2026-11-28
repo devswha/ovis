@@ -275,7 +275,7 @@ describe("InboxList", () => {
     expect(words(root, "w1F:p1")).toEqual(["Ready"]);
   });
 
-  it("draws a tab's auto-title, without its place, between a row's name and its last words; a learned first line where the tab has none", async () => {
+  it("draws a tab's auto-title, without its place, on the row's name line; a learned first line where the tab has none", async () => {
     try {
       const machines = roster((pane) => {
         if (pane.pane_id === "w1C:p1") return { ...pane, label: undefined, title: "Claude Code", terminal_title: "Claude Code", terminal_title_stripped: "Claude Code" } as HerdrPane;
@@ -293,7 +293,8 @@ describe("InboxList", () => {
       const root = await draw(machines);
       const said = (paneId: string, kind: string) => byClass(item(root, paneId), kind).map(text);
       expect(said("w1C:p1", "inbox-name")).toEqual(["checkout-api"]);
-      expect(said("w1C:p1", "inbox-topic")).toEqual(["Agent Inbox Feature Check"]);
+      // beside the name, so the row keeps its two lines
+      expect(byClass(item(root, "w1C:p1"), "inbox-line").map((line) => byClass(line, "inbox-topic").map(text))).toEqual([["Agent Inbox Feature Check"]]);
       expect(said("w1D:p1", "inbox-name")).toEqual(["Guard the export button"]);
       expect(said("w1D:p1", "inbox-topic")).toEqual(["Export Button Guard"]);
       expect(said("w1E:p1", "inbox-topic")).toEqual(["Investigate backup failure"]);
