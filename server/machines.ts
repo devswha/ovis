@@ -2687,10 +2687,10 @@ export class MachineManager {
    * included, while the person compares the ID with the one that PC shows; addRelay with `found` then pairs with
    * it.
    */
-  async relayFoundByCode(code: unknown, signal?: AbortSignal): Promise<{ ticket: string; server_id: string; name: string | null }> {
+  async relayFoundByCode(code: unknown, signal?: AbortSignal, relay?: string): Promise<{ ticket: string; server_id: string; name: string | null }> {
     if (this.stopped) throw new Error("Server stopping");
     if (typeof code !== "string" || code.length > 64) throw new TypedCodeError("not-a-code");
-    const offer = await offerFromCode(code, { ...(this.relaySocket ? { connect: this.relaySocket } : {}), ...(signal ? { signal } : {}) });
+    const offer = await offerFromCode(code, { ...(this.relaySocket ? { connect: this.relaySocket } : {}), ...(signal ? { signal } : {}), ...(relay ? { relay } : {}) });
     if (this.stopped) throw new Error("Server stopping");
     const now = this.now();
     for (const [ticket, held] of this.foundByCode) if (now - held.at > RELAY_FOUND_MS) this.foundByCode.delete(ticket);
@@ -2721,7 +2721,7 @@ export class MachineManager {
     const name = this.tailnet.foundAt(url);
     if (name === null) throw new TailnetPcError("not_found", "That PC is not among those found on Tailscale. Look again.");
     const asked = await this.tailnet.code(url as string, this.relayServerIds());
-    const found = await this.relayFoundByCode(asked.code);
+    const found = await this.relayFoundByCode(asked.code, undefined, asked.relay);
     if (found.server_id !== asked.server_id) {
       this.foundByCode.delete(found.ticket);
       throw new TailnetPcError("mismatch", "The relay found a different PC than the one asked. Nothing was added.");

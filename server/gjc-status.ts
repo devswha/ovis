@@ -17,8 +17,8 @@
  * The status replaces herdr's for the pane only once a turn record was actually read and the
  * read is current: an empty, missing, unreadable or half-written transcript proves nothing,
  * so herdr's `working` stands rather than a rest no one saw. The machinery is omo-status.ts's,
- * composed with the `gjc` identity and this file's reducer; gjc keeps no background-task
- * records to count. A turn the process holding the session now could not have run (it started
+ * composed with the `gjc` identity and this file's reducer. gjc keeps no background-task records
+ * outside the transcript, so its background work is read there too (`gjcJobsAfter`). A turn the process holding the session now could not have run (it started
  * after the record was written) is another process's unfinished work: an interruption, told as
  * a failed rest, never a finish.
  */
@@ -27,6 +27,7 @@ import { paneProcessInfo } from "./herdr/client.ts";
 import { gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, type GjcProcess } from "./gjc-runtime.ts";
 import type { OmoAsks } from "./omo-ask.ts";
 import { processStartedAtAsync } from "./process-start.ts";
+import type { OmoDetachedCell } from "./omo-detached.ts";
 import { OmoStatus, type OmoLine, type OmoPane, type OmoStatusDeps, type OmoTurn } from "./omo-status.ts";
 
 /** the custom messages gjc wakes the parent turn with, displayed or not */
@@ -36,7 +37,54 @@ interface GjcEntry {
   type?: unknown;
   customType?: unknown;
   timestamp?: unknown;
-  message?: { role?: unknown; stopReason?: unknown; content?: unknown; toolCallId?: unknown };
+  details?: unknown;
+  message?: { role?: unknown; stopReason?: unknown; content?: unknown; toolCallId?: unknown; toolName?: unknown; details?: unknown };
+}
+
+/** the states gjc's `job` and `subagent` tools report a job in once it no longer runs (a paused one waits on nobody) */
+const ENDED = new Set(["completed", "failed", "cancelled", "paused", "not_found", "already_completed", "already_cancelled"]);
+const record = (value: unknown): Record<string, unknown> | null => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+const list = (value: unknown): Record<string, unknown>[] => Array.isArray(value) ? value.flatMap((item) => { const found = record(item); return found ? [found] : []; }) : [];
+const text = (content: unknown): string => list(content).flatMap((part) => part["type"] === "text" && typeof part["text"] === "string" ? [part["text"]] : []).join("\n");
+
+/**
+ * The background jobs a gjc session started and has not heard the end of: a turn that ends while
+ * one runs waits on it (background-wait.ts), and its end wakes the session. A job starts with a
+ * `task` or `bash` result whose `details.async.state` is `running`: a bash job is that result's
+ * `jobId`, a task batch lists each job on a line of its own, ``- `<id>` (job `<id>`) — <description>``
+ * (its details name only the first; the description is the model's, and names no job). It ends
+ * with the `async-result` that delivers it, or a `job` or `subagent` result that reports it no
+ * longer running, paused included (an await or a cancel acknowledges it, and no delivery follows).
+ */
+export function gjcJobsAfter(open: readonly OmoDetachedCell[], entry: GjcEntry): readonly OmoDetachedCell[] {
+  const ended = (ids: string[]): readonly OmoDetachedCell[] => {
+    const gone = new Set(ids);
+    return gone.size > 0 && open.some((job) => gone.has(job.id)) ? open.filter((job) => !gone.has(job.id)) : open;
+  };
+  if (entry.type === "custom_message") {
+    if (entry.customType !== "async-result") return open;
+    return ended(list(record(entry.details)?.["jobs"]).flatMap((job) => typeof job["jobId"] === "string" ? [job["jobId"]] : []));
+  }
+  const message = entry.message;
+  if (entry.type !== "message" || message?.role !== "toolResult") return open;
+  const details = record(message.details);
+  if (message.toolName === "job") {
+    return ended([
+      ...list(details?.["jobs"]).flatMap((job) => typeof job["id"] === "string" && typeof job["status"] === "string" && ENDED.has(job["status"]) ? [job["id"]] : []),
+      ...list(details?.["cancelled"]).flatMap((job) => typeof job["id"] === "string" ? [job["id"]] : []),
+    ]);
+  }
+  if (message.toolName === "subagent") {
+    return ended(list(details?.["subagents"]).flatMap((agent) => typeof agent["jobId"] === "string" && typeof agent["status"] === "string" && ENDED.has(agent["status"]) ? [agent["jobId"]] : []));
+  }
+  const async = record(details?.["async"]);
+  if (async?.["state"] !== "running" || typeof async["jobId"] !== "string") return open;
+  const at = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
+  if (!Number.isFinite(at)) return open;
+  const ids = message.toolName === "task" ? [...text(message.content).matchAll(/^- `[^`]*` \(job `([^`]+)`\)/gm)].map((match) => match[1]!)
+    : message.toolName === "bash" ? [async["jobId"]] : [];
+  const started = ids.filter((id, i) => ids.indexOf(id) === i && !open.some((job) => job.id === id));
+  return started.length > 0 ? [...open, ...started.map((id) => ({ id, at }))] : open;
 }
 
 function gjcAsksAfter(open: OmoAsks, entry: GjcEntry): OmoAsks {
@@ -68,18 +116,20 @@ export function gjcTurnAfter(turn: OmoTurn, line: OmoLine): OmoTurn {
   const parsed = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
   const at = Number.isFinite(parsed) ? parsed : turn.at;
   const asks = gjcAsksAfter(turn.asks, entry);
+  const jobs = gjcJobsAfter(turn.detached ?? [], entry);
+  const detached = jobs.length > 0 || turn.detached !== undefined ? { detached: jobs } : {};
   if (entry.type === "custom_message") {
-    return typeof entry.customType === "string" && WAKE_TYPES.has(entry.customType) ? { status: "working", at, asks } : { ...turn, asks };
+    return typeof entry.customType === "string" && WAKE_TYPES.has(entry.customType) ? { status: "working", at, asks, ...detached } : { ...turn, asks, ...detached };
   }
   if (entry.type !== "message") return { ...turn, asks };
   const role = entry.message?.role;
   const stopReason = entry.message?.stopReason;
-  if (role === "user" || role === "toolResult") return { status: "working", at, asks };
-  if (role !== "assistant") return { ...turn, asks };
-  if (stopReason === "toolUse") return { status: "working", at, asks };
-  if (stopReason === "stop" || stopReason === "length") return { status: "idle", at, asks };
-  if (stopReason === "error" || stopReason === "aborted") return { status: "idle", failed: true, at, asks };
-  return { ...turn, asks };
+  if (role === "user" || role === "toolResult") return { status: "working", at, asks, ...detached };
+  if (role !== "assistant") return { ...turn, asks, ...detached };
+  if (stopReason === "toolUse") return { status: "working", at, asks, ...detached };
+  if (stopReason === "stop" || stopReason === "length") return { status: "idle", at, asks, ...detached };
+  if (stopReason === "error" || stopReason === "aborted") return { status: "idle", failed: true, at, asks, ...detached };
+  return { ...turn, asks, ...detached };
 }
 
 type ProcessInfo = { process_info?: { shell_pid?: unknown; foreground_processes?: { pid?: unknown; argv?: unknown }[] } } | null;
@@ -127,7 +177,8 @@ export async function gjcPanes(panes: HerdrPane[], deps: GjcDiscovery = {}): Pro
 
 /**
  * The tracker's GJC composition: the `gjc` identity (herdr gives it no other name, so no
- * aliases), this file's reducer, no background counts, an unfinished turn of a process that is
+ * aliases), this file's reducer (whose open jobs are the pane's background count; gjc keeps no
+ * task records elsewhere for `background`), an unfinished turn of a process that is
  * gone told as the failed rest it is, and the readiness gate that releases a transcript
  * nothing — or not everything — was read from back to herdr's status.
  */

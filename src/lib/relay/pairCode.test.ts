@@ -5,7 +5,7 @@ import { PairCodeHost, normalizePairCode, splitPairCode } from "../../../shared/
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
-import { offerFromCode, TypedCodeError } from "./pairCode.ts";
+import { offerFromCode, shellRelayOf, TypedCodeError } from "./pairCode.ts";
 
 let relay: BunRelay;
 let relayUrl: string;
@@ -102,5 +102,14 @@ describe("pairing with a typed code on the device", () => {
     let opened = 0;
     expect(await failure(offerFromCode("AB3DE", { connect: (url) => { opened++; return connect(url); } }))).toBe("not-a-code");
     expect(opened).toBe(0);
+  });
+});
+
+describe("the relay a copy of the hosted shell looks codes up on", () => {
+  const page = (content: string | null) => ({ querySelector: (selector: string) => selector === 'meta[name="ovis-relay"]' && content !== null ? { getAttribute: (name: string) => name === "content" ? content : null } : null });
+
+  it("is the page's ovis-relay meta when it is a wss origin, else none, and Ovis's global relay is used", () => {
+    expect(shellRelayOf(page("wss://relay.example"))).toBe("wss://relay.example");
+    for (const not of [null, "", "https://relay.example", "wss://relay.example/path"]) expect(shellRelayOf(page(not))).toBeUndefined();
   });
 });

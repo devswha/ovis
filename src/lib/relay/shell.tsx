@@ -29,7 +29,7 @@ import { signInEntry, failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyM
 import { setPcNewness, type PcNewness } from "./newPcHere.ts";
 import type { AccountView, Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
-import { offerFromCode, TypedCodeError } from "./pairCode.ts";
+import { offerFromCode, shellRelayOf, TypedCodeError } from "./pairCode.ts";
 import { ADMISSION_WAIT_MS, AddedToListError, ConsentChangedError, createAccountController, ListUnwritableError, PlacedInListError } from "./accountController.ts";
 import { keepShellAccount } from "../account/hostedSignIn.ts";
 import { AccountPcError } from "../account/join.ts";
@@ -298,6 +298,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const directSocket = nativeDirectSocket();
   const directTailnet = directSocket ? nativeDirectTailnet() : undefined;
   const findByCode = mount.findByCode ?? offerFromCode;
+  const codeRelay = shellRelayOf(document);
   const pendingPush = mount.pendingPush ?? indexedPendingPush;
   const registerPending = (serverId: string): void => {
     registerPendingPush(serverId, pendingPush, withAlertFilters(alertPrefs(loadSettings()), readAlertFilters())).catch((error: unknown) => {
@@ -1409,7 +1410,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (shown?.kind !== "code-entry") return;
     const controller = new AbortController(); opening = controller; codeOffer = null;
     show({ kind: "code-looking" });
-    findByCode(input, { signal: controller.signal }).then((offer) => {
+    findByCode(input, { signal: controller.signal, ...(codeRelay ? { relay: codeRelay } : {}) }).then((offer) => {
       if (controller.signal.aborted) return;
       codeOffer = offer; show({ kind: "code-compare", offer });
     }, (error: unknown) => { if (!controller.signal.aborted) show({ kind: "code-entry", failure: error instanceof TypedCodeError ? error.failure : "unreachable" }); });

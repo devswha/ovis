@@ -158,8 +158,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const gjc = createGjcStatus({
     discover: (panes) => gjcPanes(panes),
     snapshot: omoSnapshot,
-    onChange: (paneId, derived, _background, turn, rest) => gjcChanged(paneId, derived, turn, rest),
-    onFound: (paneId) => completions.adopt(paneId, "gjc", []),
+    onChange: (paneId, derived, background, turn, rest) => gjcChanged(paneId, derived, turn, rest, "gjc", background),
+    // a gjc found anew counts its jobs from nothing: what a gjc left before is not its wait
+    onFound: (paneId, again) => { completions.adopt(paneId, "gjc", []); if (!again) forgetGjcWait(paneId); },
+    onLost: (paneId) => gjcLost(paneId),
   }, omo);
   const lettaTitled = new Map<string, AgentStatus>();
   const lettaRests = new Map<string, { path: string; title: string; rest: OmoRest }>();
@@ -186,6 +188,24 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     onFound: (paneId) => completions.adopt(paneId, "letta", []),
   });
   const waits = new BackgroundWait(options.statusNow ?? Date.now, options.backgroundWait);
+  /**
+   * GJC's waits on the jobs its turns left running (gjcChanged), kept apart from `waits`, which the other agents'
+   * trackers share: nothing GJC reads, a late discovery included, ends or holds another agent's wait, nor theirs GJC's.
+   * Each is held for the gjc process and session whose transcript counted its jobs (`gjcLives`) and no other.
+   */
+  const gjcWaits = new BackgroundWait(options.statusNow ?? Date.now, options.backgroundWait);
+  const gjcLives = new Map<string, { path: string | null; startedAt: number | null }>();
+  /** the same gjc: the same session, and the same process unless a start could not be read */
+  const sameGjc = (a: { path: string | null; startedAt: number | null }, b: { path: string | null; startedAt: number | null }): boolean =>
+    a.path === b.path && (a.startedAt === null || b.startedAt === null || a.startedAt === b.startedAt);
+  const gjcWaiting = (paneId: string): boolean => {
+    const life = gjc.lifeOf(paneId);
+    const counted = gjcLives.get(paneId);
+    return life !== undefined && counted !== undefined && sameGjc(counted, life) && gjcWaits.waiting(paneId);
+  };
+  const forgetGjcWait = (paneId: string): void => { gjcWaits.forget(paneId); gjcLives.delete(paneId); };
+  /** whether a pane at rest waits on background work: its agent tracker's wait, or GJC's */
+  const waitingOn = (paneId: string): boolean => waits.waiting(paneId) || gjcWaiting(paneId);
   /** herdr-core panes whose agent asks on screen what it did not report (server/card-waits.ts); read with state of their own, as a prompt watch is */
   const cardOpenCode = new OpenCodePromptState();
   const cardOmp: OmpLookups = new Map();
@@ -388,7 +408,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     status !== "blocked" && toldFailures.has(paneId) ? "idle" : status;
   function broadcastDisplayStatus(paneId: string, status: AgentStatus): void {
     broadcastAll({ type: "pane-status", pane_id: paneId, agent_status: cards.status(paneId, displayStatus(paneId, status)),
-      ...(waits.waiting(paneId) ? { background_wait: true as const } : {}) });
+      ...(waitingOn(paneId) ? { background_wait: true as const } : {}) });
   }
   function tellFailure(paneId: string, agent: "claude" | "codex"): void {
     const thread = agent === "codex" ? servedStatus(paneId)?.threadId : undefined;
@@ -605,7 +625,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     options.openCodeState?.reconcile(named.panes, promptCheckpoint);
     return named;
   };
-  const backgroundOf = (paneId: string): number => omo.backgroundOf(paneId) || claudeAgents.countOf(paneId) || opencodeAgents.countOf(paneId) || taskAgents.countOf(paneId);
+  const backgroundOf = (paneId: string): number => omo.backgroundOf(paneId) || gjc.backgroundOf(paneId) || claudeAgents.countOf(paneId) || opencodeAgents.countOf(paneId) || taskAgents.countOf(paneId);
   /**
    * The snapshot a send is checked against, each status as its agent reported it. A card's wait is not in it: the send
    * reads the screen itself (server/core/pending.ts), and a wait outlives its card by a read or more.
@@ -627,7 +647,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       ...(lifetime === undefined ? {} : { herdr_lifetime: lifetime }),
       panes: snapshot.panes.map((pane) => {
         const background = backgroundOf(pane.pane_id);
-        const waiting = waits.waiting(pane.pane_id);
+        const waiting = waitingOn(pane.pane_id);
         const plan = plans.summaryOf(pane.pane_id);
         const context = options.hookContextOf?.(pane.pane_id, pane.agent) ?? plans.contextOf(pane.pane_id);
         return background > 0 || waiting || plan !== null || context !== null ? { ...pane, ...(background > 0 ? { background_tasks: background } : {}), ...(waiting ? { background_wait: true as const } : {}), ...(plan !== null ? { plan } : {}), ...(context !== null ? { context } : {}) } : pane;
@@ -681,7 +701,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     }));
   }
   const paneStatus = (paneId: string, status: AgentStatus, about: { background_tasks?: number; plan?: PlanSummary | null; context?: PaneContext | null } = {}): ServerMessage =>
-    ({ type: "pane-status", pane_id: paneId, agent_status: cards.status(paneId, displayStatus(paneId, status)), ...finishes.status(paneId, status), ...about, ...(waits.waiting(paneId) ? { background_wait: true as const } : {}) });
+    ({ type: "pane-status", pane_id: paneId, agent_status: cards.status(paneId, displayStatus(paneId, status)), ...finishes.status(paneId, status), ...about, ...(waitingOn(paneId) ? { background_wait: true as const } : {}) });
   const machines = options.machines === false ? null : new MachineManager(options.stateDir ?? defaultStateDir(), push, completions, clientSnapshot, { restoreReplaced: () => preferences.get().settings.restoreReplacedServer === true, bootId: options.orderSequence?.epoch, localFinishEpoch: () => finishes.epoch, relaySocket: options.relayPcSocket, relayDirectSocket: options.relayPcDirectSocket, serverId: options.serverId, tailnet: options.tailnetPcs, sshCandidates: options.sshCandidates, previewProfile: process.env["OVIS_PREVIEW_PROFILE"] === "1", ...(options.pcUpdateTimings ? { ownUpdate: options.pcUpdateTimings } : {}) });
   if (machines && options.herdrProfiles) machines.watchHerdrProfiles(options.herdrProfiles);
   if (machines && capabilities().machines) machines.watchHcMachines(() => listHcMachines(coreConnection()), (machine, signal) => startMachineBridge(machine, options.stateDir ?? defaultStateDir(), signal));
@@ -718,14 +738,47 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (turn && rest === "failed" && status === "idle") push.onFailed(paneId).catch(logPushError);
   }
 
-  function gjcChanged(paneId: string, derived: AgentStatus, turn: boolean, rest: OmoRest | undefined, agent: "gjc" | "letta" = "gjc"): void {
+  /**
+   * A GJC or Letta pane's own turn. A GJC turn that ended while background jobs it started still run (gjc-status.ts
+   * `gjcJobsAfter`: their ids on gjc's own list lines, each over at its `async-result`) waits on them as an OmO one
+   * does: BG, not DONE, and a finish alerted once they are over. Nothing proves a job gjc wrote no end for still runs,
+   * so the wait is held at most WAIT_LIMIT_MS, as a Claude one is. A whole turn read at once shows only in the jobs it
+   * left running: their rise at rest is its rest (`restedUnseen`). Another gjc process or session in the pane starts
+   * its count anew.
+   */
+  function gjcChanged(paneId: string, derived: AgentStatus, turn: boolean, rest: OmoRest | undefined, agent: "gjc" | "letta" = "gjc", background = 0): void {
     if (turn && derived === "working") promptWaitEnded(paneId);
     if (turn) options.telemetry?.paneStatus(paneId, derived);
     const status = turn ? completions.observe(paneId, derived, agent, rest) : completions.current(paneId) ?? completions.observe(paneId, derived, agent);
     if (turn) { pending.status(paneId, status); drainPending(paneId); }
-    broadcastAll(paneStatus(paneId, status));
-    if (turn) alert(paneId, status);
+    const held = gjcWaiting(paneId);
+    if (agent === "gjc") {
+      const life = gjc.lifeOf(paneId);
+      const counted = gjcLives.get(paneId);
+      if (counted !== undefined && (life === undefined || !sameGjc(counted, life))) forgetGjcWait(paneId);
+      if (life !== undefined) gjcLives.set(paneId, life);
+      if (!turn && derived === "idle") gjcWaits.restedUnseen(paneId, background);
+      gjcWaits.running(paneId, background, null, true);
+      if (turn) gjcWaits.status(paneId, status);
+    }
+    broadcastAll(paneStatus(paneId, status, agent === "gjc" ? { background_tasks: background } : {}));
+    if (turn || gjcWaiting(paneId) !== held) alert(paneId, agent === "gjc" ? alertStatus(status, waitingOn(paneId)) : status);
     if (turn && rest === "failed" && status === "idle") push.onFailed(paneId).catch(logPushError);
+  }
+
+  /**
+   * GJC's discovery no longer finds gjc in a pane: what its turn waited on is over, and its count goes with it. Where
+   * GJC's wait held the pane, its end is alerted. A pane native OmO took is OmO's to tell.
+   */
+  function gjcLost(paneId: string): void {
+    const told = gjcLives.has(paneId);
+    const held = told && gjcWaits.waiting(paneId);
+    forgetGjcWait(paneId);
+    if (!told || omo.runs(paneId)) return;
+    const status = completions.current(paneId);
+    if (status === undefined) return;
+    broadcastAll(paneStatus(paneId, status, { background_tasks: backgroundOf(paneId) }));
+    if (held) alert(paneId, alertStatus(status, waitingOn(paneId)));
   }
 
   function claudeAgentsChanged(paneId: string, running: number, turnRunning: number, promptAt: number | null, resetHold = false, agent: string | null = null, settled = false, capped = true): void {
@@ -739,17 +792,18 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     }
     const status = completions.current(paneId);
     if (status === undefined) return;
-    broadcastAll(paneStatus(paneId, status, { background_tasks: running }));
+    // a pane whose gjc transcript is read shows GJC's count: a Claude or OpenCode session that held it before counts nothing there
+    broadcastAll(paneStatus(paneId, status, { background_tasks: gjc.tracks(paneId) ? gjc.backgroundOf(paneId) : running }));
     if (changed) alert(paneId, alertStatus(status, waits.waiting(paneId)));
     if (changed) claudeFailHeldEnds(paneId);
   }
 
   function waitsRanOut(): void {
-    for (const paneId of waits.tick()) {
+    for (const paneId of [...waits.tick(), ...gjcWaits.tick().filter((paneId) => gjcLives.has(paneId))]) {
       const status = completions.current(paneId);
       if (status === undefined) continue;
       broadcastAll(paneStatus(paneId, status));
-      alert(paneId, alertStatus(status, waits.waiting(paneId)));
+      alert(paneId, alertStatus(status, waitingOn(paneId)));
       claudeFailHeldEnds(paneId);
     }
   }
@@ -810,6 +864,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // A sample taken (or begun) before Herdr reported new work cannot describe that turn.
     if (agent === "copilot" && read === "working") copilotActivity.forget(paneId);
     if (reconcileProviderStatus(omo, gjc, { pane_id: paneId, agent })) completions.forget(paneId);
+    // herdr names another agent there: GJC's wait goes with gjc, and the status reported now is what shows
+    if (!gjc.runs(paneId)) forgetGjcWait(paneId);
     const named = [{ pane_id: paneId, agent: omo.runs(paneId) ? "omo" : gjc.runs(paneId) ? "gjc" : agent }];
     if (machines) machines.localAgents(named); else bridgeAgents!.status(named);
     if (named[0]!.agent && changedHands({ agent: ran }, named[0]!)) handsChanged(paneId);
@@ -837,7 +893,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   function cardChanged(paneId: string, waiting: boolean): void {
     const status = completions.current(paneId) ?? lastPanes?.get(paneId)?.agent_status ?? "unknown";
     if (status === "blocked") return;
-    const told = alertStatus(status, waits.waiting(paneId));
+    const told = alertStatus(status, waitingOn(paneId));
     if (waiting) push.assume(paneId, told);
     broadcastAll(paneStatus(paneId, status));
     alert(paneId, told);
@@ -916,7 +972,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     } else waits.forget(paneId);
     const tell = (): void => {
       broadcastAll(paneStatus(paneId, status, tracker !== null ? { background_tasks: tracker.countOf(paneId) } : {}));
-      alert(paneId, alertStatus(status, waits.waiting(paneId)));
+      alert(paneId, alertStatus(status, waitingOn(paneId)));
       notifyToldFailure(paneId);
     };
     if (agent === "codex" && status === "done" && !omo.runs(paneId) && !gjc.runs(paneId) && (codexTurns.get(paneId) ?? 0) > 0) {
@@ -1182,6 +1238,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     holdPendingPane(paneId, { code: "pane_not_found", message: "The pane ended; its pending messages were not sent" });
     pending.forget(paneId);
     waits.forget(paneId);
+    forgetGjcWait(paneId);
     taskAgents.forget(paneId);
     completions.forget(paneId);
     heard.delete(paneId);
@@ -1212,12 +1269,12 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (!completions.seen(paneId)) return;
       pending.status(paneId, queueStatus(paneId, "idle")); drainPending(paneId);
       broadcastAll(paneStatus(paneId, "idle"));
-      alert(paneId, alertStatus("idle", waits.waiting(paneId)));
+      alert(paneId, alertStatus("idle", waitingOn(paneId)));
     },
     onBaseline: (panes, newer = new Set(), askedAt = Date.now(), created = new Map()) => {
       const projected = panes.map((pane) => ({ ...pane, agent_status: resting(pane.pane_id, pane.agent, pane.agent_status) }));
       for (const pane of projected) if (pane.agent === "claude" || pane.agent === "opencode" || isTaskAgent(pane.agent)) waits.seed(pane.pane_id, pane.agent_status);
-      const alerted = projected.map((pane) => ({ ...pane, agent_status: cards.status(pane.pane_id, alertStatus(pane.agent_status, waits.waiting(pane.pane_id))) }));
+      const alerted = projected.map((pane) => ({ ...pane, agent_status: cards.status(pane.pane_id, alertStatus(pane.agent_status, waitingOn(pane.pane_id))) }));
       // web push alone hears a new pane's first reading as a change from its creation; everything else takes the
       // snapshot as for any pane, the queue below included
       for (const pane of alerted) {
@@ -1279,7 +1336,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
         drainPending(pane.pane_id);
       }
       for (const pane of panes) if (!newer.has(pane.pane_id) && (pane.agent === "claude" || pane.agent === "opencode" || isTaskAgent(pane.agent))) waits.status(pane.pane_id, settled(pane));
-      push.resync(panes.map((pane) => ({ ...pane, agent_status: cards.status(pane.pane_id, alertStatus(settled(pane), waits.waiting(pane.pane_id))) })), newer);
+      push.resync(panes.map((pane) => ({ ...pane, agent_status: cards.status(pane.pane_id, alertStatus(settled(pane), waitingOn(pane.pane_id))) })), newer);
     },
     onPaneEnded: (paneId) => {
       paneGone(paneId);

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
@@ -1017,6 +1017,44 @@ describe("CLAUDE_CONFIG_DIR", () => {
       renameSync(folder, outside);
       symlinkSync(outside, folder, "dir");
       expect(await claudeTranscriptFile(home, SESSION, [cwd], store)).toBeNull();
+    } finally {
+      child.kill(); await child.exited;
+      ownership.mockRestore(); forgetClaudeSessions();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("reads a store whose root is the user's own link to their own directory (#4866)", async () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "ovis-claude-linked-")));
+    const paneHome = join(home, "pane-home");
+    const target = join(home, "dotfiles", "claude");
+    const store = join(paneHome, ".claude");
+    const cwd = join(home, "project");
+    const transcript = join(store, "projects", claudeProjectDir(cwd), `${SESSION}.jsonl`);
+    mkdirSync(join(target, "projects", claudeProjectDir(cwd)), { recursive: true });
+    mkdirSync(paneHome);
+    symlinkSync(target, store, "dir");
+    writeFileSync(transcript, '{"type":"user"}\n');
+    const original = fsPromises.lstat;
+    let foreign = "";
+    const ownership = spyOn(fsPromises, "lstat").mockImplementation((async (path: string, options?: unknown) => {
+      const info = await Reflect.apply(original, fsPromises, [path, options]);
+      if (path === foreign) info.uid = typeof info.uid === "bigint" ? info.uid + 1n : info.uid + 1;
+      return info;
+    }) as typeof original);
+    const child = Bun.spawn([process.execPath, "-e", "process.stdin.resume(); console.log('ready')"], {
+      env: { PATH: process.env["PATH"] ?? "", HOME: paneHome }, stdin: "pipe", stdout: "pipe",
+    });
+    try {
+      await child.stdout.getReader().read();
+      expect(await claudeTranscriptFile(paneHome, SESSION, [cwd], store)).toBe(transcript);
+      expect(await processClaudeConfigDir(child.pid, [], home)).toBe(store);
+      for (const untrusted of [store, target]) {
+        foreign = untrusted;
+        forgetClaudeSessions();
+        expect(await claudeTranscriptFile(paneHome, SESSION, [cwd], store)).toBeNull();
+        expect(await processClaudeConfigDir(child.pid, [], home)).toBe(join(home, ".claude"));
+      }
     } finally {
       child.kill(); await child.exited;
       ownership.mockRestore(); forgetClaudeSessions();

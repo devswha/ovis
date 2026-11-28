@@ -59,12 +59,22 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
   });
 
   let actions: (target: HerdrPane) => RowMenuItem[] = () => [];
+  /** what the canvas's onChanged calls: a test that waits for a layout call to be answered sets it */
+  let changed = () => {};
+  /** a press on `button`, awaited until the canvas tells the layout changed */
+  const pressUntilChanged = (button: HTMLButtonElement) => act(async () => {
+    const told = Promise.withResolvers<void>();
+    changed = () => told.resolve();
+    button.click();
+    await told.promise;
+    changed = () => {};
+  });
   let actionsRef: { current: ((target: HerdrPane, options?: { counted?: boolean }) => RowMenuItem[]) | null } = { current: null };
   async function draw(offer: LayoutOffer, drawn: SessionSnapshot = snapshot, watching = false, renderPane: Parameters<typeof PaneCanvas>[0]["renderPane"] = () => null): Promise<(target: HerdrPane) => string[]> {
     actionsRef = { current: null };
     actions = (target) => actionsRef.current!(target);
     await page.render(createElement(SettingsProvider, null, createElement(AppLayoutContext.Provider, { value: offer },
-        createElement(PaneCanvas, { snapshot: drawn, pane: drawn.panes[0] as HerdrPane, selectedPaneId: "p1", onSelect: () => {}, onChanged: () => {}, renderPane, actionsRef,
+        createElement(PaneCanvas, { snapshot: drawn, pane: drawn.panes[0] as HerdrPane, selectedPaneId: "p1", onSelect: () => {}, onChanged: () => changed(), renderPane, actionsRef,
           onNewTab: () => {}, onNewTerminal: async () => {}, onMoveToWorkspace: async () => {}, watching }))));
     return (target) => actionsRef.current!(target).map((item) => item.id);
   }
@@ -82,6 +92,71 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
     const itemsOf = await draw(OVIS_CORE, own);
     expect(itemsOf(own.panes[0] as HerdrPane)).toEqual(["rename", "clear-name", "zoom", "close"]);
     expect(itemsOf(own.panes[1] as HerdrPane)).toEqual(["rename", "swap-focused", "split-right", "split-down", "zoom", "close"]);
+  });
+
+  // p1 and p2 in w1's first tab, p4 and p5 in its tab "logs", p3 alone in workspace "api"
+  const tabbed: SessionSnapshot = {
+    ...snapshot,
+    workspaces: [{ ...snapshot.workspaces[0]!, tab_count: 2, pane_count: 4 }, { ...snapshot.workspaces[0]!, workspace_id: "w2", label: "api", active_tab_id: "t2", number: 2, focused: false, tab_count: 1, pane_count: 1 }],
+    tabs: [snapshot.tabs[0]!, { ...snapshot.tabs[0]!, tab_id: "t3", label: "logs", number: 2, focused: false }, { ...snapshot.tabs[0]!, tab_id: "t2", workspace_id: "w2", focused: false, pane_count: 1 }],
+    panes: [pane("p1", "named"), pane("p2"), { ...pane("p3", "server"), workspace_id: "w2", tab_id: "t2" } as HerdrPane, { ...pane("p4", "tests"), tab_id: "t3" } as HerdrPane, { ...pane("p5", "watch"), tab_id: "t3" } as HerdrPane],
+  };
+  const moving = async (answer: object): Promise<{ bodies: unknown[]; restore: () => void }> => {
+    const bodies: unknown[] = [];
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith("/pane/move") && typeof init?.body === "string") bodies.push(JSON.parse(init.body));
+      return Response.json(answer);
+    }, { preconnect: globalThis.fetch.preconnect }));
+    return { bodies, restore: () => fetch.mockRestore() };
+  };
+  const bringRows = () => [...document.querySelectorAll<HTMLButtonElement>('.row-menu button[data-item^="bring:"]')];
+  const openBring = (target: HerdrPane) => act(async () => { actions(target).find((item) => item.id === "bring-pane")!.run(); });
+
+  it("brings a pane of another tab right of a pane from its menu, its workspace's tabs listed first", async () => {
+    const itemsOf = await draw(TUI, tabbed);
+    expect(itemsOf(tabbed.panes[1] as HerdrPane)).toEqual(["rename", "swap-focused", "split-right", "split-down", "bring-pane", "zoom", "close"]);
+    const { bodies, restore } = await moving({ ok: true, changed: true, reason: null });
+    try {
+      await openBring(tabbed.panes[1] as HerdrPane);
+      expect(bringRows().map((row) => [row.dataset["item"], row.querySelector(".menu-item-main")?.textContent, row.querySelector(".menu-item-hint")?.textContent]))
+        .toEqual([["bring:p4", "tests", "logs"], ["bring:p5", "watch", "logs"], ["bring:p3", "server", "api"]]);
+      await pressUntilChanged(bringRows()[2]!);
+    } finally {
+      restore();
+    }
+    expect(bodies).toEqual([{ pane_id: "p3", target_pane_id: "p2", side: "right" }]);
+    expect(page.container.querySelector(".pane-canvas-error")).toBeNull();
+  });
+
+  // a lone tab with no row leaves it out with the splits (the phone cases below)
+  it("offers Bring pane here… only where the PC splits and moves panes, the pane splits, and there is another tab", async () => {
+    expect((await draw(TUI))(snapshot.panes[0] as HerdrPane)).not.toContain("bring-pane");
+    await page.render(null);
+    expect((await draw(APP_CORE, tabbed))(tabbed.panes[0] as HerdrPane)).not.toContain("bring-pane");
+    await page.render(null);
+    const own: SessionSnapshot = { ...tabbed, panes: [{ ...tabbed.panes[0]!, own_tab: true }, ...tabbed.panes.slice(1)] };
+    expect((await draw(OVIS_CORE, own))(own.panes[0] as HerdrPane)).not.toContain("bring-pane");
+  });
+
+  it("closes the picker when another client moves its pane to another tab, so it never lists or moves for a tab out of view", async () => {
+    await draw(TUI, tabbed);
+    await openBring(tabbed.panes[1] as HerdrPane);
+    expect(bringRows()).toHaveLength(3);
+    const moved: SessionSnapshot = { ...tabbed, panes: tabbed.panes.map((item) => item.pane_id === "p2" ? { ...item, tab_id: "t3" } as HerdrPane : item) };
+    await draw(TUI, moved);
+    expect(bringRows()).toHaveLength(0);
+  });
+
+  it("says a PC whose bridge moves no pane between tabs does not offer it yet", async () => {
+    await draw(TUI, tabbed);
+    const { restore } = await moving({ ok: true, changed: false, reason: "cross_tab" });
+    try {
+      await openBring(tabbed.panes[1] as HerdrPane);
+      await pressUntilChanged(bringRows()[0]!);
+    } finally {
+      restore();
+    }
+    expect(page.container.querySelector(".pane-canvas-error")?.textContent).toContain("This PC's bridge does not offer this yet");
   });
 
   it("gives a lone tab with no row (a cramped phone) the row's menu, for the header's More menu, and no pane ellipsis", async () => {

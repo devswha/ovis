@@ -100,6 +100,16 @@ describe("the shell's page", () => {
     expect(both.indexOf("ovis-account-providers")).toBeLessThan(both.indexOf("</head>"));
   });
 
+  it("names the relay typed codes are looked up on only when the build names one, and refuses one that is not a wss origin", () => {
+    expect(shellIndexHtml(indexHtml)).not.toContain("ovis-relay");
+    for (const not of ["", "https://relay.example", "not a url", "wss://relay.example/path", `wss://${"a".repeat(250)}.example`]) expect(() => shellIndexHtml(indexHtml, { OVIS_RELAY_URL: not })).toThrow("OVIS_RELAY_URL must be a wss origin");
+    // written as the PC reads it
+    expect(shellIndexHtml(indexHtml, { OVIS_RELAY_URL: "wss://Relay.Example:443" })).toContain('<meta name="ovis-relay" content="wss://relay.example" />');
+    // a PC on one of Ovis's relays holds its codes on the global one, where a shell with no meta looks
+    for (const ovis of ["wss://relay.ovis.sh", "wss://relay-ap.ovis.sh"]) expect(shellIndexHtml(indexHtml, { OVIS_RELAY_URL: ovis })).not.toContain("ovis-relay");
+    expect(shellIndexHtml(indexHtml, { OVIS_RELAY_URL: "wss://relay.example/" })).toContain('<meta name="ovis-relay" content="wss://relay.example" />');
+  });
+
   it("changes nothing else in the page", () => {
     const html = shellIndexHtml(indexHtml, { OVIS_ACCOUNT_SERVICE_URL: "off" }).replace(`  ${SHELL_META}\n  `, "").replace('href="manifest.webmanifest', 'href="/manifest.webmanifest');
     expect(html).toBe(indexHtml);
