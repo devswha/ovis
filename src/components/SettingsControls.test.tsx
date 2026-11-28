@@ -349,6 +349,41 @@ describe("a row's sentence, as its hook keeps it (#3275)", () => {
     await draw({ a: true });
     expect(row().opened).toBe(false);
   });
+
+  it("draws the copy it lays over another row's control from where the sentence was already scrolled (#3811)", async () => {
+    // the Pick row's sentence goes above it, at 140,261 and 300x50; the Change row's button is moved onto it later
+    const boxes: Record<string, DOMRect> = {
+      "row Pick": new page.window.DOMRect(100, 300, 500, 58),
+      "label Pick": new page.window.DOMRect(140, 319, 120, 20),
+      "button Pick": new page.window.DOMRect(500, 315, 80, 28),
+      "button Change": new page.window.DOMRect(3000, 270, 200, 34),
+    };
+    const { Element, HTMLElement } = page.window;
+    Object.defineProperty(Element.prototype, "getBoundingClientRect", { configurable: true, value(this: Element) {
+      const name = this.closest(".settings-row")?.querySelector(".settings-label")?.textContent;
+      const part = this.classList.contains("settings-row") ? "row" : this.classList.contains("settings-label") ? "label" : this.tagName === "BUTTON" ? "button" : "";
+      return boxes[`${part} ${this.tagName === "BUTTON" ? this.textContent : name}`] ?? new page.window.DOMRect();
+    } });
+    for (const metric of ["offsetWidth", "offsetHeight"] as const) {
+      Object.defineProperty(HTMLElement.prototype, metric, { configurable: true, get(this: HTMLElement) {
+        return this.classList.contains("settings-help") ? (metric === "offsetWidth" ? 300 : 50) : 0;
+      } });
+    }
+    await page.render(<SettingsProvider><SettingsBare.Provider value={true}>
+      <SettingsRow label="Pick" description="A sentence long enough to scroll."><button type="button">Pick</button></SettingsRow>
+      <SettingsRow label="Change"><button type="button">Change</button></SettingsRow>
+    </SettingsBare.Provider></SettingsProvider>);
+    await pointer(page.one(".settings-row:first-child"), "pointerover", "mouse");
+    await restEnds();
+    const sentence = document.querySelector<HTMLElement>(".settings-help")!;
+    expect(sentence.style.visibility).toBe("");
+    expect(document.querySelector(".settings-help-copy")).toBeNull();
+
+    sentence.scrollTop = 30;
+    boxes["button Change"] = new page.window.DOMRect(400, 270, 200, 34);
+    await does(() => window.dispatchEvent(new page.window.Event("resize") as unknown as Event));
+    expect(document.querySelector<HTMLElement>(".settings-help-copy")?.scrollTop).toBe(30);
+  });
 });
 
 describe("a row's sentence describes its control (#3275)", () => {

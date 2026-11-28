@@ -328,6 +328,10 @@ function RowSentence({ row, drawn, children }: { row: HTMLElement; drawn: RefObj
       window.removeEventListener("resize", place);
     };
   }, [row, drawn]);
+  // a copy made while its sentence is already scrolled starts where the sentence is, not at its top
+  useLayoutEffect(() => {
+    if (copy.current && box.current) copy.current.scrollTop = box.current.scrollTop;
+  }, [at]);
   const cut = at === null || at.holes.length === 0 ? undefined
     : `path(evenodd, "M0 0H${at.width}V${at.height}H0Z${at.holes.map((hole) => ` M${hole.left} ${hole.top}H${hole.right}V${hole.bottom}H${hole.left}Z`).join("")}")`;
   return createPortal(

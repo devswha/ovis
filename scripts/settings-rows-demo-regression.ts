@@ -169,7 +169,7 @@ async function dialogSearch(browser: import("playwright-core").Browser, url: str
       const shown = () => results.evaluate((region) => [...region.querySelectorAll<HTMLElement>(".settings-search-page")].filter((section) => section.checkVisibility())
         .map((section) => [section.getAttribute("aria-label"), [...section.querySelectorAll<HTMLElement>("[data-setting]")].filter((row) => row.checkVisibility()).map((row) => row.querySelector(".settings-label")?.textContent ?? "")] as const));
 
-      for (const words of ["test notification", "push alerts arrive"]) {
+      for (const words of ["test notification", "push alerts arrive", "send test"]) {
         await search.fill(words);
         const alerts = await shown();
         assert.deepEqual(alerts.map(([name]) => name), ["Alerts"], `${width}px: "${words}" finds a setting on Alerts`);
