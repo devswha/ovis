@@ -266,11 +266,14 @@ async function composingAcrossHandOver(browser: Browser, origin: string): Promis
   }
 }
 
-async function ownedPage(browser: Browser, origin: string, label: string, receipts?: { held: boolean; socket: WebSocketRoute | null }) {
+async function ownedPage(browser: Browser, origin: string, label: string, receipts?: { held: boolean; socket: WebSocketRoute | null }, secretField = false) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-newtab-typeahead-")));
   const created = await workspaceCreate({ cwd: root, label });
   const context = await browser.newContext({ viewport: desktop, locale: "en-US" });
-  await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false })));
+  await context.addInitScript((secretField) => {
+    localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false }));
+    if (secretField) localStorage.setItem("ovis:terminal-password-field", "true");
+  }, secretField);
   const page = await context.newPage();
   page.setDefaultTimeout(10_000);
   const errors: string[] = [];
@@ -335,7 +338,8 @@ async function twoCatches(browser: Browser, origin: string): Promise<void> {
 /** What an open composition commits after the new tab shows a masked prompt goes as a secret: no receipt keeps it. */
 async function secretAfterComposition(browser: Browser, origin: string): Promise<void> {
   const receipts: { held: boolean; socket: WebSocketRoute | null } = { held: false, socket: null };
-  const owned = await ownedPage(browser, origin, "ovis-test-newtab-secret", receipts);
+  // the masked field, chosen on for this desktop, says when the page has read the prompt
+  const owned = await ownedPage(browser, origin, "ovis-test-newtab-secret", receipts, true);
   const { page, context, sent, ready, held, first, added, errors } = owned;
   try {
     await screenOf(page, first).click();

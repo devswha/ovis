@@ -44,7 +44,8 @@ function watchablePane(paneId: unknown): paneId is string {
   return typeof paneId === "string" && paneId.length <= 256 && paneId.trim() !== "" && !paneId.trim().startsWith("-") && !/[\u0000-\u001f\u007f]/.test(paneId);
 }
 
-export function createSocket({ clients, present, stopped, admit, setRole, watchable, terminalHistory, terminalModes, watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime, browserSnapshot, countVisit, drainOutput, frames, herdrFailure, accountEnabled = accountOpensAll(), notices: noticeHandlers }: {
+export function createSocket({ clients, present, stopped, admit, setRole, watchable, terminalHistory, terminalModes, watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime, browserSnapshot, countVisit, drainOutput, frames, herdrFailure, chatLeft, accountEnabled = accountOpensAll(), notices: noticeHandlers }: {
+  chatLeft?: () => void;
   herdrFailure?: HerdrFailureView;
   clients: Set<Client>;
   present: Set<Client>;
@@ -240,6 +241,12 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
         const frame = typeof message.type === "string" && Object.hasOwn(handlers, message.type)
           ? handlers[message.type as keyof FrameHandlers] as (client: Client, message: ClientMessage) => void | Promise<void> : undefined;
         await frame?.(client, message);
+        if (message.type === "conversation-watch" && !message.detached) {
+          const attached = client.data.attached.get(message.pane_id);
+          if (attached) attached.visibleCards = message.enabled && message.visible_cards === true;
+        }
+        if (message.type === "detach" || (message.type === "role" && message.mode === "observe")
+          || ((message.type === "conversation-watch" || message.type === "prompt-watch") && !message.enabled)) chatLeft?.();
       } catch (error) {
         const code = error instanceof HerdrError ? error.code : "command_failed";
         // an attach that could not start names its pane: the panes of a PC share this connection, and one
@@ -256,6 +263,7 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
         websocketDiagnostics.failed(operation, "closed", { operation, close_code: code });
       }
       end(client, "closed");
+      chatLeft?.();
     },
   };
 }

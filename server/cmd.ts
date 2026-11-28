@@ -1,18 +1,23 @@
 import { constants, closeSync, fstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import slugify from "@sindresorhus/slugify";
 
-import { agentGet } from "./herdr/client.ts";
+import type { PaneProcessInfoProcess } from "../shared/herdr-api.generated.ts";
+import type { ToldSession } from "./approvals/hub.ts";
+import { readProcessBirth } from "./process-owner.ts";
+import { processStartedAt } from "./process-start.ts";
+import { reportedAgent } from "./agent-identity.ts";
+import { agentGet, paneProcessInfo } from "./herdr/client.ts";
 import { transcriptInStore as cmdTranscriptInStore, unwrittenSession } from "./transcript-store.ts";
 export { transcriptInStore as cmdTranscriptInStore, unwrittenSession } from "./transcript-store.ts";
 
 /**
  * Command Code's session store. One directory per project (the cwd), under
- * `~/.commandcode/projects/<slug>`, where `<slug>` is the cwd with its leading
- * slash dropped and every other slash turned into a dash, lowercased.
+ * `~/.commandcode/projects/<slug>`; command-code@1.93.4 uses @sindresorhus/slugify's defaults.
  */
 export function cmdSlug(cwd: string): string {
-  return cwd.replace(/^[/\\]+/, "").replace(/[/\\]/g, "-").toLowerCase();
+  return slugify(cwd) || "root";
 }
 
 export function defaultCmdHome(): string {
@@ -28,31 +33,75 @@ export function cmdModelCatalogPath(): string {
   return join(homedir(), ".pi", "agent", "commandcode-models.json");
 }
 
+/** Where integrations/cmd-session.ts names each Command Code process's session, under the Command Code home. */
+const CMD_SESSION_DIRECTORY = "ovis";
+
 type CmdTranscriptOptions = {
   agent?: Awaited<ReturnType<typeof agentGet>> | null;
+  processes?: readonly PaneProcessInfoProcess[];
+  told?: ToldSession | null;
 };
+
+/**
+ * The session the web UI's Command Code mod (integrations/cmd-session.ts) names for the pane's one
+ * Command Code process: `~/.commandcode/ovis/<pid>.json`, written by that very pid.
+ */
+async function cmdPid(paneId: string, processes?: readonly PaneProcessInfoProcess[]): Promise<number | null> {
+  const list = processes ?? (await paneProcessInfo(paneId).catch(() => undefined))?.foreground_processes ?? [];
+  const cmds = list.filter((entry) => entry.name === "command-code");
+  return cmds.length === 1 ? cmds[0]?.pid ?? null : null;
+}
+
+async function toldCmdSession(paneId: string, told: ToldSession, processes?: readonly PaneProcessInfoProcess[]): Promise<string | null> {
+  if (await cmdPid(paneId, processes) !== told.pid) return null;
+  if (process.platform !== "linux") return told.session;
+  const reading = readProcessBirth(told.pid);
+  return reading.state === "identified" && reading.birth.value === told.birth ? told.session : null;
+}
+
+async function modSessionId(paneId: string, { processes, told }: CmdTranscriptOptions): Promise<string | null> {
+  if (told) return toldCmdSession(paneId, told, processes);
+  const pid = await cmdPid(paneId, processes);
+  if (pid === null) return null;
+  const file = join(defaultCmdHome(), CMD_SESSION_DIRECTORY, `${pid}.json`);
+  const text = readCatalog(file);
+  if (!text) return null;
+  const started = processStartedAt(pid);
+  if (started !== null && (statSync(file, { throwIfNoEntry: false })?.mtimeMs ?? 0) < started) return null;
+  let binding: { pid?: unknown; sessionId?: unknown };
+  try { binding = JSON.parse(text ?? "null") ?? {}; } catch { return null; }
+  return binding.pid === pid && typeof binding.sessionId === "string" && /^[\w-]+$/.test(binding.sessionId) ? binding.sessionId : null;
+}
 
 export async function cmdTranscriptPath(
   paneId: string,
   options: CmdTranscriptOptions = {},
 ): Promise<{ path: string } | { unwritten: { id: string; path: string } } | null> {
   const agent = options.agent === undefined ? await agentGet(paneId).catch(() => null) : options.agent;
-  if (agent?.agent !== "cmd") return null;
+  if (!agent || reportedAgent(agent.agent) !== "cmd") return null;
 
-  // Only herdr's report names the session, as for pi. The process environment's
-  // COMMANDCODE_SESSION_ID is set at start-up or inherited, so after /clear, /resume or in a child it
-  // names another session: shown as this pane's, another conversation would be read as this one.
+  // herdr's report names the session, as for pi; no released herdr keeps the one Command Code
+  // sends, so without one the web UI's mod names it for the pane's own process. The process
+  // environment's COMMANDCODE_SESSION_ID is set at start-up or inherited, so after /clear, /resume
+  // or in a child it names another session: shown as this pane's, another conversation would be read.
   const session = agent.agent_session;
-  const candidate = (session?.agent === "cmd" && session.source === "herdr:cmd" && session.kind === "path"
+  const absent = session === undefined || session === null;
+  const reported = (session?.agent === "cmd" && session.source === "herdr:cmd" && session.kind === "path"
     && typeof session.value === "string") ? session.value : null;
-  if (candidate === null) return null;
+  const id = absent ? await modSessionId(paneId, options) : null;
+  if (reported === null && id === null) return null;
   // foreground_cwd can belong to a helper when herdr cannot read the group leader's cwd.
-  // Each cwd is only a store candidate; the reported session must validate inside it.
-  for (const cwd of new Set([agent.foreground_cwd, agent.cwd])) {
-    if (typeof cwd !== "string" || cwd.length === 0) continue;
-    const projectDir = defaultCmdProjectDir(cwd);
+  // Each cwd is only a store candidate; the reported session must validate inside it. A mod's id
+  // names a file in every store, so a written one anywhere wins before any store calls it unwritten.
+  const stores = [...new Set([agent.foreground_cwd, agent.cwd])]
+    .filter((cwd): cwd is string => typeof cwd === "string" && cwd.length > 0)
+    .map((cwd) => defaultCmdProjectDir(cwd))
+    .map((projectDir) => ({ projectDir, candidate: reported ?? join(projectDir, `${id}.jsonl`) }));
+  for (const { projectDir, candidate } of stores) {
     const path = cmdTranscriptInStore(candidate, projectDir);
     if (path !== null) return { path };
+  }
+  for (const { projectDir, candidate } of stores) {
     const unwritten = unwrittenSession(candidate, projectDir);
     if (unwritten !== null) return { unwritten };
   }

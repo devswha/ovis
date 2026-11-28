@@ -37,7 +37,7 @@ export const DISPATCH_MUTATIONS = {
     "/api/devices/tailnet-nodes/block", "/api/devices/tailnet-nodes/answer",
     "/api/account/link", "/api/account/enroll", "/api/account/introduce", "/api/account/records",
     "/api/account/list/head", "/api/account/list/page", "/api/account/list/name", "/api/account/list/card",
-    "/api/account/relay-account", "/api/account/one-press", "/api/account/pc-proof", "/api/account/ssh-add", "/api/alerts/webhook", "/api/alerts/webhook/test",
+    "/api/account/relay-account", "/api/account/one-press", "/api/account/move", "/api/account/pc-proof", "/api/account/ssh-add", "/api/alerts/webhook", "/api/alerts/webhook/test",
     "/api/push/subscribe", "/api/push/status", "/api/push/test", "/api/runtime",
     "/api/runtime/move", "/api/runtime/move/install", "/api/runtime/move/stop", "/api/runtime/move/stop-all",
     "/api/updates/install", "/api/updates/check", "/api/updates/cancel", "/api/herdr/update",

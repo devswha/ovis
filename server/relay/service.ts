@@ -329,12 +329,12 @@ export class RelayService {
 
   /**
    * The account a signed-in owner listed this PC under: a relay pass is asked for under it while the PC has no members.
-   * `provider`: how that owner signed in; a naming that does not say keeps the one said for the same account before.
+   * `provider`: how that owner signed in; an omitted method keeps the one for the same account. A move resets it.
    */
-  setRelayAccount(account: string, provider?: SignInMethod): boolean {
+  setRelayAccount(account: string, provider?: SignInMethod | null): boolean {
     if (!ACCOUNT_ID.test(account)) return false;
     const before = this.passAccount(), saved = this.savedRelayNaming(), named = saved?.account ?? null;
-    const method = provider ?? (named === account ? saved!.provider : null);
+    const method = provider === undefined ? (named === account ? saved?.provider ?? null : null) : provider;
     writePrivateState(this.relayAccountPath(), method === null ? { account } : { account, provider: method });
     // a device that waits under the relay tab's QR code is taken only into the account named when that code was made,
     // and only while that account is the one named (records.ts look); naming another in place of the one read here also
@@ -343,6 +343,21 @@ export class RelayService {
     const unlisted = this.passKeeper?.current() === null && this.passKeeper.refusal === "not_listed";
     if (before !== this.passAccount() || unlisted) void this.passKeeper?.refresh();
     return true;
+  }
+
+  /** The account a pass taken outside the keeper was asked under (adoptPass): the next binding change to it asks for none. */
+  private adopted: string | null = null;
+
+  /** A pass a PC move asked for under `account` before switching to it: the keeper keeps it, and the switch asks no second. */
+  adoptPass(answer: unknown, account: string): void {
+    if (this.passKeeper?.adopt(answer)) this.adopted = account;
+  }
+
+  /** The binding changed, so the next pass must name its account even if the last pass still works. */
+  accountChanged(): void {
+    const adopted = this.adopted;
+    this.adopted = null;
+    if (adopted === null || adopted !== this.passAccount()) void this.passKeeper?.refresh();
   }
 
   /**

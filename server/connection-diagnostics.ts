@@ -10,6 +10,7 @@ type AccessEvent =
   | { event: "account.snapshot.refused"; status: 403; reason: "not_listed" }
   | { event: "account.listing.replaced" }
   | { event: "account.binding.cleared"; reason: ClearReason }
+  | { event: "account.binding.moved" }
   | { event: "account.sessions.closed"; count: number }
   /** The signed list would have decided a sign-in otherwise than the snapshot did (server/account/list-follow.ts): no key, no name. */
   | { event: "account.list.differs"; snapshot: "admitted" | "none"; list: string; of: "credential" | "device" }
