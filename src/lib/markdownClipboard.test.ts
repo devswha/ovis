@@ -41,6 +41,14 @@ describe("renderedClipboardPayload", () => {
     ], { class: "markdown-code" })])).toBe(`<p>Run this</p><pre><code>${code}</code></pre>`);
   });
 
+  test("leaves out a folded code block's hidden tail, which the browser keeps in the page for Find", () => {
+    expect(html([
+      element("PRE", [element("CODE", [text("HEAD")])]),
+      element("DIV", [text("TAIL")], { class: "markdown-code-tail", hidden: "until-found" }),
+      element("P", [text("Outside")]),
+    ])).toBe("<pre><code>HEAD</code></pre><p>Outside</p>");
+  });
+
   test("keeps a selected file button's text and an image's fallback label", () => {
     expect(html([element("P", [
       element("BUTTON", [element("CODE", [text("main.ts")])], { class: "markdown-file" }),
