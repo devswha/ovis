@@ -241,7 +241,27 @@ await withDemoBrowser({ tempPrefix: "herdr-mirror-scroll-demo-", afterTransport:
         assert.equal(await page.evaluate(() => document.activeElement?.className ?? null), focused, "the tap that stops a glide does not focus the terminal");
         await waitForStep("stopped glide's writes settle", () => page.waitForFunction(() => !document.querySelector("[data-touch-fling]")));
 
-        console.log("PASS a tap that stops a mirror glide is not a click");
+        // A page put away mid-glide, then shown again, does not glide on.
+        assert.ok(await glide(-1), "a quick swipe back glides");
+        await page.evaluate(() => {
+          Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+          Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+          document.dispatchEvent(new Event("visibilitychange"));
+        });
+        await cdp.send("Page.setWebLifecycleState", { state: "frozen" });
+        await cdp.send("Page.setWebLifecycleState", { state: "active" });
+        // the writes already sent before the page went away land while it is still hidden
+        for (let n = 0; n < 5; n++) await settled(page);
+        const shownOffsets = await page.evaluate(() => {
+          delete (document as { visibilityState?: unknown }).visibilityState;
+          delete (document as { hidden?: unknown }).hidden;
+          document.dispatchEvent(new Event("visibilitychange"));
+          return (window as FixtureWindow).mirrorFixture.offsets.length;
+        });
+        for (let n = 0; n < 10; n++) await settled(page);
+        assert.equal(await terminal.evaluate((node) => node.hasAttribute("data-touch-fling")), false, "hiding the page ends the glide");
+        assert.equal((await state(page)).offsets.length, shownOffsets, "a glide does not scroll on after the page is shown again");
+        console.log("PASS a tap that stops a mirror glide is not a click, and a page put away mid-glide does not glide on");
       }
       await cdp.detach();
 

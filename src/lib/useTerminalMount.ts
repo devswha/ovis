@@ -2591,7 +2591,11 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const hiddenOnTouch = (): boolean => coarseRef.current && document.visibilityState === "hidden";
       const onVisibility = (): void => {
         const pane = paneRef.current;
-        if (document.visibilityState === "hidden") stopWatch();
+        if (document.visibilityState === "hidden") {
+          stopWatch();
+          // a page put away ends the swipe, as the browser cancels its touches: no glide waits for it to come back
+          cancelTouchRef.current();
+        }
         if (inUse()) back();
         else {
           leave();
