@@ -923,6 +923,18 @@ if (!app.requestSingleInstanceLock()) {
     const tab = tabId(id);
     if (tab !== null && typeof held === "boolean") browserFor(event)?.hold(tab, held);
   });
+  ipcMain.handle("ovis:tabs-pick", (event, id: unknown) => {
+    const tabs = browserFor(event), tab = tabId(id);
+    if (!tabs || tab === null || !steered(tabs, tab)) return null;
+    return tabs.pick(tab);
+  });
+  ipcMain.on("ovis:tabs-pick-cancel", (event, id: unknown) => {
+    const tabs = browserFor(event);
+    if (!tabs) return;
+    const tab = id === undefined ? undefined : tabId(id);
+    if (id !== undefined && tab === null) return;
+    tabs.cancelPick(tab ?? undefined);
+  });
   app.on("before-quit", (event) => {
     if (stopped) return;
     event.preventDefault();

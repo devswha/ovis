@@ -11,6 +11,7 @@ import { BrowserWindow, screen, session as sessions, WebContentsView, type Sessi
 import { mkdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { BrowserResults, type BrowserResult } from "./browserResults.ts";
+import { startElementPick, type ActivePick, type PickedBrowserElement } from "./browserPicker.ts";
 import { stageSupported } from "./browserState.ts";
 import { isIP } from "node:net";
 import { canonicalHost, decide, machineHost, ovisAt, shownAddress, urlPort, type Allowed, type BrowserPolicy } from "../../../shared/browser-policy.ts";
@@ -122,6 +123,8 @@ export class BrowserTabs {
   /** the picture being taken, which the next one waits for, and each tab's picture asked for and not yet taken */
   private pictures: Promise<void> = Promise.resolve();
   private waitingPictures = new Map<number, Promise<string | null>>();
+  /** the one-shot element pick currently active on a shown tab, if any */
+  private activePick: { tabId: number; pick: ActivePick } | null = null;
   /** the sessions this BrowserTabs has guarded: webRequest and permission handlers replace the previous ones */
   private guarded = new Set<Session>();
 
@@ -196,6 +199,7 @@ export class BrowserTabs {
   close(id: number): void {
     const tab = this.tabs.get(id);
     if (!tab) return;
+    if (this.activePick?.tabId === id) this.cancelPick(id);
     this.tabs.delete(id);
     if (this.shown === id) this.hide();
     if (this.stage && !this.stage.isDestroyed()) this.stage.contentView.removeChildView(tab.view);
@@ -228,6 +232,7 @@ export class BrowserTabs {
   }
 
   hide(): void {
+    if (this.activePick !== null) this.cancelPick();
     const tab = this.shown === null ? undefined : this.tabs.get(this.shown);
     this.shown = null;
     const window = this.window();
@@ -340,8 +345,39 @@ export class BrowserTabs {
   hold(id: number, held: boolean): void {
     const tab = this.tabs.get(id);
     if (!tab || tab.profile !== "agent" || tab.held === held) return;
+    if (!held && this.activePick?.tabId === id) this.cancelPick(id);
     tab.held = held;
     this.tell();
+  }
+
+  /**
+   * Starts a one-shot element pick on a shown tab the person controls (`mine`, or an `agent` tab
+   * they hold). Resolves to the picked element (with a cropped PNG) or null when cancelled,
+   * hidden, navigated away, or closed.
+   */
+  pick(id: number): Promise<PickedBrowserElement | null> {
+    this.cancelPick();
+    const tab = this.tabs.get(id);
+    if (!tab || tab.allowed === null || this.shown !== id || (tab.profile === "agent" && !tab.held)) {
+      return Promise.resolve(null);
+    }
+    const started = startElementPick(tab.view.webContents, {
+      address: shownAddress(tab.allowed),
+      title: tab.title,
+      bounds: () => tab.view.getBounds(),
+    });
+    const entry = { tabId: id, pick: { cancel: started.cancel } };
+    this.activePick = entry;
+    return started.promise.finally(() => {
+      if (this.activePick === entry) this.activePick = null;
+    });
+  }
+
+  cancelPick(id?: number): void {
+    const current = this.activePick;
+    if (!current || (id !== undefined && current.tabId !== id)) return;
+    this.activePick = null;
+    current.pick.cancel();
   }
 
   /**

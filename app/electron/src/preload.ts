@@ -83,6 +83,8 @@ if (isConnectionScreen) {
     navigate: (id: number, url: string): Promise<boolean> => ipcRenderer.invoke("ovis:tabs-navigate", id, url),
     go: (id: number, step: "back" | "forward" | "reload" | "stop"): void => ipcRenderer.send("ovis:tabs-go", id, step),
     hold: (id: number, held: boolean): void => ipcRenderer.send("ovis:tabs-hold", id, held),
+    pick: (id: number): Promise<unknown> => ipcRenderer.invoke("ovis:tabs-pick", id),
+    cancelPick: (id?: number): void => ipcRenderer.send("ovis:tabs-pick-cancel", id),
   });
   // the server's pages sign in to the account through the system browser (src/accountSignIn.ts);
   // main answers only its own server's pages, and only while an account service is named

@@ -26,6 +26,11 @@
   font-weight: var(--fw-medium);
 }
 
+.browser-panel-pick.is-picking {
+  background: var(--accent-tint);
+  color: var(--accent);
+}
+
 .browser-panel-refused {
   margin: 0;
   padding: var(--space-1) var(--space-3);

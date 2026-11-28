@@ -23,6 +23,7 @@ import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { composerDraftKey, composerDrafts, underSendLock } from "../lib/composerDraft.ts";
 import { tally, usageCounters, useShownCount } from "../lib/usageCounters.ts";
 import { onQuoted } from "../lib/chatQuote.ts";
+import { onComposerFiles } from "../lib/browserPick.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { commentsWait, holdsQuoteLine, messageWithComments, replyComments, replyCommentsKey, type ReplyComment } from "../lib/replyComments.ts";
 import { ReplyCommentsChip, useReplyComments } from "./ReplyComments.tsx";
@@ -997,6 +998,13 @@ export function Composer({
     },
     [pumpUploads, syncPlaces, t],
   );
+
+  useEffect(() => {
+    if (viewOnly) return;
+    return onComposerFiles(paneStorageId(machineId, paneId), (files) => {
+      uploadImages(files, textRef.current.length);
+    });
+  }, [machineId, paneId, uploadImages, viewOnly]);
 
   const retryUpload = useCallback((attachment: Attachment) => {
     setNote(null);
