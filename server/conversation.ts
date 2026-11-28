@@ -139,8 +139,8 @@ export function readToldModes(read: ((paneId: string) => ToldMode | null) | null
 }
 
 /** The session the hook of a Copilot Ovis started in a pane last told it runs, with the process that told it (the approval hub's). */
-let toldSession: (paneId: string) => ToldSession | null = () => null;
-export function readToldSessions(read: ((paneId: string) => ToldSession | null) | null): void {
+let toldSession: (paneId: string, kind: string) => ToldSession | null = () => null;
+export function readToldSessions(read: ((paneId: string, kind: string) => ToldSession | null) | null): void {
   toldSession = read ?? (() => null);
 }
 
@@ -1860,7 +1860,7 @@ export async function ompTranscriptPath(paneId: string, cwd: string, known?: Kno
  * still runs (the same start), or null.
  */
 function hookCopilotSession(paneId: string, pid: number): string | null {
-  const told = toldSession(paneId);
+  const told = toldSession(paneId, "copilot");
   if (told === null || told.pid !== pid || told.birth === null) return null;
   const now = readProcessBirth(pid);
   return now.state === "identified" && now.birth.value === told.birth ? told.session : null;
@@ -2152,7 +2152,7 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
       return { source: "pi-transcript", path: found.path, piAgentDir: found.agentDir, piFile: found.identity };
     }
     if (agent === "cmd") {
-      const found = await cmdTranscriptPath(paneId);
+      const found = await cmdTranscriptPath(paneId, { told: toldSession(paneId, "cmd"), processes: known?.foreground_processes });
       if (found === null) throw new ConversationUnavailable("no_session_path");
       if ("unwritten" in found) throw new ConversationNotStarted(found.unwritten.id, "cmd-transcript", found.unwritten.path);
       return { source: "cmd-transcript", path: found.path };

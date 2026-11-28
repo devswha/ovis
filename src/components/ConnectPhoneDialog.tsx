@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type FormEvent, type MutableRefObject, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
-import { Check, RefreshCw, Smartphone, X } from "lucide-react";
+import { Check, Copy, RefreshCw, Smartphone, X } from "lucide-react";
 
 import "./ConnectPhoneDialog.css";
 import "./DevicesPanel.css";
@@ -10,6 +10,7 @@ import type { AddPcPreset } from "../lib/actions.ts";
 import { indexedAccountStore, type AccountProvider, type AccountSession } from "../lib/account/store.ts";
 import { pcAccountStatus, type PcAccountStatus } from "../lib/account/join.ts";
 import { listOfferedPc } from "../lib/account/addThisPc.ts";
+import { cancelPcMove, MOVE_STATUS_MS, moveThisPc, pcMoveStatus } from "../lib/account/movePc.ts";
 import { decodeOffer } from "../../shared/relay-offer.ts";
 import { AccountService } from "../lib/account/service.ts";
 import type { AddConnectionTab } from "../lib/addConnectionRequest.ts";
@@ -25,7 +26,7 @@ import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { announcePairingCode, announceQrCodeEnded, DEVICES_CHANGED_EVENT, inRelayShell, PAIRING_CODE_EVENT, tellOtherWindowsQrCodeEnded, type AnnouncedCode, type RelayState } from "../lib/useRelay.ts";
-import type { PairedDevice, PairingCode, PortalStatus, RemoteAccess } from "../../shared/protocol.ts";
+import type { AccountMoveAnswer, PairedDevice, PairingCode, PortalStatus, RemoteAccess } from "../../shared/protocol.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { PROVIDER_NAMES } from "./AccountPcs.tsx";
 import { methodRefusalText } from "./AccountMethods.tsx";
@@ -85,6 +86,26 @@ export const relayPending = (relay: RelayState): boolean => !relay.unsupported &
  */
 export function signInLink(app: string, serverId: string, provider: AccountProvider | null): string {
   return `${new URL(app).origin}/s/${serverId}/${provider === null ? "" : `#sign-in=${provider}`}`;
+}
+
+/**
+ * This PC's page in the hosted app (signInLink without a sign-in), the address its QR code opens, to paste in any
+ * browser. Copying asks nothing of the PC; where the browser will not copy, the address is selected instead.
+ */
+function PcAddress({ url }: { readonly url: string }) {
+  const t = useT();
+  const shown = useRef<HTMLElement>(null);
+  const [copied, setCopied] = useState(false);
+  const label = copied ? t("Copied") : t("Copy address");
+  return (
+    <p className="connect-pc-address" data-testid="connect-pc-address">
+      <span className="connect-pc-address-label">{t("This PC's address")}</span>
+      <code ref={shown}>{url}</code>
+      <button type="button" className="icon-button" aria-label={label} title={label} onClick={() => void copyText(url, shown.current).then(setCopied)}>
+        {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+      </button>
+    </p>
+  );
 }
 
 const relayOn = (relay: RelayState): boolean => relay.status !== null && relay.status.blocked === null && relay.status.phase !== "off";
@@ -882,6 +903,76 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
   const takeSignedInNow = useCallback((): SignedInHere | null => takeSignedInHere() ?? (mineNow === null ? null : { account: mineNow, adds: false }), [takeSignedInHere, mineNow]);
   /** signed in, the tab has no sign-in of its own: Add this PC's one sign-in again is this page's own */
   const signInAgain = useSignInAgainHere();
+  const moveEnabled = signInAgain !== undefined && account?.opensAll?.() === true;
+  const [switchSignIn, setSwitchSignIn] = useState<string | null>(null);
+  const [moveTo, setMoveTo] = useState<string | null>(null);
+  const [moveAnswer, setMoveAnswer] = useState<AccountMoveAnswer | "failed" | null>(null);
+  const moveRequest = useRef<AbortController | null>(null);
+  /** the destination of a move the PC answered pending: it finishes that by itself, and this tab reads until it has */
+  const [settling, setSettling] = useState<string | null>(null);
+  const [settleReads, setSettleReads] = useState(0);
+  const acceptMove = useCallback((answer: AccountMoveAnswer, into?: string) => {
+    setMoveAnswer(answer);
+    setSettling(answer.state === "pending" && into !== undefined ? into : null);
+    if (answer.state === "moved") setPcAccount(answer.account);
+  }, []);
+  useEffect(() => {
+    if (settling === null) return;
+    const read = new AbortController();
+    const timer = setTimeout(() => {
+      void pcMoveStatus(read.signal).then(({ into, aborted }) => {
+        if (read.signal.aborted) return;
+        if (into === settling) setSettleReads((reads) => reads + 1);
+        else if (into === null && aborted?.account === settling) acceptMove(aborted);
+        else if (into !== null) setSettling(null);
+        // the journal went with no notice of giving up: moved only if the PC is in the destination now
+        else return pcAccountStatus(apiFetch).then(({ account: now }) => {
+          if (read.signal.aborted) return;
+          if (now === settling) acceptMove({ state: "moved", account: settling });
+          else { setSettling(null); setMoveAnswer(null); setPcAccount(now); }
+        });
+      }).catch(() => { if (!read.signal.aborted) setSettleReads((reads) => reads + 1); });
+    }, MOVE_STATUS_MS);
+    return () => { read.abort(); clearTimeout(timer); };
+  }, [settling, settleReads, acceptMove]);
+  const startMove = useCallback((into: string, resuming: boolean) => {
+    if (moveRequest.current !== null) return;
+    const run = new AbortController();
+    moveRequest.current = run;
+    setMoveTo(into);
+    setMoveAnswer(null);
+    void moveThisPc(into, run.signal, resuming).then((answer) => {
+      if (!run.signal.aborted) acceptMove(answer, into);
+    }, (error: unknown) => {
+      if (run.signal.aborted) return;
+      console.warn("Ovis: the PC move could not finish", error instanceof Error ? error.name : error);
+      setMoveAnswer("failed");
+    }).finally(() => {
+      if (moveRequest.current === run) { moveRequest.current = null; setMoveTo(null); }
+    });
+  }, [acceptMove]);
+  useEffect(() => {
+    if (!active || !moveEnabled || pcAccount === undefined) return;
+    const read = new AbortController();
+    void pcMoveStatus(read.signal).then(({ into, aborted }) => {
+      if (read.signal.aborted || moveRequest.current !== null) return;
+      if (into !== null) startMove(into, true);
+      else if (aborted !== undefined) acceptMove(aborted);
+    }, (error: unknown) => {
+      if (!read.signal.aborted) console.warn("Ovis: the pending PC move could not be read", error instanceof Error ? error.name : error);
+    });
+    return () => read.abort();
+  }, [active, moveEnabled, pcAccount, accountId, acceptMove, startMove]);
+  useEffect(() => () => { moveRequest.current?.abort(); moveRequest.current = null; }, []);
+  const stopMove = (into: string) => {
+    moveRequest.current?.abort();
+    const cancelling = new AbortController();
+    moveRequest.current = cancelling;
+    setMoveTo(into);
+    void cancelPcMove(into).then((answer) => acceptMove(answer, into), () => setMoveAnswer("failed")).finally(() => {
+      if (moveRequest.current === cancelling) { moveRequest.current = null; setMoveTo(null); }
+    });
+  };
   useLayoutEffect(() => {
     const view = signInView.current;
     if (!signedIn || signedInProvider === null || view === null || view.closest("[hidden]") !== null) return;
@@ -928,8 +1019,7 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
   );
   const startFailure = switchError === null && startError !== null && <p className="settings-hint relay-error" role="alert">{t("The relay did not start: {message}", { message: startError })}</p>;
   const pcIn = pcAccount !== undefined ? pcAccount : joinBySignIn ? (signedIn ? accountId : null) : null;
-  // a sign-in to another account than the one this PC is in (a way in that account does not have makes a new account)
-  // is no sign-in to this PC: the tab stays its sign-in buttons, so the right one can be picked (owner #25)
+  // A sign-in to another account is no sign-in to this PC. Moving it is an explicit action at its own window.
   const inThisAccount = signedIn && !(accountId !== null && pcIn !== null && accountId !== pcIn);
   const mine = signedIn ? accountId : null;
   const bare = inThisAccount && pcIn !== null && relay.status?.phase === "online";
@@ -938,20 +1028,40 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
       pcAccount={pcIn} onPcAccount={setPcAccount} onPcStatus={onPcStatus} onPairingHeld={onPairingHeld} onRevokedAll={onRevokedAll}
       first={bare} pairHere={addsOverSsh} {...(pairShared === undefined ? {} : { pairShared })} relayControls={ownSwitch ? <>{relaySwitch}{switchFailure}{startFailure}</> : null} />
   );
-  // signed out the tab is its sign-in buttons: the relay's own switch stays in More settings. Keyed by the account, so
-  // a sign-in that ended in another account shows the buttons again
+  const moveGuide = moveEnabled && elsewhere !== null && accountId !== null && switchSignIn !== accountId;
+  const abortedMove = moveAnswer !== null && moveAnswer !== "failed" && moveAnswer.state === "aborted" ? moveAnswer : null;
+  const abandonedListing = !moveEnabled || abortedMove === null ? null : (
+    <p className="settings-hint" role="status">{t("This PC is still listed in {account}; remove it there if you don't want it.", {
+      account: abortedMove.account === accountId && provider !== null ? PROVIDER_NAMES[provider] : abortedMove.account,
+    })}</p>
+  );
+  // Signed out or choosing the PC's current account, keep the existing sign-in path.
   if (!inThisAccount) return (
     <>
       <div ref={signInView} className="connect-signin" data-testid="connect-signin">
         {signInStatus}
         {linkProblem}
-        {otherAccountLine}
-        <RelaySignIn key={accountId ?? ""} service={account.service} onSignedIn={(session, refusal) => {
-          signedInHere.current = { account: session.account, adds: false };
-          setSignedInProvider(session.provider);
-          setLinkRefusal(refusal === undefined ? null : { account: session.account, refusal });
-          account.onSignedIn(refusal === undefined && on && pcIn !== null && session.account === pcIn);
-        }} />
+        {moveGuide ? <>
+          <p className="settings-hint" role="note" data-testid="connect-other-account">{t("This PC is in another account.")}</p>
+          <div className="account-device-actions">
+            <button type="button" className="btn btn-primary" disabled={moveTo !== null} aria-busy={moveTo !== null}
+              onClick={() => startMove(accountId, false)}>{t("Move this PC to this account")}</button>
+            {moveTo !== null || (moveAnswer !== null && moveAnswer !== "failed" && moveAnswer.state === "pending")
+              ? <button type="button" className="btn btn-ghost" onClick={() => stopMove(accountId)}>{t("Cancel")}</button>
+              : <button type="button" className="btn btn-ghost" onClick={() => setSwitchSignIn(accountId)}>{t("Sign in with the PC's account")}</button>}
+          </div>
+          {(moveAnswer === "failed" || moveAnswer?.state === "sign_in")
+            && <p className="settings-hint" role="alert">{t("Couldn't move this PC. Try again.")}</p>}
+        </> : <>
+          {otherAccountLine}
+          <RelaySignIn key={accountId ?? ""} service={account.service} onSignedIn={(session, refusal) => {
+            signedInHere.current = { account: session.account, adds: false };
+            setSignedInProvider(session.provider);
+            setLinkRefusal(refusal === undefined ? null : { account: session.account, refusal });
+            account.onSignedIn(refusal === undefined && on && pcIn !== null && session.account === pcIn);
+          }} />
+        </>}
+        {abandonedListing}
       </div>
       {qr(false)}
     </>
@@ -1444,6 +1554,7 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pr
   // standing in another account than this page's, nothing is said: the tab above is its sign-in buttons (owner #25)
   const standingLabel = standing && signedIn && here !== "other";
   const phoneLink = standing && online && serverId !== null && relay.status !== null ? signInLink(relay.status.app, serverId, here === "mine" ? provider : null) : null;
+  const address = standing && here === "mine" && online && serverId !== null && relay.status !== null ? <PcAddress url={signInLink(relay.status.app, serverId, null)} /> : null;
   const labelled = standing ? standingLabel : told || shown;
   return (
     <section className="connect-account-qr" aria-labelledby={labelled ? id : undefined} data-testid="connect-account-qr" data-account={here ?? undefined} data-first={first || undefined}>
@@ -1456,11 +1567,13 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pr
             </div>
           </PhoneScan>
           <p ref={heading} className="settings-label" id={id} tabIndex={-1}>{t("This PC is in your account.")}</p>
+          {address}
           {enrolling && <p className="settings-description connect-account-qr-warning" role="status">{t("Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.")}</p>}
         </>
       ) : standing ? (
         <>
           {standingLabel && <p ref={heading} className="settings-label" id={id} tabIndex={-1}>{here === "mine" ? t("This PC is in your account.") : t("Sign in to this PC's account.")}</p>}
+          {address}
           {here === "mine" && enrolling && <p className="settings-description connect-account-qr-warning" role="status">{t("Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.")}</p>}
           {!online && <>{relayControls}{relayState}</>}
           {phoneLink !== null && <PhoneScan><QrCode value={phoneLink} label={t("QR code that opens this PC in the Ovis app")} size={132} /></PhoneScan>}

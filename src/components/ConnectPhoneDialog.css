@@ -363,6 +363,34 @@
   background: var(--bg-elevated);
 }
 
+/* one line: the label, the address cut short at the end, its copy button */
+.connect-pc-address {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.connect-pc-address-label {
+  flex: none;
+  color: var(--text-dim);
+}
+
+.connect-pc-address code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-strong);
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connect-pc-address .icon-button {
+  flex: none;
+}
+
 .connect-account-qr .phone-actions {
   flex-wrap: wrap;
 }

@@ -6,13 +6,13 @@ import type { Socket } from "bun";
 import { AGENT_LABELS } from "../agents-routes.ts";
 import { LINE_BYTES } from "../herdr/client.ts";
 import { makeLineReader } from "../herdr/line-reader.ts";
-import { cmdQuote, powershellNativeArgs, SHELL_AGENTS, shellCommandLine } from "../shell-agent.ts";
+import { cmdQuote, plainPosixShell, powershellNativeArgs, SHELL_AGENTS, shellCommandLine } from "../shell-agent.ts";
 import { descendantProcesses, type ProcessRow, windowsProcessTable } from "../windows-processes.ts";
 import { jobProcessesBelow } from "../foreground-job.ts";
 import { PAINT_END } from "./attach-session.ts";
 import { type HcConnection, HcError } from "./connection.ts";
 import { foreignLayout, OVIS_LAYOUT_DOC, type PaneDirection } from "./layout-doc.ts";
-import { isHermesInstalledLauncher, paneSession } from "../agent-identity.ts";
+import { isCmdProcess, isHermesInstalledLauncher, paneSession } from "../agent-identity.ts";
 import { AGENT_CATALOG } from "../../shared/agent-catalog.ts";
 import { agentInfoOf, agentOfStatus, agyPlanReview, type CoreHost, coreHost, type FirstTurn, opencodeRecords, type SessionOf, type HcStatus, type HcTerminal, hcKeyName, HERDR_PROTOCOL, isRecord, keyBytes, LAYOUT_DOC, onOtherMachine, OTHER_WORKSPACE_ID, processInfoOf, runsCommandString, SPACE_LABEL, TAB_LABEL, WORKSPACE_NAME_LABEL } from "./snapshot.ts";
 import { type CoreChange, coreModel, type SessionNote } from "./core-model.ts";
@@ -313,10 +313,6 @@ const AGENT_COMMANDS: Readonly<Record<string, string>> = { cursor: "cursor-agent
  * (`/bin/bash`, a login `-zsh`): the POSIX ones, and fish, which reads the same quoting for an
  * agent's name and plain arguments (nu does not).
  */
-const SHELL = /(?:^|\/)-?(?:sh|bash|dash|zsh|ksh|mksh|ash|fish)$/u;
-/** The flags a plain interactive shell may be started with; anything else (`-c`) runs a program in it. */
-const SHELL_FLAGS = new Set(["-l", "--login", "-i"]);
-const plainShell = (argv: readonly string[]): boolean => SHELL.test(argv[0] ?? "") && argv.slice(1).every((arg) => SHELL_FLAGS.has(arg));
 /** The switches that leave PowerShell an interactive shell. */
 const POWERSHELL_SWITCHES = new Set(["-nologo", "-noexit", "-noprofile", "-login"]);
 /** How the `-Command` of hc's own PowerShell begins (a live record, hc 0.1.17): its prompt hook, which keeps the terminal's cwd current. */
@@ -339,7 +335,7 @@ type StartShell = "posix" | "powershell" | "pwsh" | "cmd";
  * there; WSL's bash runs the agent where this PC's process table does not see it.
  */
 function startShellOf(argv: readonly string[], platform: NodeJS.Platform): StartShell | null {
-  if (platform !== "win32") return plainShell(argv) ? "posix" : null;
+  if (platform !== "win32") return plainPosixShell(argv) ? "posix" : null;
   const name = windowsProgram(argv[0] ?? "");
   const args = argv.slice(1);
   // cmd runs what follows a /c, /k or /r, even one run together with another switch (`/q/c`), and
@@ -893,12 +889,12 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     // herdr starts an agent by its kind (its command is its kind) from herdr's own manifests; hc has
     // none, so the kinds Ovis knows are offered, and the start types the command into the pane's
     // shell as a person would. Ovis's own shell-started agents are offered and started by the
-    // server itself (shell-agent.ts), through pane.send_text. On Windows that shell is PowerShell or
-    // cmd (startShellOf), and another machine's terminals, whose programs its table does not show,
-    // are offered no kind; nor is Command Code, whose command `cmd` is cmd.exe there.
+    // server itself (shell-agent.ts), through pane.send_text, except Command Code, which uses
+    // agent.start here so the adapter checks for an idle shell. Its resolved executable is local, and
+    // `cmd` is cmd.exe on Windows; neither Windows nor a machine-scoped adapter offers Command Code.
     async "server.agent_manifests"() {
       if (programsUnseen) return { manifests: [] };
-      const manifests = Object.keys(AGENT_LABELS).filter((agent) => !Object.hasOwn(SHELL_AGENTS, agent) && !(platform === "win32" && agent === "cmd"))
+      const manifests = Object.keys(AGENT_LABELS).filter((agent) => agent === "cmd" ? platform !== "win32" && !options.otherMachine : !Object.hasOwn(SHELL_AGENTS, agent))
         .map((agent) => ({ agent, source: "herdr-core", source_kind: "herdr-core", local_override_shadowing_remote: false }));
       return { manifests };
     },
@@ -931,7 +927,8 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
         const front = ready.foreground;
         const frontArgv = front?.argv ?? (front ? [front.name] : []);
         if ([own[0], frontArgv[0]].some((program) => /(?:^|\/)-?fish$/u.test(program ?? "")) && args.some((arg) => arg.includes("\\"))) throw new AdapterError("invalid_params", "fish would read a backslash in an argument differently");
-        const agentArgs = program === undefined ? args : [];
+        // Command Code's program is the agent itself; the Codex launcher already carries its args.
+        const agentArgs = program === undefined || kind === "cmd" ? args : [];
         const socket = params["ovis_agent_socket"], tokenFile = params["ovis_agent_token_file"];
         const door = socket !== undefined || tokenFile !== undefined;
         if (door && (platform === "win32" || typeof socket !== "string" || typeof tokenFile !== "string" || !isAbsolute(socket) || !isAbsolute(tokenFile)
@@ -961,7 +958,11 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
         if (programs?.length) {
           left = true;
           const installedHermes = kind === "hermes" && platform !== "win32" && isHermesInstalledLauncher(record.foreground?.argv ?? []);
-          if (installedHermes || programs.flat().some((part) => part === command || part.startsWith(`${command}-`) || part.startsWith(`${command}.`))) return { type: "agent_started", pane_id: paneId };
+          const front = record.foreground;
+          const started = kind === "cmd"
+            ? !!front && isCmdProcess(front.argv?.length ? front.argv : [front.name])
+            : installedHermes || programs.flat().some((part) => part === command || part.startsWith(`${command}-`) || part.startsWith(`${command}.`));
+          if (started) return { type: "agent_started", pane_id: paneId };
         } else if (programs && left) throw new AdapterError("agent_start_failed", `${kind} did not start in pane ${paneId}`);
         if (Date.now() > deadline) throw new AdapterError("agent_start_failed", `${kind} did not come up in pane ${paneId}`);
         await Bun.sleep(100);

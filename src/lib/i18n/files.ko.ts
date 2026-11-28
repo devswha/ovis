@@ -182,7 +182,7 @@ export const FILES_KO: Record<string, string> = {
   "This PC's bridge cannot show pull requests yet.": "이 PC의 브리지는 아직 풀 리퀘스트를 보여 줄 수 없습니다.",
   "This branch has no pull request.": "이 브랜치에는 풀 리퀘스트가 없습니다.",
   "This pull request is closed.": "이 풀 리퀘스트는 닫혔습니다.",
-  "This repository has no GitHub remote.": "이 저장소에는 GitHub 원격이 없습니다.",
+  "No remote of this repository is on a GitHub host gh knows. For GitHub Enterprise, run gh auth login --hostname with its host there.": "이 저장소의 원격 중 gh가 아는 GitHub 호스트에 있는 것이 없습니다. GitHub Enterprise라면 그 PC에서 해당 호스트로 gh auth login --hostname을 실행하세요.",
   "Too long for the message box; shorten the draft first.": "입력칸에 넣기에는 너무 깁니다. 먼저 초안을 줄이세요.",
   "gh took too long to answer.": "gh 응답이 너무 오래 걸렸습니다.",
   "{count} more on GitHub": "GitHub에 {count}개 더",

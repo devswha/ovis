@@ -7,7 +7,7 @@ import { codeIsFilePath, OpenFileContext, splitFilePaths } from "../lib/filePath
 import { CodeFileName, FilePathLink } from "./FilePathLink.tsx";
 import { fileUriPath } from "../../shared/fileUri.ts";
 import { shouldOpenWebPage, WebPanelContext } from "../lib/webPanel.ts";
-import { MachineContext } from "../lib/machineContext.tsx";
+import { MachineContext, MachineRosterContext } from "../lib/machineContext.tsx";
 import { CHAT_HIGHLIGHT_LIMIT, languageForFence } from "../lib/highlight.ts";
 import { HighlightedCode } from "./HighlightedCode.tsx";
 import { useT } from "../lib/i18n.ts";
@@ -23,7 +23,7 @@ import type { SkillMatcher } from "../lib/skillMentions.ts";
 import { previewChunks } from "../lib/textPreview.ts";
 import type { GalleryImage } from "../lib/imageViewer.ts";
 import { useSettings } from "../lib/settings.ts";
-import { ExternalLink, isWebLink, openExternal } from "../lib/externalLink.ts";
+import { ExternalLink, isWebLink, openExternal, openRemoteLoopbackLink } from "../lib/externalLink.ts";
 
 const SkillMatcherContext = createContext<SkillMatcher | null>(null);
 
@@ -265,12 +265,18 @@ function Inline({ nodes, interactive = true, standalone = false }: { nodes: Inli
   const skillMatcher = useContext(SkillMatcherContext);
   const openWebPage = useContext(WebPanelContext);
   const machineId = useContext(MachineContext);
+  const roster = useContext(MachineRosterContext);
   const { settings } = useSettings();
   const webClick = (href: string) => (event: MouseEvent<HTMLAnchorElement>): void => {
     if (shouldOpenWebPage(event, href, openWebPage, machineId)) event.preventDefault();
-    else if (settings.reuseExternalLinkTab && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.altKey && isWebLink(href)) {
-      event.preventDefault();
-      openExternal(href, "link", true);
+    else if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.altKey && isWebLink(href)) {
+      const machine = roster?.current.find((candidate) => candidate.id === machineId);
+      const forwarded = openRemoteLoopbackLink(href, machine);
+      if (forwarded) event.preventDefault();
+      else if (settings.reuseExternalLinkTab) {
+        event.preventDefault();
+        openExternal(href, "link", true);
+      }
     }
   };
   return <>{nodes.map((node, index) => {

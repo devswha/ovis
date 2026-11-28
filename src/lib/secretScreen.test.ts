@@ -24,6 +24,21 @@ describe("read off libghostty's screen", () => {
     return term;
   };
 
+  test("sudo's pwfeedback stars after the prompt leave it asking, so the keys typed stay secret", async () => {
+    const term = await attached(80);
+    const screen = createSecretScreen(term, () => true);
+    const SUDO = "[sudo] password for alice:";
+    try {
+      await parse(term, frame(80, ["$ sudo true", `${SUDO} `, ""], [1, 27]));
+      expect(screen.read("a")).toBe(SUDO);
+      await parse(term, frame(80, ["$ sudo true", `${SUDO} ***`, ""], [1, 30]));
+      expect(screen.read("a")).toBe(SUDO);
+      // control: once answered the cursor leaves the line, and the starred prompt asks no more
+      await parse(term, frame(80, ["$ sudo true", `${SUDO} ***`, ""], [2, 0]));
+      expect(screen.read("a")).toBeNull();
+    } finally { term.dispose(); }
+  });
+
   test("a prompt asks while the cursor is on its line, and is answered once the cursor has left it", async () => {
     const term = await attached(80);
     const screen = createSecretScreen(term, () => true);

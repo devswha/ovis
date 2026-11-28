@@ -75,6 +75,7 @@ const CARD_TEXT = [
   "Approve",
   "Deny",
   "Allow once",
+  "Answer in terminal",
   "Always allow",
   "Run a shell command",
   "Edit {file}",

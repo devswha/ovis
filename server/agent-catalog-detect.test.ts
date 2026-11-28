@@ -5,7 +5,7 @@ import { basename, delimiter, join } from "node:path";
 
 import { AGENT_CATALOG, type AgentCatalogEntry } from "../shared/agent-catalog.ts";
 import { AgentDetector, catalogLocator, LOGIN_PATH_KEPT_MS, runVersion, TIMEOUT_KEPT_MS, versionSpawn } from "./agent-catalog-detect.ts";
-import type { LoginPathResult } from "./shell-agent.ts";
+import type { LoginPathProbe, LoginPathResult } from "./shell-agent.ts";
 
 const entry = (id: string): AgentCatalogEntry => AGENT_CATALOG.find((candidate) => candidate.id === id)!;
 
@@ -30,6 +30,7 @@ describe.skipIf(process.platform === "win32")("AgentDetector", () => {
     stub("codex", "echo 'codex-cli 0.150.0'");
     stub("omp", "echo 'usage: omp [options]'");
     stub("hermes", "echo 'Hermes Agent v0.21.5'");
+    stub("agy", "echo '1.5.14'");
   });
   afterAll(() => {
     rmSync(bin, { recursive: true, force: true });
@@ -44,6 +45,37 @@ describe.skipIf(process.platform === "win32")("AgentDetector", () => {
     stub("claude", "echo '2.1.320 (Claude Code, updated)'");
     expect(await detector.state(entry("claude"), "linux")).toMatchObject({ version: "2.1.320" });
     expect(runsOf("claude")).toBe(2);
+  });
+
+  it("reads Antigravity auth mode afresh while keeping its version cached", async () => {
+    const initialRuns = runsOf("agy");
+    const dir = join(emptyHome, ".gemini", "antigravity-cli");
+    mkdirSync(dir, { recursive: true });
+    const settings = join(dir, "settings.json");
+    const detector = new AgentDetector({ home: emptyHome, env: {}, locate });
+    expect(await detector.state(entry("agy"), "linux")).not.toHaveProperty("auth_mode");
+    for (const invalid of [
+      '{"modelProvider":"Gemini"}',
+      '{"modelProvider":"gemini "}',
+      '{"modelProvider":"gemini"',
+      '{"modelProvider":"gemini"}' + " ".repeat(1024 * 1024),
+    ]) {
+      writeFileSync(settings, invalid);
+      expect(await detector.state(entry("agy"), "linux")).not.toHaveProperty("auth_mode");
+    }
+    writeFileSync(settings, '{"modelProvider":"gemini"}');
+    expect(await detector.state(entry("agy"), "linux")).toMatchObject({ auth_mode: "gemini-api-key" });
+    rmSync(settings);
+    expect(await detector.state(entry("agy"), "linux")).not.toHaveProperty("auth_mode");
+    expect(runsOf("agy")).toBe(initialRuns + 1);
+  });
+
+  it("reads Antigravity auth mode from the configured app-data directory", async () => {
+    const override = join(emptyHome, "agy-override");
+    mkdirSync(override);
+    writeFileSync(join(override, "settings.json"), '{"modelProvider":"gemini"}');
+    const detector = new AgentDetector({ home: emptyHome, env: { ANTIGRAVITY_APP_DATA_DIR: override }, locate });
+    expect(await detector.state(entry("agy"), "linux")).toMatchObject({ auth_mode: "gemini-api-key" });
   });
 
   it("reads the version again when the executable is replaced by another file of the same size and time", async () => {
@@ -302,5 +334,29 @@ describe("catalogLocator.refresh", () => {
     await reading;
     await Promise.all(refreshes);
     expect(runs).toBe(2);
+  });
+
+  it("answers a read a profile edit superseded with the newer read's PATH, the one searchPath reports", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ovis-catalog-superseded-"));
+    try {
+      const old = join(root, "old"), agents = join(root, "agents"), runtime = join(root, "runtime");
+      for (const dir of [old, agents, runtime]) mkdirSync(dir);
+      for (const dir of [old, agents]) writeFileSync(join(dir, "claude"), "#!/bin/sh\n", { mode: 0o755 });
+      const first = Promise.withResolvers<LoginPathResult>();
+      const second = Promise.withResolvers<LoginPathResult>();
+      let revision = 0;
+      const probe: LoginPathProbe = Object.assign((_signal: AbortSignal, wanted?: number | null) => wanted === 0 ? first.promise : second.promise, { profileRevision: async () => revision });
+      const locate = catalogLocator({ probe, servicePath: () => "" });
+      const cold = locate("claude");
+      revision++;
+      const edited = locate("claude");
+      first.resolve({ path: old });
+      second.resolve({ path: `${agents}${delimiter}${runtime}` });
+      const newer = join(agents, "claude");
+      expect(await Promise.all([cold, edited])).toEqual([newer, newer]);
+      expect(locate.searchPath!()).toBe(`${agents}${delimiter}${runtime}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -53,8 +53,9 @@ public class OvisAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationPre
             self.appleCall?.reject("The sign-in was replaced", "cancelled")
             self.appleCall = call
             let request = ASAuthorizationAppleIDProvider().createRequest()
-            // no name, no email: the account service keeps neither
-            request.requestedScopes = []
+            // the email only, signed into the identity token: the account service reads it there to link a first
+            // sign-in to the account that has it, and keeps a keyed fingerprint, never the address; no name
+            request.requestedScopes = [.email]
             request.nonce = nonce
             let controller = ASAuthorizationController(authorizationRequests: [request])
             controller.delegate = self

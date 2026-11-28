@@ -34,6 +34,7 @@ import { NoPcOnline } from "./NoPcOnline.tsx";
 import { EnrollmentStatus } from "./EnrollmentStatus.tsx";
 import { ADD_PC_FROM_KEY } from "./MachineSidebar.tsx";
 import { NewPcNotices } from "./NewPcNotices.tsx";
+import { JoinedNotice } from "./JoinedNotice.tsx";
 import { canScanQr, OpenState, OtherWayButton, scanQr, useAddressOpen, useConnectScreen } from "./RelayAddPc.tsx";
 import { INSTALLER_COMMAND, PcApprovalWait, type PlainReason, PLUGIN_COMMANDS, RelayShellCardContent, TypedDigits } from "./RelayShellScreens.tsx";
 import { RelayStepFrame, type RelayStepBack } from "./RelayStepFrame.tsx";
@@ -362,7 +363,7 @@ export function RelayShell(props: RelayShellProps) {
       <main className={frontClass(myPcsShown)} data-relay-state={stateName} data-account-state={account.kind}>
         {/* one wrapper whether the dialog is open or not: swapping it in would remount the page, losing the control that opened it before its focus trap records it */}
         <div className="relay-shell account-centered relay-shell-signin" inert={addingPc || undefined}>
-          {frontView(<>{noneOnline}<NewPcNotices /><AccountJoinRequests /><UnconfirmedPcNotices tellConfirmed={false} onSignInAgain={props.onSignInAgain ?? onSignIn} /><ListAlarmLine />{methodError}{listUnread}{directoryError}</>, true)}
+          {frontView(<>{noneOnline}<JoinedNotice /><NewPcNotices /><AccountJoinRequests /><UnconfirmedPcNotices tellConfirmed={false} onSignInAgain={props.onSignInAgain ?? onSignIn} /><ListAlarmLine />{methodError}{listUnread}{directoryError}</>, true)}
           {/* a change here (a Remove) that was refused because an earlier one still waits: that one's card, to try it again or cancel it */}
           <ListWaitingNotice />
           {/* the one-time notice of the move of an account that was in use onto its list, or why this device did not join it */}

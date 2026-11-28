@@ -25,6 +25,7 @@ import { createTerminalRegistry } from "./terminals.ts";
 type CoreOptions = Parameters<typeof createTerminalRegistry>[0]["options"] & Parameters<typeof createSubmitText>[0]["options"]
   & Parameters<typeof createPendingDelivery>[0]["options"] & Parameters<typeof createStatusHub>[0]["options"] & {
     acp?: AcpChildren | null;
+    chatLeft?: () => void;
     terminalAttach?: boolean | (() => Promise<boolean>);
     sidecar?: boolean | (() => boolean);
     attachRetryForMs?: number;
@@ -84,12 +85,13 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
   const stopAcp = options.acp?.onStatus(child => {
     if (child.client.status === "unknown") holdPendingPane(child.terminal, { code: "input_not_ready", message: "The ACP connection changed; review the pending message before sending" });
   });
-  const { mayType, authorizeSocket, admit, setRole, watchPane, unwatchPane, killWatches, end } = createConnections({ clients, present, pending: { close: closeConnection }, devices, detachClaimed,
+  const { mayType, chatConnected, authorizeSocket, admit, setRole, watchPane, unwatchPane, killWatches, end } = createConnections({ clients, present, pending: { close: closeConnection }, devices, detachClaimed,
     dropClaims: (client) => { dropClaims(client); promptWatch.drop(client); } });
   const { push, alertWebhook, omo, gjc, letta, claudeAgents, opencodeAgents, plans, clientSnapshot, deliverySnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector, waitTimer, hookTurn, contextChanged } = createStatusHub({ options, devices, preferences, clients, present, pending, drainPending, holdPendingPane, usage, usageLogin,
     // the messages first: the old ID's terminal closing holds what it still leases
     paneMoved: (from, to) => { movePendingPane(from, to); paneMoved(from, to); } });
   const socketHandlers = createSocket({
+    chatLeft: options.chatLeft,
     herdrFailure: options.herdrFailure,
     accountEnabled: options.accountOpensAll,
     clients, present, stopped: () => stopped, admit, setRole: (client, mode) => { setRole(client, mode); if (mode === "observe") releaseFit(client); }, watchable: () => capabilities().attach === "pty-cli", terminalHistory: () => capabilities().attach !== "pty-cli", terminalModes: () => capabilities().attach === "hc", watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime: currentHerdrLifetime, browserSnapshot, countVisit, drainOutput,
@@ -131,6 +133,7 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
 
   return {
     sidecar, serialize, settleAfterTyping, push, alertWebhook, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, websocket, queueFirstMessage, askFirstMessage, hookTurn,
+    chatConnected,
     hookContextChanged(paneId: string, context: PaneContext | null): void {
       contextChanged(paneId, context);
       // A model's window or its live token count can change without a transcript append.

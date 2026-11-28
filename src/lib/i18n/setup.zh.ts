@@ -4,6 +4,7 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const SETUP_ZH: Record<string, string> = {
+  "Using a Gemini API key": "正在使用 Gemini API 密钥",
   "Agents you can install": "可安装的代理",
   "No other agents to install here.": "这里没有其他可安装的代理。",
   "An agent your shell's startup file (.zshrc) puts on PATH may be missing here: Ovis could not read that PATH. Check again reads it once more.": "由 shell 启动文件（.zshrc）加入 PATH 的智能体可能未在此显示：Ovis 无法读取该 PATH。点“重新检查”会再读一次。",

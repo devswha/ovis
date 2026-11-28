@@ -99,7 +99,14 @@ const earliest = (values: (string | null | undefined)[]): string | null =>
  * a freeze in force, so a row only the other dir holds is no import now and stays in that dir's file; and
  * `dropConflictingKeys`, so a row whose key differs between the two copies is dropped rather than given either key.
  */
-export interface MergeRules { readonly boundAccount?: string | null; readonly holdImports?: boolean; readonly dropConflictingKeys?: boolean; readonly onDropped?: (device: StoredDevice) => void; readonly sharedLegacyIdentity?: string }
+export interface MergeRules {
+  readonly boundAccount?: string | null;
+  readonly holdImports?: boolean;
+  readonly dropConflictingKeys?: boolean;
+  readonly onDropped?: (device: StoredDevice) => void;
+  readonly sharedLegacyIdentity?: string;
+  readonly moved?: (row: StoredDevice) => StoredDevice;
+}
 
 const credentialFingerprint = (identity: string, row: StoredDevice): string =>
   createHash("sha256").update(text([identity, row.id, row.relay_public_key, row.token_hash])).digest("base64url");
@@ -113,8 +120,8 @@ function separateHeldTwins(own: StoredDevice, other: StoredDevice): boolean {
 export function mergeRegistries(own: Registry | null, other: Registry | null,
   bases: { own: ReadonlySet<string> | null; other: ReadonlySet<string> | null },
   incomplete: { own: boolean; other: boolean } = { own: false, other: false }, rules: MergeRules = {}): Registry & { held: StoredDevice[] } {
-  const mine = own?.devices ?? [];
-  const theirs = other?.devices ?? [];
+  const mine = (own?.devices ?? []).map(row => rules.moved?.(row) ?? row);
+  const theirs = (other?.devices ?? []).map(row => rules.moved?.(row) ?? row);
   const theirIds = new Set(theirs.map((device) => device.id));
   const myIds = new Set(mine.map((device) => device.id));
   const devices: StoredDevice[] = [];
@@ -174,8 +181,11 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
     const joinedBy = word >= 0 ? marks[word] : device.account !== undefined && device.account === twin.account ? marks[0] : keptMark;
     // the tailnet nodes the same credential came from in either dir: a removal must keep every one of them out
     const nodes = twin.token_hash === device.token_hash ? [...new Set([...device.tailnet_nodes ?? [], ...twin.tailnet_nodes ?? []])] : device.tailnet_nodes ?? [];
+    const beforeMove = device.before_move ?? twin.before_move;
+    const { before_move: _beforeMove, ...pairing } = rest;
     devices.push({
-      ...rest,
+      ...pairing,
+      ...(device.account === undefined && !takes && beforeMove ? { before_move: beforeMove } : {}),
       ...(nodes.length === 0 ? {} : { tailnet_nodes: nodes }),
       ...(rules.dropConflictingKeys && twin.held && !device.held ? { held: twin.held } : {}),
       ...(joinedBy === undefined ? {} : { joined_by: joinedBy }),
