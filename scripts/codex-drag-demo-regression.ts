@@ -10,19 +10,35 @@ import { withDemoBrowser } from "./demo-browser.ts";
 import { appFaces } from "./app-faces.ts";
 
 interface Frame { type: string; pane_id?: string; text?: string }
-declare global { interface Window { dragFixture: { inputs: Frame[] } } }
+declare global {
+  interface Window {
+    dragFixture: {
+      inputs: Frame[];
+      glideFinished?: boolean;
+      leaveFullscreen?: () => void;
+      flushTouchFrame?: () => number;
+    };
+  }
+}
 
 function installDragFixture(): void {
-  const core = new URL(location.href).searchParams.get("server") === "core";
-  // Codex's main screen as it starts: the alternate screen with drag reporting in SGR
-  const stream = `\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[H\x1b[2J${Array.from({ length: 20 }, (_, index) => `CODEX-ROW-${index + 1}`).join("\r\n")}`;
-  const state = { inputs: [] as Frame[] };
+  const params = new URL(location.href).searchParams;
+  const core = params.get("server") === "core";
+  const touch = params.get("touch") === "1";
+  const local = params.get("buffer") === "main";
+  // Fullscreen apps use an alternate screen with SGR mouse reporting, unlike local history.
+  const history = Array.from({ length: 120 }, (_, i) => `LOCAL-ROW-${i + 1}\r\n`).join("");
+  const stream = local
+    ? history
+    : `\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[H\x1b[2J${Array.from({ length: 20 }, (_, index) => `CODEX-ROW-${index + 1}`).join("\r\n")}`;
+  const state: Window["dragFixture"] = { inputs: [] };
   window.dragFixture = state;
   const Demo = window.WebSocket;
   const Recorded = function (url: string | URL, protocols?: string | string[]) {
     const socket = new Demo(url, protocols) as WebSocket & { push(frame: Record<string, unknown>): void };
     const push = socket.push.bind(socket);
     let featured = false;
+    let offset = 0;
     let waiting: (() => void) | null = null;
     socket.push = (frame) => {
       if ((frame.type === "snapshot" || frame.type === "features") && Array.isArray(frame.features) && core) {
@@ -44,8 +60,21 @@ function installDragFixture(): void {
       const frame = JSON.parse(String(raw)) as Frame;
       if (frame.type === "input" || frame.type === "keys") state.inputs.push(frame);
       send(raw);
+      // A fixture for the TUI side of the same SGR path: each wheel-up report moves its transcript
+      // one row, rather than scrolling the browser's own history.
+      if (touch && frame.type === "input" && frame.pane_id) {
+        const steps = (frame.text?.match(/\x1b\[<64;\d+;\d+M/g) ?? []).length;
+        if (steps > 0) {
+          offset += steps;
+          socket.push({ type: "pty-data", fixture: "drag", pane_id: frame.pane_id, data: `\x1b[1;1H\x1b[2KTRANSCRIPT-OFFSET-${offset}` });
+        }
+      }
       if (frame.type === "attach" && frame.pane_id) {
         const paint = () => socket.push({ type: "pty-data", fixture: "drag", pane_id: frame.pane_id, data: stream });
+        state.leaveFullscreen = () => socket.push({
+          type: "pty-data", fixture: "drag", pane_id: frame.pane_id,
+          data: `\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l${history}`,
+        });
         if (featured) paint();
         else waiting = paint;
       }
@@ -60,6 +89,124 @@ const evidence = process.env.UI_EVIDENCE_DIR;
 const sent = (page: Page) => page.evaluate(() => window.dragFixture.inputs.map((frame) => frame.text ?? "").join(""));
 
 await withDemoBrowser({ tempPrefix: "codex-drag-demo-", afterTransport: `\n<script>(${installDragFixture.toString()})()</script>` }, async ({ newContext, baseUrl }) => {
+  for (const { pane, name, kind, local = false, oneRow = false } of [
+    { pane: panes.web, name: "Codex fullscreen", oneRow: true, kind: "herdr" },
+    { pane: panes.web, name: "Codex fullscreen", oneRow: true, kind: "core" },
+    { pane: panes.api, name: "Claude fullscreen", oneRow: true, kind: "herdr" },
+    { pane: panes.api, name: "Claude fullscreen", oneRow: true, kind: "core" },
+    { pane: panes.api, name: "Claude main screen", local: true, kind: "core" },
+    { pane: panes.shell, name: "Shell local history", local: true, kind: "core" },
+    { pane: panes.shell, name: "Generic mouse app", kind: "herdr" },
+  ]) {
+    const context = await newContext({ viewport: { width: 412, height: 860 }, isMobile: true, hasTouch: true });
+    try {
+      await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({
+        language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false,
+      })));
+      const page = await context.newPage();
+      page.setDefaultTimeout(10000);
+      await page.goto(`${baseUrl}?pane=${encodeURIComponent(pane)}&view=terminal&server=${kind}&touch=1&buffer=${local ? "main" : "alternate"}`);
+      const rows = page.locator(".pane-frame.is-current .ghostty-row");
+      if (!local) await page.locator(".pane-frame.is-current .xterm.enable-mouse-events").waitFor();
+      await rows.filter({ hasText: local ? "LOCAL-ROW-120" : "CODEX-ROW-1" }).first().waitFor();
+      const rowNumber = async () => Number((await rows.first().textContent())?.match(/LOCAL-ROW-(\d+)/)?.[1]);
+      const before = local ? await rowNumber() : 0;
+      if (local) assert.ok(before > 2);
+      const box = await page.locator(".pane-frame.is-current .xterm-screen").boundingBox();
+      const row = await page.locator(".pane-frame.is-current .ghostty-row").first().boundingBox();
+      assert.ok(box && row);
+      const x = Math.round(box.x + box.width / 2);
+      const y = Math.round(box.y + box.height / 3);
+      const cdp = await context.newCDPSession(page);
+      const reports = async () => ((await sent(page)).match(/\x1b\[<64;\d+;\d+M/g) ?? []).length;
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + Math.ceil(row.height * 1.25) }] });
+      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+      assert.equal(await reports(), oneRow ? 1 : 0, `${kind}: wheel reports after a slow drag of 1.25 rows (${name})`);
+      if (local) {
+        assert.equal(await rowNumber(), before - 1, `${name}: local scrolling advances one row`);
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+        assert.equal(await sent(page), "", `${name}: no remote input`);
+        console.log(`PASS ${kind}: ${name} advances locally without wheel reports`);
+        continue;
+      }
+      if (!oneRow) {
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + Math.ceil(row.height * 3.25) }] });
+      }
+      await page.locator(".pane-frame.is-current .ghostty-row", { hasText: "TRANSCRIPT-OFFSET-1" }).first().waitFor();
+      assert.equal(await reports(), 1);
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+      if (oneRow) {
+        await page.evaluate(({ x, y, rowHeight }) => {
+          const target = document.elementFromPoint(x, y)!;
+          const now = performance.now();
+          // Observe completion rather than timing a Playwright polling round trip. The unit
+          // test with a controlled frame clock checks the actual spacing and cutoff.
+          window.dragFixture.glideFinished = false;
+          const watch = new MutationObserver((changes) => {
+            if (changes.some((change) => change.oldValue !== null &&
+                !(change.target as Element).hasAttribute("data-touch-fling"))) {
+              watch.disconnect();
+              window.dragFixture.glideFinished = true;
+            }
+          });
+          watch.observe(document.body, { subtree: true, attributes: true, attributeOldValue: true, attributeFilter: ["data-touch-fling"] });
+          const send = (type: string, y: number, at: number) => {
+            const points = type === "touchend" ? [] : [new Touch({ identifier: 1, target, clientX: x, clientY: y })];
+            const event = new TouchEvent(type, { bubbles: true, cancelable: true, touches: points });
+            Object.defineProperty(event, "timeStamp", { value: at });
+            target.dispatchEvent(event);
+          };
+          send("touchstart", y, now - 80);
+          send("touchmove", y + rowHeight * 4, now);
+          send("touchend", y + rowHeight * 4, now);
+        }, { x, y, rowHeight: row.height });
+        await page.waitForFunction(() => window.dragFixture.glideFinished === true, undefined, { timeout: 5000 });
+        assert.ok(await reports() > 5, `${kind}: a flick still coasts after the finger lifts`);
+      }
+      console.log(`PASS ${kind}: ${name} uses the ${oneRow ? "one" : "three"}-row wheel report step`);
+      if (pane === panes.web && kind === "core") {
+        const queuedFrameCount = await page.evaluate(({ x, y, rowHeight }) => {
+          const target = document.elementFromPoint(x, y)!;
+          const send = (type: string, clientY: number) => target.dispatchEvent(new TouchEvent(type, {
+            bubbles: true, cancelable: true, touches: [new Touch({ identifier: 1, target, clientX: x, clientY })],
+          }));
+          send("touchstart", y);
+          // Hold the wheel frame until the fixture's PTY output has switched off mouse mode.
+          const frames: FrameRequestCallback[] = [];
+          const request = window.requestAnimationFrame;
+          window.requestAnimationFrame = (run) => frames.push(run);
+          try {
+            send("touchmove", y + rowHeight * 4);
+          } finally {
+            window.requestAnimationFrame = request;
+          }
+          window.dragFixture.flushTouchFrame = () => {
+            let wheels = 0;
+            const countWheel = () => { wheels++; };
+            document.addEventListener("wheel", countWheel, true);
+            try {
+              for (const run of frames) run(performance.now());
+            } finally {
+              document.removeEventListener("wheel", countWheel, true);
+            }
+            return wheels;
+          };
+          window.dragFixture.leaveFullscreen!();
+          return frames.length;
+        }, { x, y, rowHeight: row.height });
+        assert.equal(queuedFrameCount, 1, "drag queued one wheel frame before the mode switch");
+        await page.locator(".pane-frame.is-current .xterm.enable-mouse-events").waitFor({ state: "detached" });
+        await rows.filter({ hasText: "LOCAL-ROW-120" }).first().waitFor();
+        const before = await rowNumber();
+        assert.equal(await page.evaluate(() => window.dragFixture.flushTouchFrame!()), 0, "queued reports must not cross the mode switch");
+        assert.equal(await rowNumber(), before, "stale wheel reports must not scroll local history");
+        console.log("PASS core: switching to local history discards queued fullscreen touch reports");
+      }
+    } finally {
+      await context.close();
+    }
+  }
   const cases = [{ kind: "herdr", codexDrag: false }, { kind: "core", codexDrag: false }, { kind: "herdr", codexDrag: true }, { kind: "core", codexDrag: true }] as const;
   for (const { kind, codexDrag } of cases) {
     const name = `${kind}, Codex panes ${codexDrag ? "on" : "off"}`;

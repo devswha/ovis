@@ -5756,14 +5756,18 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the history, as VS Code's and Zed's terminals keep their own: xterm holds 2,000 lines, each
   attach clears them and replays hc's last 2,000 first, and xterm's own scrollbar shows in the
   column the fit leaves it. The wheel and scrollbar scroll it natively, a swipe through
-  `scrollLines`; a program that reads the mouse, or the alternate screen, still gets the wheel, as
-  in those terminals. Find and the scroll buttons need herdr's own viewport, so herdr-core has
+  `scrollLines` at one local row per row of touch travel; a program that reads the mouse, or the
+  alternate screen, still gets the wheel, as in those terminals. Find and the scroll buttons need herdr's own viewport, so herdr-core has
   neither.
 - An attached touch swipe sends its wheel reports from animation frames, at most 6 per frame and in
   order, with at most 64 waiting: a fast flick that derived up to 24 reports in one frame now spreads
-  them over the next few, and a two-screen swipe has drained within 300 ms of the lift. Every step
-  the swipe derives (`wheelSteps`, then `finalStep` at the lift) still arrives; only travel beyond
-  64 waiting reports is dropped, and the terminal counts it in `data-touch-wheel-dropped`. A new
+  them over the next few. Queued steps are discarded if the pane, attach, input role or scroll
+  route changes. The terminal counts queue overflow in `data-touch-wheel-dropped`.
+  The normal three-row step matches herdr's default. For a mouse-reporting Codex pane on
+  the alternate screen, or for a fullscreen Claude Code pane with mouse reporting, one row
+  of touch travel sends one report to the app instead. The same wheel input reaches their
+  desktop TUIs. Other applications keep their existing step.
+  The frame limit and cancellation still apply to that touch path. A new
   touch (a second finger anywhere on the page too), a key typed in the terminal, the key bar or the
   input line, a disconnect, another pane, a role acknowledgement, an attach held or released and
   unmount all drop what is left of the swipe, queued reports and unsent travel alike, and each
@@ -5779,9 +5783,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `VelocityTracker` horizon and stopped time), at most 8 px/ms (Android's maximum fling), and it
   decays by 0.998 per millisecond (UIScrollView's normal deceleration), so a glide travels about
   half a second of the lift's speed. Each frame's travel becomes wheel steps through the same
-  `wheelSteps` and pacer as the finger's, and the last half step goes when the glide ends. A slow
-  drag still ends where the finger does. Anything that drops a swipe's queued reports stops the
-  glide too, and a glide reaches only the pane and attach its touch began on: a pane switched
+  `wheelSteps` and pacer as the finger's. A glide stops once its speed falls below one scroll step
+  per 90 ms, without rounding a leftover half step. A slow finger release without a glide still
+  rounds as before. Anything that drops a swipe's queued reports stops the glide too, and a glide reaches only the pane and attach its touch began on: a pane switched
   before the lift gets nothing. Termux's terminal view flings its scrollback the same way. A pan of
   folded rows or an oversized mirror, done in the browser, does not glide. The wheel speed setting
   is for wheels and trackpads only: the finger keeps the text under it.

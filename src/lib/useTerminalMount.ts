@@ -30,7 +30,7 @@ import { fitLineHeight } from "./terminalLineHeight.ts";
 import { keepDeleteRepeatText, keyboardNeedsText, restoreDeleteRepeatCaret } from "./deleteRepeat.ts";
 import { pinchFontSize } from "./pinchFontSize.ts";
 import { finalStep, HERDR_MOUSE_SCROLL_LINES, wheelSteps } from "./wheelSteps.ts";
-import { createTouchFling, createVelocityTracker, FLING_SLOP_PX } from "./touchFling.ts";
+import { createTouchFling, createVelocityTracker, FLING_SLOP_PX, TOUCH_GLIDE_STEP_INTERVAL_MS } from "./touchFling.ts";
 import { createTouchWheelPacer } from "./touchWheelPacer.ts";
 import { layoutScroll } from "./layoutScroll.ts";
 import { terminalTouchSelections, TOUCH_STROKE_CLAIMED } from "./touchClaim.ts";
@@ -2071,6 +2071,18 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           }
         }
       };
+      const touchScrollRoute = (): "line-api" | "local" | "app-wheel" | "wheel" => {
+        if (scrollableMirror() || wheelStateRef.current.omoQuestion) return "line-api";
+        const alternate = terminalScreen(term).alternate;
+        const mouseTracking = term.modes.mouseTrackingMode !== "none";
+        if ((term.options.scrollback ?? 0) > 0 && !alternate && !mouseTracking) return "local";
+        // Codex and Claude Code in fullscreen consume their own wheel reports. Do not infer
+        // a one-row step from mouse mode alone: the bridge and other TUIs use it too.
+        if (alternate && mouseTracking && (agentRef.current === "codex" || agentRef.current === "claude")) return "app-wheel";
+        return "wheel";
+      };
+      const touchStepPixels = (route = touchScrollRoute()): number =>
+        cellHeight() * (route === "local" || route === "app-wheel" ? 1 : HERDR_MOUSE_SCROLL_LINES);
       const onTouchMove = (event: TouchEvent): void => {
         if (!pinchStroke && event.touches.length > 1) {
           cancelTouchRef.current();
@@ -2129,10 +2141,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           return;
         }
         if (scrollableMirror() && !fold.active && across !== 0) host.scrollBy(across, 0);
-        // xterm sends herdr one report per wheel event however far it went, and herdr scrolls a
-        // few lines per report: one line-mode wheel per that many rows of finger travel keeps a
-        // swipe as far as a slow drag, and the text under the finger
-        const { steps, rest } = wheelSteps(touchPixels + delta, cellHeight() * HERDR_MOUSE_SCROLL_LINES);
+        const { steps, rest } = wheelSteps(touchPixels + delta, touchStepPixels());
         touchPixels = rest;
         touchTravel += delta;
         touchVelocity.add(event.timeStamp, touchTravel);
@@ -2140,26 +2149,25 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       const sendTouchWheels = (steps: number): void => {
         if (steps === 0) return;
-        if (scrollableMirror() || wheelStateRef.current.omoQuestion) {
+        const route = touchScrollRoute();
+        if (route === "line-api") {
           lineScroll.current?.(-steps * HERDR_MOUSE_SCROLL_LINES);
           return;
         }
-        // history this terminal keeps itself (syncHistory) scrolls here, as a real wheel scrolls it: the
-        // wheel dispatched below lands past xterm's viewport, which would type arrow keys to the program
-        if ((term.options.scrollback ?? 0) > 0 && !terminalScreen(term).alternate && term.modes.mouseTrackingMode === "none") {
-          term.scrollLines(steps * HERDR_MOUSE_SCROLL_LINES);
+        if (route === "local") {
+          term.scrollLines(steps);
           return;
         }
         const target = term.element ?? host;
-        // each report belongs to this pane, this attach and this role: one that is not current when
-        // its frame comes drops the rest of the swipe instead of sending it
+        // Drop the rest of a queued swipe if its pane, attach, input role or scroll route changes.
         const pane = paneRef.current;
         const generation = outputGeneration;
         const clientX = touchX;
         const clientY = touchY;
         touchPacer.push(steps, {
           allowed: () => !disposed && pane !== null && paneRef.current === pane && generation === outputGeneration
-            && !chatViewRef.current && !observeRef.current && !heldRef.current && !releasedRef.current && !adopted() && socket.canInput(pane),
+            && !chatViewRef.current && !observeRef.current && !heldRef.current && !releasedRef.current && !adopted() && socket.canInput(pane)
+            && route === touchScrollRoute(),
           emit: (sign) => {
             touchWheelDispatching = true;
             try {
@@ -2204,6 +2212,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           const generation = touchGeneration;
           const view = touchView;
           let left = touchPixels;
+          const route = touchScrollRoute();
+          const stopVelocity = touchStepPixels(route) / TOUCH_GLIDE_STEP_INTERVAL_MS;
+          let glided = false;
           // the glide belongs to the pane and attach the touch began on: a switch, a lost attach or a
           // role change, even one before the lift, stops it, as they drop the swipe's queued reports
           // (sendTouchWheels' pacer checks them too)
@@ -2216,14 +2227,21 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
               delete host.dataset.touchFling;
               return false;
             }
-            const { steps, rest } = wheelSteps(left + pixels, cellHeight() * HERDR_MOUSE_SCROLL_LINES);
+            if (route !== touchScrollRoute()) {
+              delete host.dataset.touchFling;
+              return false;
+            }
+            if (pixels !== 0) glided = true;
+            const { steps, rest } = wheelSteps(left + pixels, touchStepPixels(route));
             left = rest;
             sendTouchWheels(steps);
             return true;
           }, () => {
             delete host.dataset.touchFling;
-            if (current()) sendTouchWheels(finalStep(left, cellHeight() * HERDR_MOUSE_SCROLL_LINES));
-          });
+            // Round the finger's release as before, but do not tack one late report on
+            // to a completed glide: terminal motion can only land on discrete steps.
+            if (current() && route === touchScrollRoute() && !glided) sendTouchWheels(finalStep(left, touchStepPixels(route)));
+          }, stopVelocity);
         }
         touchPixels = 0;
         tracking = false;
