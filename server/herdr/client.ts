@@ -561,10 +561,11 @@ export async function tabClose(tabId: string, socketPath?: string): Promise<void
 
 /**
  * `program`: what the pane's shell runs in place of the agent's command name, the herdr-core adapter's only
- * (the Command Code executable or a Codex launcher Ovis wrote); herdr itself takes none.
+ * (the Command Code executable or a Codex launcher Ovis wrote); herdr itself takes none. `agentProgram`: the agent's own
+ * file, run with its args, the adapter's only too (one only an alias of the user's shell names, agent-launch.ts).
  */
 export async function agentStart(
-  options: { name: string; kind: string; paneId: string; args?: string[]; timeoutMs?: number; program?: string; toolDoor?: { socket: string; tokenFile: string } },
+  options: { name: string; kind: string; paneId: string; args?: string[]; timeoutMs?: number; program?: string; agentProgram?: string; toolDoor?: { socket: string; tokenFile: string } },
   socketPath?: string,
 ): Promise<unknown> {
   return herdrRpc(
@@ -577,6 +578,7 @@ export async function agentStart(
       ...(options.timeoutMs === undefined ? {} : { timeout_ms: options.timeoutMs }),
       // a field of the herdr-core adapter's own, outside herdr's schema
       ...(options.program === undefined ? {} : { program: options.program } as unknown as Partial<AgentStartParams>),
+      ...(options.agentProgram === undefined ? {} : { agent_program: options.agentProgram } as unknown as Partial<AgentStartParams>),
       ...(options.toolDoor ? { ovis_agent_socket: options.toolDoor.socket, ovis_agent_token_file: options.toolDoor.tokenFile } : {}),
     } satisfies AgentStartParams,
     socketPath,

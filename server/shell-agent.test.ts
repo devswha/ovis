@@ -6,7 +6,7 @@ import { join, relative } from "node:path";
 import * as client from "./herdr/client.ts";
 import { isGjcProcess } from "./gjc-runtime.ts";
 import { catalogLocator } from "./agent-catalog-detect.ts";
-import { agentPathProbe, loginPathProbe, paneShell, parseLoginPath, powershellNativeArgs, shellAgentExecutable, ShellAgentLocator, shellCommandLine, startShellAgent, type LoginPathProbe, type LoginPathResult } from "./shell-agent.ts";
+import { agentPathProbe, loginPathProbe, paneShell, parseLoginAliases, parseLoginPath, powershellNativeArgs, shellAgentExecutable, ShellAgentLocator, shellCommandLine, startShellAgent, type LoginPathProbe, type LoginPathResult } from "./shell-agent.ts";
 import { descendantArgv, descendantProcesses, parseProcessTable, windowsArgv, windowsProcessTable } from "./windows-processes.ts";
 
 it("tells a pane's shell from the program herdr reports in front", () => {
@@ -452,6 +452,47 @@ it("never takes a relative PATH entry a .zshrc adds, which would make the server
   expect(await locator.executable("gjc")).toBeNull();
   expect(await catalogLocator({ probe: loginPathProbe({ shell, env: f.env }), servicePath: () => "/nonexistent" })("gjc")).toBeNull();
 });
+
+it("reads an alias zsh or bash printed as its path, and none that is more than one plain path", () => {
+  const printed = (lines: string[]) => ["__OVIS_ALIASES__", ...lines, "__OVIS_ALIASES_END__"].join("\n");
+  expect(parseLoginAliases(printed([
+    "__OVIS_ALIAS__ claude", "claude=/Users/me/.claude/local/claude",
+    "__OVIS_ALIAS__ codex", "alias codex='~/bin/codex'",
+    "__OVIS_ALIAS__ gemini", "gemini='gemini --yolo'",
+    "__OVIS_ALIAS__ amp", "alias amp='$HOME/bin/amp'",
+    "__OVIS_ALIAS__ kimi", "bash: alias: kimi: not found",
+    "__OVIS_ALIAS__ qwen", "other=/bin/qwen",
+    "__OVIS_ALIAS__ pi", "pi=relative/pi",
+  ]), "/Users/me")).toEqual({ claude: "/Users/me/.claude/local/claude", codex: "/Users/me/bin/codex" });
+  expect(parseLoginAliases(printed(["__OVIS_ALIAS__ codex", "codex='~/bin/codex'"]), "")).toEqual({});
+  expect(parseLoginAliases("__OVIS_ALIAS__ claude\nclaude=/bin/claude\n", "/home/me")).toEqual({});
+});
+
+for (const name of ["bash", "zsh"]) {
+  const shell = Bun.which(name) ?? "";
+  it.skipIf(shell === "" || process.platform === "win32")(`finds an agent ${name} reaches only through an alias as the file it names, never running it (#3727)`, async () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-alias-"));
+    try {
+      const ran = join(home, "ran");
+      for (const file of [".claude/local/claude", "bin/codex", "bin/gemini", "bin/amp"]) {
+        mkdirSync(join(home, file, ".."), { recursive: true });
+        writeFileSync(join(home, file), `#!/bin/sh\necho "$0" >> '${ran}'\n`, { mode: 0o755 });
+      }
+      const rc = "alias claude=~/.claude/local/claude\nalias codex='~/bin/codex'\nalias gemini='~/bin/gemini --yolo'\nalias amp='$HOME/bin/amp'\n";
+      // what a pane's shell reads: zsh's .zshrc, and for bash's login shell .bash_profile
+      writeFileSync(join(home, name === "zsh" ? ".zshrc" : ".bash_profile"), rc);
+      const probe = agentPathProbe({ shell, env: { HOME: home, ZDOTDIR: home, PATH: "/usr/bin:/bin" }, aliases: ["claude", "codex", "gemini", "amp", "kimi"] });
+      const locate = catalogLocator({ probe, servicePath: () => "/nonexistent" });
+      expect(await locate("claude")).toBe(join(home, ".claude/local/claude"));
+      expect(await locate("codex")).toBe(join(home, "bin/codex"));
+      for (const other of ["gemini", "amp", "kimi"]) expect(await locate(other)).toBeNull();
+      expect(locate.alias?.("claude")).toBe(join(home, ".claude/local/claude"));
+      expect(existsSync(ran)).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+}
 
 it("service miss resolves the same executable for offer and start", async () => {
   const f = fixture();

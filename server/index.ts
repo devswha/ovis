@@ -24,7 +24,7 @@ import { DeviceStore, folderTombstones, markBeforeMove, mergeAccountTombstones, 
 import { syncDirectory } from "./private-state.ts";
 import { PreferenceStore } from "./preferences.ts";
 import { readOmpHeldFilesSetting } from "./omp.ts";
-import { readBrowserToolSetting, useApprovalHub } from "./agent-launch.ts";
+import { readAgentAliases, readBrowserToolSetting, useApprovalHub } from "./agent-launch.ts";
 import { ApprovalHub } from "./approvals/hub.ts";
 import { AgentToolHub } from "./agent-tools/hub.ts";
 import { useAgentToolHub } from "./agent-tools/launch.ts";
@@ -634,6 +634,10 @@ export function createServer(
     const { state, executable } = await agentDetector.probe(entry, catalogPlatformHere);
     return { version: state.version, executable };
   }, codexServers);
+  readAgentAliases(async (kind) => {
+    const binary = AGENT_CATALOG.find((candidate) => candidate.id === kind)?.detect.binaries[0];
+    return binary === undefined ? null : agentDetector.aliasTarget(binary);
+  });
   const installFolder = (binary: string): { path: string; mark: string } | null => {
     const entry = AGENT_CATALOG.find((candidate) => candidate.detect.binaries.includes(binary));
     const dirs = entry !== undefined && catalogPlatformHere !== null ? entry.detect.install_dirs?.[catalogPlatformHere] ?? [] : [];

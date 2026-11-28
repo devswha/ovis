@@ -23,6 +23,7 @@ import { psQuote } from "./powershell.ts";
 import { descendantArgv, windowsProcessTable } from "./windows-processes.ts";
 import { userHome } from "./user-home.ts";
 import { COMPILED } from "./entries.ts";
+import { AGENT_CATALOG } from "../shared/agent-catalog.ts";
 
 export const SHELL_AGENTS: Record<string, (argv: readonly string[]) => boolean> = {
   omo: isOmoProcess,
@@ -58,6 +59,17 @@ const LOGIN_PATH_START = "__OVIS_LOGIN_PATH__";
 const LOGIN_PATH_END = "__OVIS_LOGIN_PATH_END__";
 /** The fixed text the login shell runs: no request's kind or argument is ever part of it. printenv prints PATH joined by `:` in fish too. */
 const LOGIN_PATH_SCRIPT = `printf '\\n%s\\n' ${LOGIN_PATH_START}; printenv PATH; printf '%s\\n' ${LOGIN_PATH_END}`;
+const ALIASES_START = "__OVIS_ALIASES__";
+const ALIASES_END = "__OVIS_ALIASES_END__";
+const ALIAS_NAME = "__OVIS_ALIAS__";
+/** The agents' fixed names (the catalog's binaries) an interactive shell is asked for an alias of (#3727). */
+const CATALOG_NAMES = [...new Set(AGENT_CATALOG.flatMap((entry) => entry.detect.binaries))];
+/**
+ * What zsh's or bash's `alias` builtin prints for each fixed name, which only prints the alias and runs nothing.
+ * `|| true`: a missing alias fails, which a profile's `set -e` would make the whole run fail.
+ */
+const aliasScript = (names: readonly string[]): string =>
+  `printf '%s\\n' ${ALIASES_START}; ${names.map((name) => `printf '%s\\n' '${ALIAS_NAME} ${name}'; alias ${name} || true; `).join("")}printf '%s\\n' ${ALIASES_END}`;
 const LOGIN_ENV_START = "__OVIS_LOGIN_ENV__";
 const LOGIN_ENV_END = "__OVIS_LOGIN_ENV_END__";
 /**
@@ -86,6 +98,30 @@ export function parseLoginPath(output: string): string | null {
 }
 
 /**
+ * The path each name's alias expands to, as zsh (`claude=…`) or bash (`alias claude='…'`) printed it between the
+ * markers, kept only where that is one plain absolute word or one under `~/`, read in `home`: an alias with
+ * arguments, a variable or anything else a shell would expand is no path.
+ */
+export function parseLoginAliases(output: string, home: string): Record<string, string> {
+  const lines = output.split(/\r?\n/);
+  const start = lines.lastIndexOf(ALIASES_START);
+  const end = lines.lastIndexOf(ALIASES_END);
+  const aliases: Record<string, string> = {};
+  if (start === -1 || end < start) return aliases;
+  let name: string | null = null;
+  for (const line of lines.slice(start + 1, end)) {
+    if (line.startsWith(`${ALIAS_NAME} `)) { name = line.slice(ALIAS_NAME.length + 1); continue; }
+    const printed = /^(?:alias )?([^=]+)=(.*)$/.exec(line);
+    if (name === null || printed?.[1] !== name || Object.hasOwn(aliases, name)) continue;
+    const word = /^'([^']*)'$/.exec(printed[2]!)?.[1] ?? printed[2]!;
+    if (!/^~?\/[\w./+@%,:-]*$/.test(word)) continue;
+    if (word.startsWith("/")) aliases[name] = word;
+    else if (isAbsolute(home)) aliases[name] = join(home, word.slice(2));
+  }
+  return aliases;
+}
+
+/**
  * The variables the probe printed as JSON between its markers, those named as a shell variable can
  * be (an exported bash function's `BASH_FUNC_f%%` is not one); null when there is no such object.
  */
@@ -99,7 +135,8 @@ export function parseLoginEnv(output: string): Record<string, string> | null {
   return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(entry[0])));
 }
 
-export type LoginPathResult = { path: string } | { path: null; reason: string };
+/** `aliases`: the interactive shell's, of the agents' fixed names, when it has any (parseLoginAliases). */
+export type LoginPathResult = { path: string; aliases?: Record<string, string> } | { path: null; reason: string };
 
 export interface LoginPathProbe {
   (signal: AbortSignal, profileRevision?: number | null): Promise<LoginPathResult>;
@@ -119,11 +156,19 @@ export const PATH_PROBE_MARKER = "OVIS_PATH_PROBE";
  * A shell SIGKILL cannot end (blocked in the kernel, say on a hung home) is answered for `graceMs`
  * after the kill and reaped when it exits.
  */
-export function loginPathProbe(options: LoginShellOptions): LoginPathProbe {
-  const probe = loginShellProbe(options, LOGIN_PATH_SCRIPT, parseLoginPath, "PATH");
+export function loginPathProbe(options: LoginShellOptions & { aliases?: readonly string[] }): LoginPathProbe {
+  // only zsh and bash: fish and csh print an alias another way, and an older fish cannot read `||`
+  const names = ["zsh", "bash"].includes(basename(options.shell)) ? (options.aliases ?? []).filter((name) => /^[a-z0-9][a-z0-9._-]*$/i.test(name)) : [];
+  const home = userHome(options.env ?? process.env);
+  const probe = loginShellProbe(options, names.length === 0 ? LOGIN_PATH_SCRIPT : `${LOGIN_PATH_SCRIPT}; ${aliasScript(names)}`, (output) => {
+    const path = parseLoginPath(output);
+    return path === null ? null : { path, aliases: parseLoginAliases(output, home) };
+  }, "PATH");
   return async (signal) => {
     const result = await probe(signal);
-    return result.value === null ? { path: null, reason: result.reason } : { path: result.value };
+    if (result.value === null) return { path: null, reason: result.reason };
+    const { path, aliases } = result.value;
+    return Object.keys(aliases).length === 0 ? { path } : { path, aliases };
   };
 }
 
@@ -151,10 +196,11 @@ function shellProfiles(shell: string, env: Record<string, string | undefined>): 
  * also reads what only an interactive shell reads (zsh's .zshrc, where installers and nvm add their
  * folders), then the plain login shell's folders it does not name.
  */
-export function agentPathProbe(options: LoginShellOptions & { rereadGapMs?: number }): LoginPathProbe & { reread: () => void; problem: () => string | null } {
+export function agentPathProbe(options: LoginShellOptions & { rereadGapMs?: number; aliases?: readonly string[] }): LoginPathProbe & { reread: () => void; problem: () => string | null } {
   const env: Record<string, string | undefined> = { ...(options.env ?? process.env), [PATH_PROBE_MARKER]: "1" };
-  const interactive = loginPathProbe({ ...options, env, interactive: true });
-  const login = loginPathProbe({ ...options, env });
+  // an alias is set where a pane's shell reads it, the interactive shell's profile (.zshrc, .bashrc)
+  const interactive = loginPathProbe({ ...options, env, interactive: true, aliases: options.aliases ?? CATALOG_NAMES });
+  const login = loginPathProbe({ ...options, env, aliases: [] });
   const gapMs = options.rereadGapMs ?? REREAD_GAP_MS;
   const profiles = shellProfiles(options.shell, env);
   const mtimes = new Map<string, number | null>();
@@ -236,7 +282,7 @@ export function agentPathProbe(options: LoginShellOptions & { rereadGapMs?: numb
     if (shown.path === null && plain.path === null) return { path: null, reason: `${plain.reason}; interactive: ${shown.reason}` };
     const named = new Set<string>();
     const path = [shown.path, plain.path].flatMap((part) => part?.split(":") ?? []).filter((dir) => !named.has(dir) && named.add(dir)).join(":");
-    return { path };
+    return shown.path !== null && shown.aliases !== undefined ? { path, aliases: shown.aliases } : { path };
   };
   return Object.assign(probe, {
     profileRevision,

@@ -17,7 +17,7 @@ export const TIMEOUT_KEPT_MS = 60_000;
  * `searchPath`, when the locator has one: the PATH it looks on, the login shell's included once read,
  * which its version flag is run with too (a script's interpreter, nvm's node, may be on that PATH only).
  */
-export type Locate = ((binary: string, checkProfile?: boolean) => Promise<string | null>) & { searchPath?: () => string; refresh?: (interactive?: boolean) => Promise<void>; problem?: () => string | null };
+export type Locate = ((binary: string, checkProfile?: boolean) => Promise<string | null>) & { searchPath?: () => string; refresh?: (interactive?: boolean) => Promise<void>; problem?: () => string | null; alias?: (binary: string) => string | null };
 
 export const LOGIN_PATH_KEPT_MS = 60_000;
 
@@ -58,39 +58,41 @@ export async function antigravityAuthMode(home: string, appDataDir: string | und
  * Installers put agents in ~/.local/bin and the like, which a login shell adds and a server run as
  * a service often lacks: without the second look, an agent an install just put there reads as not
  * installed. The login shell runs only for a binary the service PATH misses, at most once per
- * LOGIN_PATH_KEPT_MS, shared by every lookup meanwhile; only absolute executable files count.
+ * LOGIN_PATH_KEPT_MS, shared by every lookup meanwhile; only absolute executable files count. A binary on
+ * neither PATH is the file the interactive shell's alias of its name expands to, if that is one (#3727).
  */
 export function catalogLocator(options: { probe: LoginPathProbe | null; servicePath?: () => string; now?: () => number; signal?: AbortSignal }): Locate {
   const servicePath = options.servicePath ?? (() => process.env["PATH"] ?? "");
   const now = options.now ?? Date.now;
   const signal = options.signal ?? new AbortController().signal;
-  let kept: { path: string | null; at: number } | null = null;
-  let reading: Promise<string | null> | null = null;
+  type Login = { path: string | null; aliases?: Record<string, string> };
+  let kept: (Login & { at: number }) | null = null;
+  let reading: Promise<Login> | null = null;
   let checkedRevision = -1;
   let lookupId = 0;
-  let latest: Promise<string | null> | null = null;
+  let latest: Promise<Login> | null = null;
   // One probe run. A run started later owns the cache, and an older one answers with its PATH, the one searchPath()
   // reports, so an executable is never version-checked on another lookup's PATH. `latest` only ever names a run that
   // started after this one, so a run never waits on itself.
-  const lookup = (probe: LoginPathProbe, wanted: number | null | undefined): Promise<string | null> => {
+  const lookup = (probe: LoginPathProbe, wanted: number | null | undefined): Promise<Login> => {
     const id = ++lookupId;
-    const run: Promise<string | null> = probe(signal, wanted)
-      .then((result) => result.path, () => null)
-      .then((path) => {
-        if (id !== lookupId) return latest ?? path;
-        kept = { path, at: now() };
-        return path;
+    const run: Promise<Login> = probe(signal, wanted)
+      .then((result): Login => result.path === null ? { path: null } : result, (): Login => ({ path: null }))
+      .then((login) => {
+        if (id !== lookupId) return latest ?? login;
+        kept = { ...login, at: now() };
+        return login;
       });
     latest = run;
     return run;
   };
-  const loginPath = async (probe: LoginPathProbe, checkProfile: boolean): Promise<string | null> => {
+  const loginPath = async (probe: LoginPathProbe, checkProfile: boolean): Promise<Login> => {
     const wanted = checkProfile && probe.profileRevision !== undefined ? await probe.profileRevision() : null;
     const changed = wanted !== null && wanted > checkedRevision;
     if (!changed && reading !== null) return reading;
-    if (!changed && kept !== null && now() - kept.at < LOGIN_PATH_KEPT_MS) return kept.path;
+    if (!changed && kept !== null && now() - kept.at < LOGIN_PATH_KEPT_MS) return kept;
     if (wanted !== null) checkedRevision = Math.max(checkedRevision, wanted);
-    const run: Promise<string | null> = lookup(probe, wanted)
+    const run: Promise<Login> = lookup(probe, wanted)
       .finally(() => { if (reading === run) reading = null; });
     reading = run;
     return run;
@@ -103,19 +105,24 @@ export function catalogLocator(options: { probe: LoginPathProbe | null; serviceP
     const found = Bun.which(binary, { PATH: absolute });
     return found !== null && isAbsolute(found) && isExecutableFile(found) ? found : null;
   };
+  // only the file it names is looked at, never run: a pane's shell expands the alias to it
+  const aliased = (binary: string, login: Login | null): string | null => {
+    const target = login?.aliases !== undefined && Object.hasOwn(login.aliases, binary) ? login.aliases[binary]! : null;
+    return target !== null && isAbsolute(target) && isExecutableFile(target) ? target : null;
+  };
   const locate = async (binary: string, checkProfile = true): Promise<string | null> => {
     const own = find(binary, servicePath());
     if (own !== null || options.probe === null) return own;
-    const path = await loginPath(options.probe, checkProfile);
-    return path === null ? null : find(binary, path);
+    const login = await loginPath(options.probe, checkProfile);
+    return (login.path === null ? null : find(binary, login.path)) ?? aliased(binary, login);
   };
-  let queued: Promise<string | null> | null = null;
+  let queued: Promise<Login> | null = null;
   const refresh = (interactive = true): Promise<void> => {
     if (options.probe === null) return Promise.resolve();
     if (interactive) options.probe.reread?.();
     if (queued !== null) return queued.then(() => undefined);
     const probe = options.probe;
-    const run: Promise<string | null> = (reading ?? Promise.resolve(null))
+    const run: Promise<Login> = (reading ?? Promise.resolve(null))
       .then(async () => {
         if (queued === run) queued = null;
         const wanted = probe.profileRevision === undefined ? undefined : await probe.profileRevision();
@@ -127,7 +134,7 @@ export function catalogLocator(options: { probe: LoginPathProbe | null; serviceP
     reading = run;
     return run.then(() => undefined);
   };
-  return Object.assign(locate, { searchPath: () => [servicePath(), kept?.path ?? ""].filter((part) => part !== "").join(delimiter), refresh, problem: () => options.probe?.problem?.() ?? null });
+  return Object.assign(locate, { searchPath: () => [servicePath(), kept?.path ?? ""].filter((part) => part !== "").join(delimiter), refresh, problem: () => options.probe?.problem?.() ?? null, alias: (binary: string) => aliased(binary, kept) });
 }
 
 /**
@@ -342,6 +349,15 @@ export class AgentDetector {
 
   async executable(binary: string, dirs: readonly string[], platform: CatalogPlatform | null, checkProfile = true): Promise<string | null> {
     return (await this.#locate(binary, checkProfile)) ?? (platform === null ? null : this.#inInstallDirs(binary, dirs, platform));
+  }
+
+  /**
+   * The file `binary` was found as when that is the one its alias names (catalogLocator): a pane's shell expands an
+   * alias only from a name typed as it is, so a start that quotes the name must run this file instead.
+   */
+  async aliasTarget(binary: string): Promise<string | null> {
+    const found = await this.#locate(binary);
+    return found !== null && found === this.#locate.alias?.(binary) ? found : null;
   }
 
   commandPath(executable: string): string {

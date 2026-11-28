@@ -1686,6 +1686,17 @@ describe("herdr-core adapter, agents", () => {
     await expect(agentStart({ name: "codex-1", kind: "codex", paneId: "t1", program: "launch" }, socket)).rejects.toMatchObject({ code: "invalid_params" });
   });
 
+  it("types the agent's own file in place of its name with its args, as an alias the quoted name would not expand to (#3727)", async () => {
+    const shell = { pid: 10, name: "zsh" };
+    const record = terminal("t1", { cols: 90, rows: 20, pid: 10, argv: ["-zsh"], foreground: shell });
+    const { socket, cores } = await posix([record], {
+      "terminal.get": () => ({ ...record, foreground: cores[0]!.typed.length > 0 ? { pid: 12, name: "node", argv: ["node", "/Users/me/.claude/local/node_modules/.bin/claude"] } : shell }),
+    });
+    await agentStart({ name: "claude-1", kind: "claude", paneId: "t1", args: ["--model", "m"], agentProgram: "/Users/me/.claude/local/claude" }, socket);
+    expect(cores[0]!.typed.map((write) => write.text).join("")).toBe("\u0015'/Users/me/.claude/local/claude' '--model' 'm'\r");
+    await expect(agentStart({ name: "claude-1", kind: "claude", paneId: "t1", agentProgram: "claude" }, socket)).rejects.toMatchObject({ code: "invalid_params" });
+  });
+
   it("counts an agent run through its interpreter as started, and a shell's command-not-found handler as a failed start", async () => {
     const shell = { pid: 10, name: "bash" };
     const sequence = (after: { pid: number; name: string; argv?: string[] }[]) => {

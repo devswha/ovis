@@ -9,7 +9,7 @@ import * as runtime from "./herdr-core/runtime.ts";
 import * as served from "./runtime/capabilities.ts";
 import * as shellAgent from "./shell-agent.ts";
 import * as agentToolLaunch from "./agent-tools/launch.ts";
-import { agentLaunch, dshEffortArgs, readBrowserToolSetting, useApprovalHub } from "./agent-launch.ts";
+import { agentLaunch, dshEffortArgs, readAgentAliases, readBrowserToolSetting, useApprovalHub } from "./agent-launch.ts";
 import { ApprovalHub, type ApprovalAdapter } from "./approvals/hub.ts";
 import { cmdApprovals } from "./approvals/cmd.ts";
 import type { CodexServers } from "./approvals/codex.ts";
@@ -163,6 +163,36 @@ describe("agentLaunch", () => {
     } finally {
       marked.mockRestore();
       runtimeHere.mockRestore();
+      useApprovalHub(null);
+      hub.stop();
+    }
+  });
+
+  it("starts an agent only an alias names by that file with its args where the runtime quotes the name, and by name on herdr (#3727)", async () => {
+    const launches: string[] = [];
+    const codex = { launch: () => { launches.push("codex"); return "/tmp/ovis-codex-x/launch"; }, abandon: () => {} } as unknown as CodexServers;
+    const hub = new ApprovalHub(join(dirname(settingsDir()), "h"), []);
+    useApprovalHub(hub, async () => ({ version: "0.171.0" }), codex);
+    readAgentAliases(async (kind) => kind === "claude" || kind === "codex" ? `/home/me/bin/${kind}` : null);
+    const runtimeHere = spyOn(served, "capabilities").mockReturnValue(served.HERDR_CORE);
+    const marked = spyOn(agentToolLaunch, "markLocalAgentLaunch").mockResolvedValue(undefined);
+    try {
+      expect(await launch("claude", ["--model", "m"], { platform: "linux", settingsDir: settingsDir() })).toMatchObject({ args: ["--model", "m"], agentProgram: "/home/me/bin/claude" });
+      starts.length = 0;
+      // the Codex launcher would start `codex` by name
+      const started = await launch("codex", ["--model", "m"], { platform: "linux", settingsDir: settingsDir() });
+      expect(started).toMatchObject({ args: ["--model", "m"], agentProgram: "/home/me/bin/codex" });
+      expect(started.program).toBeUndefined();
+      expect(launches).toEqual([]);
+      starts.length = 0;
+      expect((await launch("gemini", [], { platform: "linux", settingsDir: settingsDir() })).agentProgram).toBeUndefined();
+      starts.length = 0;
+      runtimeHere.mockReturnValue(served.HERDR);
+      expect((await launch("claude", [], { platform: "linux", settingsDir: settingsDir() })).agentProgram).toBeUndefined();
+    } finally {
+      marked.mockRestore();
+      runtimeHere.mockRestore();
+      readAgentAliases(async () => null);
       useApprovalHub(null);
       hub.stop();
     }

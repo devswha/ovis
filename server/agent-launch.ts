@@ -105,6 +105,13 @@ async function codexLauncher(kind: string, paneId: string, args: string[] | unde
   return approvals.codex.launch(paneId, args, (await approvals.probe(kind))?.version ?? null) ?? undefined;
 }
 
+let aliasOf: (kind: string) => Promise<string | null> = async () => null;
+
+/** Where a kind found only as an alias of the user's interactive shell is read, as the file it names (AgentDetector.aliasTarget). */
+export function readAgentAliases(read: (kind: string) => Promise<string | null>): void {
+  aliasOf = read;
+}
+
 let browserTools: { read: () => unknown; dir: string } | null = null;
 
 /** Where the launch reads the shared `agentBrowserTools` setting from, and the folder its MCP config files go in. */
@@ -186,7 +193,10 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
       tool = launchHarnessTool(paneId, kind, { args, platform: options.platform ?? process.platform, browsers: browserTools?.read() });
       const launchArgs = tool?.args ?? withBrowserTool(kind, args, options.platform ?? process.platform);
       const startArgs = launchArgs === undefined ? undefined : agentStartArgs(kind, launchArgs, { platform: options.platform, dir: options.settingsDir });
-      program ??= await codexLauncher(kind, paneId, startArgs, options.platform ?? process.platform);
+      // an agent only an alias names (#3727) starts by that file where the start line quotes the name, which no shell
+      // expands as an alias; herdr types the name as it is. Without the Codex launcher, which starts `codex` by name.
+      const aliased = program === undefined && coreCmdProgram === null && capabilities().launcher && hcMachine() === null ? await aliasOf(kind) : null;
+      if (aliased === null) program ??= await codexLauncher(kind, paneId, startArgs, options.platform ?? process.platform);
       // a Command Code started with the Ovis mod runs through its launcher (cmdLauncher) above
       const executable = program ?? coreCmdProgram ?? undefined;
       // herdr refuses a name another agent holds. Two creations at once can pick the same
@@ -201,6 +211,7 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
             paneId,
             ...(startArgs === undefined ? {} : { args: startArgs }),
             ...(executable === undefined ? {} : { program: executable }),
+            ...(aliased === null ? {} : { agentProgram: aliased }),
             ...(tool ? { toolDoor: { socket: tool.socket, tokenFile: tool.tokenFile } } : {}),
             timeoutMs: 60_000,
           });
