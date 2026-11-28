@@ -148,7 +148,7 @@ export function Droplet({ onOpen }: { onOpen: (machineId: string, paneId: string
   const what = t({ blocked: STATUS_WORD.blocked, done: STATUS_WORD.done, ended: "terminal ended" }[current.kind]);
   const detail = current.machine ? `${current.machine} · ${what}` : what;
   return (
-    <div className="droplet" role="status" aria-live="polite" data-phase={phase} data-kind={current.kind} data-dragging={drag !== 0 ? "" : undefined} style={{ "--droplet-drag": `${drag}px`, "--droplet-top": `${top ?? 12}px`, ...(fit === null ? {} : { "--droplet-fit": `${fit}px` }), visibility: top === null ? "hidden" : "visible" } as CSSProperties} key={current.id}>
+    <div className="droplet" role={current.kind === "ended" ? "status" : undefined} data-phase={phase} data-kind={current.kind} data-dragging={drag !== 0 ? "" : undefined} style={{ "--droplet-drag": `${drag}px`, "--droplet-top": `${top ?? 12}px`, ...(fit === null ? {} : { "--droplet-fit": `${fit}px` }), visibility: top === null ? "hidden" : "visible" } as CSSProperties} key={current.id}>
       <div ref={probe} className="droplet-probe" aria-hidden="true" />
       <svg className="droplet-defs" width="0" height="0" aria-hidden="true" focusable="false">
         <filter id="droplet-goo" x="-50%" y="-50%" width="200%" height="200%" colorInterpolationFilters="sRGB">

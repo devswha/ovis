@@ -4,6 +4,10 @@ import { promisify } from "node:util";
 
 const exec = promisify(execFile);
 
+/** A socket inode as `ss` prints it. The `ss` of iproute2 6.1 (Ubuntu 24.04) prints it as a signed 32-bit
+ * number, so past 2^31 inode 2154015387 reads -2140951909; /proc/net/unix always prints it unsigned. */
+const ssInode = (printed: string) => (BigInt(printed) & 0xffffffffn).toString();
+
 /** The kernel's one established stream from the TUI to this listener, or no proof. */
 export async function codexUnixPeer({ path, server, tui }: {
   readonly path: string;
@@ -32,9 +36,10 @@ export async function codexUnixPeer({ path, server, tui }: {
     // `ss` gives the peer inode that /proc/net/unix lacks. Require an unnamed client endpoint
     // so its address column cannot be mistaken for an inode (Unix paths may contain spaces).
     for (const line of peers.stdout.split("\n")) {
-      const pair = /^u_str\s+\d+\s+\d+\s+(.*)\s+(\d+)\s+\*\s+(\d+)\s*$/.exec(line);
-      const client = pair?.[3];
-      if (pair?.[1]?.trimEnd() === path && pair[2] === connection && client !== undefined && tui.has(client)) {
+      const pair = /^u_str\s+\d+\s+\d+\s+(.*)\s+(-?\d+)\s+\*\s+(-?\d+)\s*$/.exec(line);
+      if (pair === null || pair[1]?.trimEnd() !== path || ssInode(pair[2]!) !== connection) continue;
+      const client = ssInode(pair[3]!);
+      if (tui.has(client)) {
         return `${listener}:${connection}:${client}`;
       }
     }

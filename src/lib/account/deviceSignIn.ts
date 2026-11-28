@@ -49,6 +49,11 @@ export interface DeviceSignInOptions {
   readonly provider?: DeviceSignInProvider;
   /** what this device is, for the link page's confirmation (docs/account.md, "Who is asking"); a provider's own device page takes none */
   readonly requester?: { readonly label: string; readonly os: AccountOs | null };
+  /**
+   * the service said it links a sign-in by its verified email (OfferedProviders.emailLink): only then does a first
+   * sign-in ask it with `link`, which a service from before it refuses in these strict start bodies
+   */
+  readonly emailLink?: boolean;
 }
 
 function waitFor(ms: number, signal: AbortSignal): Promise<void> {
@@ -105,11 +110,13 @@ export async function startDeviceSignIn(options: DeviceSignInOptions, generation
     body: JSON.stringify({ code_challenge: challenge, code_challenge_method: "S256", ...extra }),
   });
   const told = provider === "ovis" ? requesterFields(options.requester) : {};
+  // a first sign-in only: a sign-in again on a device already signed in is not linked by its email
+  const link = options.emailLink === true && await options.store.get("session") === undefined ? { link: "auto" } : {};
   await AccountService.checkGeneration(options.store, startedUnder);
-  let response = await start(told);
+  let response = await start({ ...told, ...link });
   if (response.status === 400 && Object.keys(told).length > 0 && (await failure(response.clone())).code === "invalid_request") {
     await AccountService.checkGeneration(options.store, startedUnder);
-    response = await start({});
+    response = await start(link);
   }
   await AccountService.checkGeneration(options.store, startedUnder);
   if (!response.ok) throw await failure(response);
@@ -187,6 +194,7 @@ export async function startDeviceSignIn(options: DeviceSignInOptions, generation
           case "slow_down": interval += SLOW_DOWN_MS; pause = interval; continue;
           case "access_denied": throw new SignInError("denied", "The sign-in was refused at the provider");
           case "expired_token": throw new SignInError("expired", "The code ran out");
+          case "email_unavailable": throw new SignInError("email_unavailable", "The account service could not check the email");
           default: throw refused;
         }
       }

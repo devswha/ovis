@@ -266,7 +266,7 @@ The chat view reads the agent's own session files wherever it knows where they a
 | **omo** | Native session file, found through the pane's process tree | ✓ the `/model` list (picked for the session); other menus — use Terminal |
 | **gjc** | Native session file reported by the web UI's GJC extension, verified against the pane's process | — use Terminal |
 | **pi** | Native session file, resolved through herdr; after `/tree`, the branch in play | ✓ its dialogs: a question, a confirmation, an answer typed in |
-| **Command Code** (`cmd`) | Native session file under `~/.commandcode/projects/`, named by the session herdr reports for the pane (see below); after `/tree`, the branch in play | ✓ its permission prompts: Yes / Yes, don't ask again / No |
+| **Command Code** (`cmd`) | Native session under `~/.commandcode/projects/`, identified by the pane's process (see below). Start it from **New workspace**, **New tab with agent…** or **New worktree** on Linux and macOS | ✓ allow once, deny, or answer a question in Chat; hand it back to Terminal |
 | **OpenCode** | Native session in OpenCode 2's own database, resolved through herdr: `~/.local/share/opencode/opencode.db` (`%USERPROFILE%\.local\share\opencode\opencode.db` on Windows), or where the server's `XDG_DATA_HOME` or `OPENCODE_DB` puts it | ✓ its questions on OpenCode 2.0 or later, answered through its background service (`~/.local/state/opencode/service.json`, or under the server's `XDG_STATE_HOME`) one question at a time, with Back to change an earlier one; its permission requests on OpenCode 2 (a shell command, a file edit with its patch, a web fetch, an MCP tool with its input), answered Allow once, Always allow or Deny through the same service, the card closing when the terminal answers first; other prompts, and OpenCode 1 — use Terminal |
 | **Devin CLI** | Native SQLite session, showing the active branch when herdr or the live process explicitly identifies the session; otherwise terminal text | — use Terminal |
 | **Grok** | Native update log on Linux and macOS. Any Grok executable named `grok` or `grok-…` that holds the `events.jsonl` for the session Herdr reported in exactly one directory, with a newer write time than every other held session. Linux reads `/proc`; macOS reads that process's held files through `lsof` and its environment through `sysctl KERN_PROCARGS2`, not the bridge's home. It verifies the kernel's microsecond process start time through `sysctl kern.proc.pid` around those reads and a fresh pane foreground lookup. Older open files do not hide it; ambiguous IDs, tied times, and a held file that may be a renamed events file use Terminal. After a `/resume` Herdr does not hear about, Chat can keep showing the previous conversation until the resumed session writes; it then uses Terminal until Herdr names that session. Windows uses Terminal. See [Grok setup and limits](grok-chat.md). | — use Terminal |
@@ -353,13 +353,25 @@ then restart gentle-shell. Without it a gentle-shell pane uses Terminal. This wo
 Ovis cannot read a running pi's environment, so it looks for the extension in its own pi home only,
 and a gentle-shell pane there uses Terminal too.
 
-Command Code chat needs the session herdr reports for the pane. Command Code sends that report
-and herdr keeps only the sessions of the agents it knows natively, so no released herdr accepts
-it yet: the pane's status, title and model arrive, its conversation does not. Without it the
-bridge cannot tell which file under `~/.commandcode/projects/` a pane is showing, and two `cmd`
-panes in one folder are indistinguishable, so Command Code opens in Terminal. Its permission
-prompt cards are read off the screen, not from the session file, so they answer from the chat
-either way.
+When Ovis starts Command Code 1.93.4 or later in the 1.x series on local herdr-core, it passes
+a session-only `--mod` if the pane's PATH selects the executable whose version Ovis checked.
+If the workspace selects another `cmd`, or the runtime cannot verify the command (including
+herdr's manifest-based launcher), it starts normally without the mod. The mod identifies the
+session and reports turn ends. It changes no Command Code settings.
+A connected device can answer a permission request or `ask_user_question` in Chat. Command Code
+waits for the mod before drawing its own prompt: choose **Answer in terminal**, or wait five
+minutes, to return it there. Leaving Chat on the last device that can answer also releases the
+request. With no connected device viewing the pane's Chat, an unreachable bridge,
+a safety-forced prompt, or an option preview the card cannot show, the native prompt takes over.
+The mod offers only one-time decisions. After a handoff, the existing screen-based cards reflect
+Command Code's own terminal choices. The per-process session file keeps Chat bound to the same
+session if Ovis restarts while Command Code is running.
+
+Starting `cmd` yourself, `--safe-mode`, and older or unrecognized versions keep the existing
+terminal behavior and screen-based permission cards. For self-started sessions only, you can
+optionally copy `integrations/cmd-session.ts` to `~/.commandcode/mods/ovis-session.ts` and restart
+Command Code. This identifies the session in `~/.commandcode/ovis/<pid>.json` for Chat and adds
+`command-code --session <id>` to herdr's resume report; it does not enable Chat-first prompts.
 
 Devin sessions are never selected by directory or recency alone. A plain `devin` shows the
 terminal text, since herdr does not report its session without its Devin integration; a session
@@ -642,11 +654,13 @@ Signing in links your devices once instead of pairing each phone with each PC. I
 
 **Approving a device.** The approval card on your other devices says what is asking: the system it runs and roughly where its request came from (country and city, as Cloudflare saw it, never the address), or **Location unknown**. Approve only if you started it yourself just now; if you didn't, deny it.
 
-**Ways to sign in.** **Settings → Devices and PCs → Manage account** lists your account's sign-in methods with their latest changes (when, what, and the number of the device that made it), the plan, its devices and PCs, and **Delete account** last. In the desktop app, the phone apps and at `app.ovis.sh`, **Add Google** (or **Add GitHub**, **Add Apple**) adds one on purpose, and **Remove** takes one away, except the one this device signed in with. An account is never joined to another because their email addresses match.
+**Ways to sign in.** **Settings → Devices and PCs → Manage account** lists your account's sign-in methods with their latest changes (when, what, and the number of the device that made it), the plan, its devices and PCs, and **Delete account** last. In the desktop app, the phone apps and at `app.ovis.sh`, **Add Google** (or **Add GitHub**, **Add Apple**) adds one on purpose, and **Remove** takes one away, except the one this device signed in with.
+
+**One email, one account.** Where the account service has this turned on, when you first sign in with a new method whose verified email already belongs to your Ovis account, Ovis adds the method to that account instead of making a second one. It doesn't for an account that keeps a signed list or already has that kind of method: that sign-in makes a separate account. Every device of the account is told. The device that signed in says **Signed in to the account made with GitHub** (with the masked email), and **Not my account** takes the method out again and signs that device out. Other devices show the new method in **Manage account** with **Not me** for 24 hours. A method added this way can't change the account's sign-in methods, remove a PC, sign every device out or delete the account until those 24 hours are over: Ovis says from when. A method you remove, or reject with **Not me**, is never added by email again. If Ovis says it could not check your email, sign in again.
 
 **The account's other PCs.** On a PC's own page, **Settings → Devices and PCs** lists the account's PCs that this app has not added, with no link or button of their own. **Manage account** lists every device and PC of the account. **Disconnect** on a device (a lost phone or browser) disconnects it from every PC of the account. A PC the account has not heard from for 15 minutes (reinstalled, given away, turned off) has **Remove**. That only takes it off the account's list on every device: it revokes nothing, and a PC that is used again is listed again when a device of your account opens it. A PC in use has no Remove, since it would be listed again at once, except in an account that keeps a signed list: there a PC the list holds has **Remove** on or off, and comes back to the account only as a new PC, added again on it. On a PC that is in the account, with the relay on, **Add a connection → Ovis relay** is the signed-in line and the phone's QR code only: the account's PCs are in the sidebar ([Adding a PC of your account](account.md#adding-a-pc-of-your-account)). Signing in on a PC that is already in the account goes straight to the main screen. To put another PC in the account, sign in on it with the same account.
 
-Who gets into a PC is still decided by that PC alone, in **Settings → Devices and PCs**, where **Revoke** always works. The account service at `account.ovis.sh` lists your PCs and carries signed messages between your devices; it can't read your sessions or add a device by itself ([how it works](account.md)). It keeps no email, name or username. [The privacy policy](https://ovis.sh/privacy/) says what it stores and for how long.
+Who gets into a PC is still decided by that PC alone, in **Settings → Devices and PCs**, where **Revoke** always works. The account service at `account.ovis.sh` lists your PCs and carries signed messages between your devices; it can't read your sessions or add a device by itself ([how it works](account.md)). It keeps no email address, name or username: for a GitHub or Google sign-in only a keyed fingerprint of the verified address, so it can add a new sign-in method to the account that already has that email (above). [The privacy policy](https://ovis.sh/privacy/) says what it stores and for how long.
 
 #### A sign-in method that belongs to another account
 
@@ -682,9 +696,9 @@ Only devices in your tailnet can open that address. Your own devices get in with
 To check alerts later, choose **Settings → Alerts → Send test**. The result tells you
 whether the test was sent or failed; a missing subscription offers **Turn alerts on again**.
 
-While the app is in front on any device, its window visible and focused, no alert goes to any
-device: you are already looking at the change. Alerts resume once no window of the app is in use.
-The test push is always sent.
+A visible, focused Ovis window on any device holds back alerts. If a question is still unanswered
+or a finish still has no follow-up five minutes after the change, its alert goes out even if a
+window is still focused. The test push is always sent.
 
 Each pane keeps one alert: a new one replaces its last. iOS lets an alert be removed only
 30 seconds after it arrived, so a quicker repeat stays until the pane's next alert.
@@ -1169,9 +1183,13 @@ macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
   installed on it, and it is added, renamed or removed with `hc machine` or in the Herdr app.
   Ovis starts one more server of its own for each (on loopback, with an empty home folder of its
   own), so its agents' chat history is not read here: their transcripts are on that machine.
-  Its files are not reachable from Ovis yet: file previews, the Files view, diffs, pasted images
-  and the folder picker are refused for it. A folder typed for a new workspace there is passed to
-  that machine as written (empty: its home). Pins and "seen" are not shared with the Herdr app
+  Its files are read there through the core (`machine.exec` with that machine's `/bin/sh`, as
+  its user): the Files view's browser, the folder picker and file previews, up to 8 MB a file
+  (a larger one is described but not opened; an HTML page shows as text). A pasted or attached
+  image is put beside the terminal on that machine (`terminal.put`, 8 MB at most) and its path
+  there is inserted. Diffs, git, Markdown lists, file search, editing and New folder are refused
+  for it, and so is all of it on a machine without `/bin/sh` (Windows). A folder typed for a new
+  workspace there is passed to that machine as written (empty: its home). Pins and "seen" are not shared with the Herdr app
   there. Temporary machines (`hc machine add --temp`) are not shown, and
   PCs added over SSH or through the relay keep working beside them.
 

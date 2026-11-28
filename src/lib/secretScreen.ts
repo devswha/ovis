@@ -43,14 +43,18 @@ export function createSecretScreen(term: Parameters<typeof screenRows>[0] & { re
         if (line?.isWrapped && lines.length) lines[lines.length - 1] += text;
         else { lines.push(text); starts.push(row); }
       }
-      const prompt = secretPrompt(lines.join("\n"), term.cols);
+      // sudo's pwfeedback echoes a star for each key typed after the prompt: the prompt still asks while they grow
+      let tail = lines.length - 1;
+      while (tail >= 0 && !lines[tail]!.trim()) tail--;
+      const asked = tail < 0 ? lines : lines.map((text, row) => row === tail ? text.replace(/([:：]) ?\*+\s*$/, "$1 ") : text);
+      const prompt = secretPrompt(asked.join("\n"), term.cols);
       if (!cursorKnown()) return prompt;
       if (prompt === null) { seen = null; return null; }
-      let last = lines.length - 1;
-      while (last >= 0 && !lines[last]!.trim()) last--;
-      const words = lines[last]!.trimEnd();
+      let last = asked.length - 1;
+      while (last >= 0 && !asked[last]!.trim()) last--;
+      const words = asked[last]!.trimEnd();
       let first = last;
-      while (first > 0 && lines[first - 1]!.trimEnd() === words) first--;
+      while (first > 0 && asked[first - 1]!.trimEnd() === words) first--;
       const asking: Asking = { prompt, repeats: last - first, cut: first === 0 };
       if (promptHasCursor(lines, starts, buffer.baseY + buffer.cursorY, buffer.cursorX, term.cols)) { seen = asking; return prompt; }
       return seen !== null && sameAsking(seen, asking) ? null : prompt;

@@ -440,6 +440,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     offered: account.listed,
     addMethod: async (provider, shown) => { await account.addMethod(provider, shown, entry.serverId ?? undefined); },
     removeMethod: account.removeMethod,
+    notMe: account.notMe,
     methodsChange: () => account.methodsChange,
     deleteAccount: async () => {
       await account.deleteAccount();

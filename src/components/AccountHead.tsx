@@ -102,6 +102,8 @@ function HostedManageSheet({ signIn, watching, pcHere, onClose }: { signIn: Host
   const [everywhereError, setEverywhereError] = useState<string | null>(null);
   const [leaveNote, setLeaveNote] = useState<string | null>(null);
   const [leaving, setLeaving] = useState(false);
+  // a way in still settling may not sign every device out or delete the account: the ways in say from when
+  const [settling, setSettling] = useState<string | null>(null);
   const gone = signIn === null && leaveNote === null && !leaving;
   useEffect(() => { if (gone) onClose(); }, [gone, onClose]);
   if (gone) return null;
@@ -132,10 +134,10 @@ function HostedManageSheet({ signIn, watching, pcHere, onClose }: { signIn: Host
   };
   return (
     <ManageAccountSheet onClose={onClose} account={signIn?.account}>
-      {signIn !== null && <HostedAccountMethods key={`ways ${signIn.account}`} signIn={signIn} />}
-      {signIn !== null && <AccountManageLists key={signIn.account} account={signIn.account} watching={watching} pcHere={pcHere} onLeave={(shown) => leave(signIn, shown)} />}
+      {signIn !== null && <HostedAccountMethods key={`ways ${signIn.account}`} signIn={signIn} onSettling={setSettling} />}
+      {signIn !== null && <AccountManageLists key={signIn.account} account={signIn.account} watching={watching} pcHere={pcHere} settling={settling !== null} onLeave={(shown) => leave(signIn, shown)} />}
       {leaveNote !== null && <p className="settings-condition" role="alert">{leaveNote}</p>}
-      {signIn !== null && <div className="settings-item account-sign-out-everywhere">
+      {signIn !== null && settling === null && <div className="settings-item account-sign-out-everywhere">
         {everywhere === "asked" && <SignOutEverywhereSays account={signIn.account} named={question?.confirmed ?? []}><p className="settings-description" role="status" data-testid="sign-out-everywhere-says">{t("Every browser and app is signed out of the account. Devices paired with a PC can still open it, so cut off a lost device with Disconnect.")}</p></SignOutEverywhereSays>}
         <div className="account-delete-actions">
           <button type="button" className={everywhere === "asked" ? "btn btn-danger" : "btn"} data-action="sign-out-everywhere" data-confirm={everywhere === "asked" ? "sign-out-everywhere" : undefined}
@@ -144,7 +146,7 @@ function HostedManageSheet({ signIn, watching, pcHere, onClose }: { signIn: Host
         </div>
         {everywhereError !== null && <p className="settings-condition" role="alert">{everywhereError}</p>}
       </div>}
-      {signIn !== null && <div className="settings-item account-delete">
+      {signIn !== null && settling === null && <div className="settings-item account-delete">
         {deleting === "asked" && <p className="settings-description" role="status" data-testid="delete-account-says">{t("This deletes your Ovis account for good: your sign-in methods, your list of PCs and your plan. It cannot be undone. Devices stay paired with your PCs until you revoke them on each PC. A subscription that still renews has to be cancelled first.")}</p>}
         <div className="account-delete-actions">
           <button type="button" className={deleting === "asked" ? "btn btn-danger" : "account-delete-link"} data-action="delete-account" data-confirm={deleting === "asked" ? "delete-account" : undefined}

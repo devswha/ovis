@@ -37,7 +37,7 @@ export interface SocketData {
   untilLock?: (close: () => void) => () => void;
   connectionId: string;
   /** A fresh claim per attach lifetime; deleting it invalidates queued terminal keys. */
-  attached: Map<string, { keepSize: boolean; receiptResumeId?: string; fitGrid?: { cols: number; rows: number; drives: boolean } }>;
+  attached: Map<string, { keepSize: boolean; visibleCards?: boolean; receiptResumeId?: string; fitGrid?: { cols: number; rows: number; drives: boolean } }>;
   conversationInterests: Set<string>;
   conversationWatches: Set<string>;
   promptWatches: Set<string>;
@@ -419,5 +419,14 @@ export function createConnections({ clients, present, pending, devices, detachCl
     }
   }
 
-  return { mayType, authorizeSocket, admit, setRole, watchPane, unwatchPane, killWatches, end };
+  /** Only a foreground Chat can answer. Background transcript and prompt subscriptions cannot. */
+  function chatConnected(paneId: string): boolean {
+    for (const client of clients) {
+      if (client.readyState === WebSocket.OPEN && mayType(client) && client.data.conversationInterests.has(paneId)
+        && client.data.attached.get(paneId)?.visibleCards === true) return true;
+    }
+    return false;
+  }
+
+  return { mayType, chatConnected, authorizeSocket, admit, setRole, watchPane, unwatchPane, killWatches, end };
 }

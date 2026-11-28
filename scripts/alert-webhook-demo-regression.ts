@@ -1,6 +1,6 @@
 /**
  * Settings → Alerts → Also send to on the unmodified app over the demo's fixture transport: a Discord
- * webhook saved, its URL gone from the field and shown only masked, a test sent, Telegram asking for a
+ * webhook saved, its URL gone from the field and shown only masked, a test sent, its pane link turned off, Telegram asking for a
  * chat id too, and Off removing the destination; at 390 and 1280, light and dark. Nothing is posted
  * anywhere: the demo keeps the destination in the page.
  */
@@ -53,6 +53,13 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   if (phone) assert.ok(((await group.getByRole("button", { name: "Save", exact: true }).boundingBox())?.height ?? 0) >= 44, `${tag}: Save is finger-sized`);
   await group.scrollIntoViewIfNeeded();
   if (EVIDENCE) await group.screenshot({ path: join(EVIDENCE, `alert-webhook-${width}-${theme}.png`) });
+
+  // messages without the pane link have no link to warn about (#3854)
+  const link = group.getByRole("switch", { name: "Link to the pane", exact: true });
+  await link.click();
+  await group.getByRole("status").filter({ hasText: "Saved" }).waitFor();
+  assert.equal(await link.getAttribute("aria-checked"), "false", `${tag}: the link stays off once saved`);
+  assert.equal(await group.getByText("Messages have no link a phone can open yet.", { exact: false }).count(), 0, `${tag}: no warning about a link that is not sent`);
 
   await destination.selectOption("off");
   await group.getByRole("status").filter({ hasText: "Removed" }).waitFor();

@@ -41,7 +41,9 @@ export interface ShellAccount {
   readonly offered?: () => Promise<readonly AccountProvider[]>;
   readonly addMethod?: (provider: AccountProvider, shown: AccountSession) => Promise<void>;
   readonly removeMethod?: (provider: AccountProvider, shown: AccountSession) => Promise<void>;
-  readonly methodsChange?: () => { readonly account: string; readonly provider: AccountProvider; readonly error: string | null } | undefined;
+  /** Not me on a way in the service added by its email, while it may still be taken back */
+  readonly notMe?: (provider: AccountProvider, shown: AccountSession) => Promise<void>;
+  readonly methodsChange?: () => { readonly account: string; readonly provider: AccountProvider; readonly error: string | null; readonly until?: string } | undefined;
 }
 
 export interface HostedSignIn extends ShellAccount {

@@ -12,6 +12,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writePrivateState } from "../private-state.ts";
 import { isAccountKeyEncoding } from "../../shared/account-records.ts";
+import { savedServerId } from "../relay/identity.ts";
+import { ACCOUNT_MOVE_FILE, readMoveJournal } from "./account-move-journal.ts";
+import { withFileLock } from "./pc-binding.ts";
 import { parseEvidence, REMOVAL_FILE, RemovalEvidence, type Marker, type Removal } from "./removal-evidence.ts";
 
 const ENROLLING_FILE = "account-enrolling.json";
@@ -109,6 +112,23 @@ function mergePending(active: string, sibling: string): unknown[] | null {
 export function mergeAccountState(active: string, sibling: string): string | null {
   try {
     const pending = mergePending(active, sibling);
+    const serverId = savedServerId(active) ?? savedServerId(sibling);
+    const movePaths = [join(active, ACCOUNT_MOVE_FILE), join(sibling, ACCOUNT_MOVE_FILE)].sort();
+    const [a, b] = movePaths;
+    if (serverId !== undefined && a !== undefined && b !== undefined && a !== b
+      && (existsSync(a) || existsSync(b))) {
+      withFileLock(a, () => withFileLock(b, () => {
+        const one = readMoveJournal(a), other = readMoveJournal(b);
+        // An unreadable intent is not account authority. Leave it intact for that server to
+        // quarantine and report; never overwrite it with a sibling copy.
+        if (typeof one === "string" || typeof other === "string") return;
+        if (one !== null && other !== null && !Bun.deepEquals(one, other, true)) {
+          throw new Error(`${ACCOUNT_MOVE_FILE} contains conflicting moves`);
+        }
+        if (one?.server_id === serverId && other === null) writePrivateState(b, one);
+        if (other?.server_id === serverId && one === null) writePrivateState(a, other);
+      }));
+    }
     mergeEvidence(active, sibling);
     mergeHolds(active, sibling);
     if (pending !== null) for (const dir of [active, sibling]) writePrivateState(join(dir, PENDING_FILE), pending);

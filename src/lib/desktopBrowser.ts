@@ -4,7 +4,7 @@
  * kept (downloads, an agent's screenshots). Null without the desktop app or while its setting is
  * off, where main answers null. Main is the authority on every field; this only reads them.
  */
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 
 export type DesktopBrowserProfile = "mine" | "agent";
 
@@ -59,6 +59,8 @@ interface Bridge {
   navigate?(id: number, url: string): Promise<boolean>;
   go?(id: number, step: "back" | "forward" | "reload" | "stop"): void;
   hold?(id: number, held: boolean): void;
+  onOpened?(listener: (id: unknown) => void): () => void;
+  showable?(showable: boolean): void;
 }
 
 function bridge(): Bridge | undefined {
@@ -161,6 +163,29 @@ export function hasDesktopBrowser(): boolean {
 export async function openBrowserTab(url: string): Promise<number | null> {
   const open = bridge()?.open;
   return typeof open === "function" ? open(url).catch(() => null) : null;
+}
+
+/** Hears each web link main opened in a tab of the person's own (Settings → Browser for links), by the tab's id; returns the unsubscribe. */
+export function onBrowserTabOpened(listener: (id: number) => void): () => void {
+  const onOpened = bridge()?.onOpened;
+  if (typeof onOpened !== "function") return () => undefined;
+  return onOpened((id) => { if (typeof id === "number" && Number.isSafeInteger(id)) listener(id); });
+}
+
+/** Tells main whether this page can show a tab now: it opens a clicked web link in the built-in browser only then. */
+export function setBrowserTabsShowable(showable: boolean): void {
+  bridge()?.showable?.(showable);
+}
+
+/**
+ * The page's side of Settings → Browser for links = the built-in browser: tells main whether a tab can be shown now
+ * (`showable`), and has each tab main opened for a clicked link shown (`show`, the latest one given).
+ */
+export function useBrowserLinkTabs(showable: boolean, show: (id: number) => void): void {
+  const latest = useRef(show);
+  latest.current = show;
+  useEffect(() => onBrowserTabOpened((id) => latest.current(id)), []);
+  useEffect(() => setBrowserTabsShowable(showable), [showable]);
 }
 
 /** has main draw the tab over `bounds` of the window, in the page's CSS pixels */
