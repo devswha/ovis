@@ -110,6 +110,8 @@ export const TERMINAL_JA: Record<string, string> = {
   "Move tab left": "タブを左に移動",
   "Move tab right": "タブを右に移動",
   "Move to workspace…": "ワークスペースへ移動…",
+  "Bring pane here…": "ここにペインを移動…",
+  "Bring a pane right of {name}": "{name} の右に移すペイン",
   "Move {tab} to": "{tab} の移動先",
   "Tab order did not refresh. Try again.": "タブの順序が更新されませんでした。もう一度お試しください。",
   "Jump to bottom": "一番下へ移動",

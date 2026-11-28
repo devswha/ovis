@@ -13,8 +13,10 @@ export interface HarnessToolSetting {
   readonly harnesses: readonly string[];
 }
 /** Harness kinds with an ACP launch in server/agent-tools/harnesses.ts (resolveHarness). */
-export const ACP_LAUNCH_HARNESSES = ["claude", "codex", "copilot", "opencode", "agy", "gjc", "gemini", "kiro", "kimi", "qwen"] as const;
-export const HARNESS_TOOL_DEFAULT: HarnessToolSetting = { level: "start", depth: 1, harnesses: ACP_LAUNCH_HARNESSES };
+export const ACP_LAUNCH_HARNESSES = ["claude", "codex", "copilot", "opencode", "agy", "gjc", "gemini", "kiro", "kimi", "qwen", "prime-agent"] as const;
+/** Of those, the ones that have no permission modes and run every action without asking: never callable by default. */
+export const UNASKED_HARNESSES: readonly string[] = ["prime-agent"];
+export const HARNESS_TOOL_DEFAULT: HarnessToolSetting = { level: "start", depth: 1, harnesses: ACP_LAUNCH_HARNESSES.filter(id => !UNASKED_HARNESSES.includes(id)) };
 export const HARNESS_TOOL_OFF: HarnessToolSetting = { level: "off", depth: 1, harnesses: [] };
 export function parseHarnessSetting(stored: unknown): HarnessToolSetting | null {
   if (!isRecord(stored) || !Object.keys(stored).every(k => ["level","depth","harnesses"].includes(k))) return null;

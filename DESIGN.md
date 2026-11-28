@@ -3126,7 +3126,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   zoomed one where panes are shown one at a time, is borderless and draws neither button; its actions live in the tab's `⋯` menu rather than a second ellipsis, on a desktop as on touch.
 - A left click or keyboard focus selects the actual pane. Right-click opens the clicked pane's
   menu without changing the selected pane: Rename pane, Clear pane name when named, Swap with
-  focused pane when another is selected, Split right, Split down, Zoom/Unzoom pane, Recover
+  focused pane when another is selected, Split right, Split down, Bring pane here… when another tab
+  holds a pane (below), Zoom/Unzoom pane, Recover
   unsent text while there is some (Unsent text, below), Close pane. It appears at the pointer, clamped to the window. Up/Down
   stop at the ends, hover selects, Enter acts, Escape and an outside click dismiss.
 - Split selects the new pane (`focus:true`), like the TUI. Swap exchanges the right-clicked
@@ -3170,6 +3171,22 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   swap: only from the pane herdr picked when the focused pane left, or from the swap's source. This follows VS Code's editor-group drop overlay (the half a dragged
   editor would take, by the nearest edge) without its centre target: a pane joins no other pane, and
   its title is the swap target.
+  A pane's menu also offers Bring pane here… after Split right and Split down, where the PC splits and
+  moves panes and another tab holds one: a second menu at the same place lists the panes of the PC's
+  other tabs, the pane's own workspace first, then the others in the sidebar's order, each with its
+  tab (and its workspace, when another) as a hint. A row puts its pane right of the pane, as Split
+  right puts a new one, through `POST /api/pane/move`: herdr moves a pane into another tab in one call
+  (from another workspace with a new ID there) and herdr-core relabels it into the tab, then places it
+  in Ovis's document, so the pane keeps its terminal and its running program, as a split's new pane
+  never would. One pane moves, never a tab: a split tab it leaves keeps its other panes as herdr
+  leaves them, and a tab or workspace it leaves empty closes. herdr has no tab merge, and moving a
+  split tab's panes one by one would lose its arrangement; the moved pane is then dragged to another
+  side like any pane of its tab. This follows tmux's `join-pane` (a pane of another window joins the
+  current one beside a pane) and kitty's `detach_window ask` (a window picks the tab it joins from a
+  list). It is no drop onto the canvas: the sidebar's and the strip's drags already open the browser's
+  split view, which shows panes side by side without moving them in herdr.
+  A bridge from before this answers `cross_tab`, and the canvas says the PC does not offer it yet.
+  It is left out with the splits where a phone shows one pane at a time.
   A close confirms when
   the pane is busy or is the last pane of the workspace. Rename is herdr's label; clearing it
   returns to its automatic title. Herdr owns every resulting layout and name.

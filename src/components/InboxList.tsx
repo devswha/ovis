@@ -1,5 +1,5 @@
 import { tally, usageCounters } from "../lib/usageCounters.ts";
-import { useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref, type RefObject } from "react";
+import { useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode, type Ref, type RefObject } from "react";
 import { Ellipsis, ListFilter, Monitor, Plus, Search, Terminal, TriangleAlert, X } from "lucide-react";
 
 import type { Machine } from "../../shared/machines.ts";
@@ -23,8 +23,9 @@ import type { InboxListHandle } from "../lib/useInbox.ts";
 import { questionTargets, useInboxQuestions, type QuestionReads } from "../lib/useInboxQuestions.ts";
 import { summaryTargets, useInboxSummaries, type RowSummary, type SummaryReads } from "../lib/useInboxSummaries.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
+import { shownTabLabels, subscribeTabLabels } from "../lib/tabLabels.ts";
 import { AgentMark } from "./AgentMark.tsx";
-import { agentRowTitle, blockedNote, stateAge } from "./AgentSidebar.tsx";
+import { agentRowTitle, blockedNote, inboxRowTopic, stateAge } from "./AgentSidebar.tsx";
 import { MachineHeader, useMachineFold } from "./MachineHeader.tsx";
 import { machineDotState, STATE_WORD } from "./MachineSidebar.tsx";
 import { RowMenu } from "./RowMenu.tsx";
@@ -91,7 +92,9 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
   const searchToggle = useRef<HTMLButtonElement>(null);
   const { settings, resolvedLanguage } = useSettings();
   const popup = useMediaQuery(SHEET_QUERY) ? "dialog" : "menu";
-  const { agentGroupSort: sort, sidebarRows, statusIndicators } = settings;
+  const { agentGroupSort: sort, autoTabNames, sidebarRows, statusIndicators } = settings;
+  const firstLines = useSyncExternalStore(subscribeTabLabels, shownTabLabels, shownTabLabels);
+  const autoLabels = autoTabNames ? firstLines : null;
   const all = useMemo(() => inboxOrder(machines, activity, { sort, name: (row) => agentRowTitle(row, sidebarRows === "one").drawn }), [machines, activity, sort, sidebarRows]);
   const questions = useInboxQuestions(questionReads, questionTargets(all, activity));
   const summaries = useInboxSummaries(summaryReads, summaryTargets(all, activity), focus.opening);
@@ -105,7 +108,9 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
       question: questions.get(key) ?? null, plan: online ? row.entry.pane.plan : undefined, last: lastWords(summaries.get(key), t),
     });
   };
-  const found = inboxSearched(inboxFiltered(all, filter, activity), query, machines, t, wordsOf);
+  // the tab title a row draws is found too, a learned one included (no snapshot label holds it)
+  const searchedWords = (row: AgentRow): string | null => [inboxRowTopic(row, autoLabels), wordsOf(row)].filter((part) => part !== null).join("\n") || null;
+  const found = inboxSearched(inboxFiltered(all, filter, activity), query, machines, t, searchedWords);
 
   // a state change never moves a row under a finger or the keyboard's focus (AgentSidebar.tsx): while either is in
   // the list, rows keep the order last drawn; the reader's own doing (a filter, a query) draws them as they are at
@@ -165,6 +170,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
     const status = inboxStatus(row, activity);
     const group = agentGroup(status);
     const title = agentRowTitle(row, false).title;
+    const topic = inboxRowTopic(row, autoLabels);
     const tabs = machine.snapshot?.tabs.filter((candidate) => candidate.workspace_id === workspace.workspace_id) ?? [];
     const place = agentContext({
       agentLabel: null, title, markAgent: null, machineName: null,
@@ -178,7 +184,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
     const state = !online ? t("Offline") : failed ? t("Turn failed") : inboxStateWord(group, t);
     const line = inboxRowLine({ online, group, words: wordsOf(row), place, failed }, t);
     return {
-      key, machine, pane, online, status, group, title, line, failed, mark: paneMark(entry) ?? "", kind, state,
+      key, machine, pane, online, status, group, title, topic, line, failed, mark: paneMark(entry) ?? "", kind, state,
       asks: online && inboxAsks(group), since: online ? inboxSinceAt(group, summary, group === "blocked" ? stateSince(stamps, machine.id, pane.pane_id, pane.terminal_id, "blocked") : null) : null,
     };
   });
@@ -274,18 +280,19 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
     const words = <span className="inbox-words" dir="auto">{row.line}</span>;
     const age = row.since === null ? null : stateAge(now - row.since);
     const at = row.since === null ? null : new Date(row.since);
-    const spoken = [row.kind ? agentName(row.kind) : null, row.title, row.state, row.line === row.state ? null : row.line, age].filter((part) => part !== null).join(", ");
+    const spoken = [row.kind ? agentName(row.kind) : null, row.title, row.topic, row.state, row.line === row.state ? null : row.line, age].filter((part) => part !== null).join(", ");
     return (
       <li key={row.key} className={`inbox-item${row.online ? "" : " is-offline"}${row.asks ? " is-asking" : ""}${open ? " is-current" : ""}`} data-machine={row.machine.id} data-pane={row.pane.pane_id} data-state={row.group}>
         <button type="button" className="inbox-row" disabled={!row.online} aria-label={spoken} aria-current={open ? "true" : undefined}
           ref={(node) => { if (node) rowNodes.current.set(row.key, node); else rowNodes.current.delete(row.key); }}
-          title={wide ? [row.title, row.line, at === null ? null : `${age} · ${at.toLocaleString(resolvedLanguage)}`].filter((part) => part !== null).join("\n") : undefined}
+          title={wide ? [row.title, row.topic, row.line, at === null ? null : `${age} · ${at.toLocaleString(resolvedLanguage)}`].filter((part) => part !== null).join("\n") : undefined}
           onPointerDown={(event) => { if (event.button === 0 && row.online) pressPane?.(row.machine.id, row.pane.pane_id); }}
           onClick={() => { tally(() => usageCounters.paneUse("inbox_open", row.machine.id)); onOpen(row.machine.id, row.pane.pane_id); }}>
           <InboxAvatar mark={row.mark} />
           <span className="inbox-body">
             <span className="inbox-line">
               <span className="inbox-name">{row.title}</span>
+              {row.topic !== null && <span className="inbox-topic" dir="auto">{row.topic}</span>}
               {at !== null && <time className="inbox-time" dateTime={at.toISOString()} title={at.toLocaleString(resolvedLanguage)}>{age}</time>}
             </span>
             {wide ? words : <span className="inbox-sub">{words}{stateMark(row.status, row.failed, row.state)}</span>}

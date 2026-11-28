@@ -69,6 +69,7 @@ export function useMachineApi() {
     zoomPane: (pane: string, mode: ZoomMode) => api.zoomPane(pane, mode, id),
     swapPane: (pane: string, direction: PaneDirection) => api.swapPane(pane, direction, id),
     swapPaneWith: (pane: string, target: string) => api.swapPaneWith(pane, target, id),
+    movePaneBeside: (pane: string, target: string, side: PaneDirection) => api.movePaneBeside(pane, target, side, id),
     setSplitRatio: (tab: string, path: boolean[], ratio: number) => api.setSplitRatio(tab, path, ratio, id),
     resizePane: (pane: string, direction: PaneDirection) => api.resizePane(pane, direction, id),
     clearPane: (pane: string) => api.clearPane(pane, id),

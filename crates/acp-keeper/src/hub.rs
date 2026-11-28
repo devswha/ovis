@@ -26,6 +26,9 @@ use crate::model::Model;
 use crate::status::{Key, Mode};
 use crate::Opts;
 
+/// The mode a client expects of an agent that has no permission modes and reports none.
+const NO_MODES: &str = "_keeper/no-modes";
+
 /// Agent lines carry the generation of the agent process that wrote them: lines of an agent the
 /// keeper already ended for the switch are dropped.
 pub enum Ev {
@@ -621,9 +624,11 @@ impl Hub {
     }
 
     fn permits_tool_mode(&self, expected: Option<&str>) -> bool {
+        let current = self.model.modes.as_ref().map(|m| m.current.as_str());
         expected.is_some_and(|mode| !mode.is_empty())
             && !self.model.allow_all
-            && expected == self.model.modes.as_ref().map(|m| m.current.as_str())
+            // an agent without permission modes (Prime Agent) is expected as reporting none, and only while it reports none
+            && (expected == current || (expected == Some(NO_MODES) && current.is_none()))
             && !self.routes.values().any(|route| route.change.is_some())
     }
 
@@ -889,6 +894,21 @@ mod tests {
         let (tx, rx) = unbounded_channel();
         let opts = crate::parse(vec!["keeper".into(), dir.display().to_string(), "--".into(), "agent".into()]).unwrap();
         (Hub::new(Arc::new(archive), tx, opts, false, false), rx)
+    }
+
+    #[test]
+    fn an_agent_without_modes_is_permitted_only_while_it_reports_none() {
+        let dir = std::env::temp_dir().join(format!("ak-no-modes-{}", std::process::id()));
+        let (mut hub, _sent) = hub(&dir);
+        hub.model
+            .session_result(&json!({"sessionId":"s","configOptions":[{"id":"model","category":"model","currentValue":"m"}]}));
+        assert!(hub.permits_tool_mode(Some(NO_MODES)));
+        assert!(!hub.permits_tool_mode(Some("default")));
+        hub.model.update(&json!({"sessionId":"s","update":{"sessionUpdate":"current_mode_update","currentModeId":"default"}}));
+        assert!(!hub.permits_tool_mode(Some(NO_MODES)), "an agent that reports a mode is held to it");
+        assert!(hub.permits_tool_mode(Some("default")));
+        drop(hub);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

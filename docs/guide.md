@@ -109,7 +109,9 @@ its menu (also on a phone). Alt+Shift+Left/Right moves a focused tab. Reordering
 selected pane and saves the order in herdr.
 
 Right-click a pane to rename it, split right or down, zoom it, or close it. Right-clicking another
-pane keeps the current focus, so **Swap with focused pane** exchanges the two. Drag a boundary
+pane keeps the current focus, so **Swap with focused pane** exchanges the two. **Bring pane here…**
+lists the panes of your other tabs and moves the one you pick right of this pane, still running; a
+tab it leaves empty closes. Drag a boundary
 to resize it. On a touch screen, the pane header's **⋯** opens the same menu; on a phone the tab's **⋯** carries
 the open pane's Rename and Close, while split and zoom stay with a screen that shows panes side by
 side. **Unzoom pane** stays in the phone's tab menu when the tab is zoomed, so its other panes

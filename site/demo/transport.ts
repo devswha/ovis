@@ -496,6 +496,55 @@ function structureChanged(): void {
   for (const socket of sockets) socket.push({ type: "session-changed" });
 }
 
+/**
+ * A pane brought beside another tab's pane, as herdr moves it there: it takes half of the target as a split
+ * does and leaves its tab as a close takes it, so a tab it leaves empty closes, and its workspace with it.
+ * The demo keeps its ID, and herdr's focus on it goes with it. With no room beside the target, nothing moves.
+ */
+function moveDemoPaneInto(pane: Pane, target: Pane, split: "right" | "down"): boolean {
+  const snap = snapshot();
+  const from = snap.layouts.find((layout) => layout.tab_id === pane.tab_id);
+  const into = snap.layouts.find((layout) => layout.tab_id === target.tab_id);
+  const cell = into?.panes.find((candidate) => candidate.pane_id === target.pane_id);
+  if (!into || !cell || !splitLayout(into, target.pane_id, { pane_id: pane.pane_id, focused: false, rect: cell.rect }, split)) return false;
+  // a tab the pane leaves shows its other panes again: a zoom on it would hide one of them
+  if (from) { closeLayoutPane(from, pane.pane_id); from.zoomed = false; }
+  const left = { tab: pane.tab_id, workspace: pane.workspace_id };
+  Object.assign(pane, { tab_id: target.tab_id, workspace_id: target.workspace_id });
+  const agent = snap.agents.find((entry) => entry.pane_id === pane.pane_id);
+  if (agent) Object.assign(agent, { tab_id: target.tab_id, workspace_id: target.workspace_id });
+  if (!snap.panes.some((candidate) => candidate.tab_id === left.tab)) {
+    snap.tabs = snap.tabs.filter((tab) => tab.tab_id !== left.tab);
+    snap.layouts = snap.layouts.filter((layout) => layout.tab_id !== left.tab);
+    autoTabs.delete(left.tab);
+    relabelAutoTabs(left.workspace);
+  } else if (from && from.focused_pane_id === pane.pane_id) {
+    from.focused_pane_id = from.panes[0]!.pane_id;
+    for (const candidate of from.panes) candidate.focused = candidate.pane_id === from.focused_pane_id;
+  }
+  snap.workspaces = snap.workspaces.filter((workspace) => snap.tabs.some((tab) => tab.workspace_id === workspace.workspace_id));
+  if (snap.focused_pane_id === pane.pane_id) {
+    snap.focused_tab_id = target.tab_id;
+    snap.focused_workspace_id = target.workspace_id;
+    into.focused_pane_id = pane.pane_id;
+    for (const candidate of into.panes) candidate.focused = candidate.pane_id === pane.pane_id;
+    // as focusDemoPane does: the focused pane's tab is its workspace's active one
+    const workspace = snap.workspaces.find((entry) => entry.workspace_id === target.workspace_id);
+    if (workspace) workspace.active_tab_id = target.tab_id;
+  }
+  for (const tab of snap.tabs) {
+    const own = snap.panes.filter((candidate) => candidate.tab_id === tab.tab_id);
+    Object.assign(tab, { pane_count: own.length, agent_status: rollupStatus(own.map((candidate) => candidate.agent_status)), focused: tab.tab_id === snap.focused_tab_id });
+  }
+  for (const [index, workspace] of snap.workspaces.entries()) {
+    const own = snap.panes.filter((candidate) => candidate.workspace_id === workspace.workspace_id);
+    const tabs = snap.tabs.filter((tab) => tab.workspace_id === workspace.workspace_id);
+    Object.assign(workspace, { number: index + 1, pane_count: own.length, tab_count: tabs.length, agent_status: rollupStatus(own.map((candidate) => candidate.agent_status)), focused: workspace.workspace_id === snap.focused_workspace_id });
+    if (!tabs.some((tab) => tab.tab_id === workspace.active_tab_id)) workspace.active_tab_id = tabs[0]!.tab_id;
+  }
+  return true;
+}
+
 /** A click in herdr focuses the pane, its tab and its workspace while preserving other tabs' own focus. */
 function focusDemoPane(pane: Pane): void {
   const snap = snapshot();
@@ -1765,14 +1814,15 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
       if (side !== "left" && side !== "right" && side !== "up" && side !== "down") return error("invalid_side", "side must be left, right, up or down", 400);
       const other = paneOf(target);
       if (!other) return error("pane_not_found", "pane not found", 404);
-      const reason = other.pane_id === pane.pane_id ? "same_pane" : other.tab_id !== pane.tab_id ? "cross_tab" : null;
-      if (reason) return json({ ok: true, changed: false, reason } satisfies PaneMoved);
+      if (other.pane_id === pane.pane_id) return json({ ok: true, changed: false, reason: "same_pane" } satisfies PaneMoved);
       const split = side === "left" || side === "right" ? "right" : "down";
-      if (!moveLayoutPane(layout, pane.pane_id, target, split)) return error("split_failed", "The demo pane is too small to split.", 400);
+      const into = snap.layouts.find((candidate) => candidate.tab_id === other.tab_id);
+      if (!into) return error("pane_not_found", "pane not found", 404);
+      if (!(other.tab_id === pane.tab_id ? moveLayoutPane(layout, pane.pane_id, target, split) : moveDemoPaneInto(pane, other, split))) return error("split_failed", "The demo pane is too small to split.", 400);
       // herdr puts a moved pane right of or below its target: a swap puts it before
-      if (side === "left" || side === "up") swapLayoutPanes(layout, pane.pane_id, target);
+      if (side === "left" || side === "up") swapLayoutPanes(into, pane.pane_id, target);
       // a zoomed tab shows every pane again, as herdr-core's move makes it, so the moved one is in view
-      layout.zoomed = false;
+      into.zoomed = false;
       structureChanged();
       return json({ ok: true, changed: true, reason: null } satisfies PaneMoved);
     }

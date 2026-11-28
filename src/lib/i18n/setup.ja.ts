@@ -75,5 +75,6 @@ export const SETUP_JA: Record<string, string> = {
   "Let agents call other agents": "ほかのエージェントを呼び出す",
   "On this PC only. Only you can approve requests.": "この PC でのみ。承認はご自身で行います。",
   "Agents they may call": "呼び出せるエージェント",
+  "{agents} runs code and commands without asking.": "{agents} は確認せずにコードとコマンドを実行します。",
   "Not saved: this PC did not answer. Try again.": "保存できませんでした: この PC が応答しませんでした。もう一度お試しください。",
 };

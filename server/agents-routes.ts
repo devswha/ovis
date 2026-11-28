@@ -23,6 +23,7 @@ export const AGENT_LABELS: Record<string, string> = {
   copilot: "GitHub Copilot",
   kimi: "Kimi",
   qwen: "Qwen Code",
+  "prime-agent": "Prime Agent",
   amp: "Amp",
   hermes: "Hermes",
   grok: "Grok",

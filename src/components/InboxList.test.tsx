@@ -10,6 +10,7 @@ import * as api from "../lib/api.ts";
 import type { HeaderConnection } from "../lib/headerConnection.ts";
 import { PanePressContext } from "../lib/paneSubmitContext.ts";
 import { SettingsProvider } from "../lib/settings.ts";
+import { forgetTabLabelsForTests, setTabLabels, tabLabelKey } from "../lib/tabLabels.ts";
 import { usageCounters } from "../lib/usageCounters.ts";
 import type { SidebarActivity } from "../lib/sidebarActivity.tsx";
 
@@ -272,6 +273,41 @@ describe("InboxList", () => {
     const root = await draw(roster((pane) => pane.pane_id === "w1F:p1" ? { ...pane, label: "docs-site" } as HerdrPane : pane));
     expect(byClass(item(root, "w1F:p1"), "inbox-name").map(text)).toEqual(["docs-site"]);
     expect(words(root, "w1F:p1")).toEqual(["Ready"]);
+  });
+
+  it("draws a tab's auto-title, without its place, on the row's name line; a learned first line where the tab has none", async () => {
+    try {
+      const machines = roster((pane) => {
+        if (pane.pane_id === "w1C:p1") return { ...pane, label: undefined, title: "Claude Code", terminal_title: "Claude Code", terminal_title_stripped: "Claude Code" } as HerdrPane;
+        if (pane.pane_id === "w1E:p1") return { ...pane, label: undefined, title: "gjc", terminal_title: "gjc", terminal_title_stripped: "gjc" } as HerdrPane;
+        if (pane.pane_id === "w1F:p1") return { ...pane, label: undefined, title: "jimmy@herdr: ~/projects/docs-site" } as HerdrPane;
+        return pane;
+      });
+      machines[0]!.snapshot!.tabs = machines[0]!.snapshot!.tabs.map((tab) =>
+        tab.tab_id === "w1C:t1" ? { ...tab, label: "1 · Agent Inbox Feature Check" }
+          : tab.tab_id === "w1D:t1" ? { ...tab, label: "1 · Export Button Guard" }
+            : tab.tab_id === "w1F:t1" ? { ...tab, label: "1 · agy" }
+              : tab);
+      const w1e = machines[0]!.snapshot!.panes.find((pane) => pane.pane_id === "w1E:p1")!;
+      setTabLabels({ [tabLabelKey("local", w1e)]: "Investigate backup failure" });
+      const root = await draw(machines);
+      const said = (paneId: string, kind: string) => byClass(item(root, paneId), kind).map(text);
+      expect(said("w1C:p1", "inbox-name")).toEqual(["checkout-api"]);
+      // beside the name, so the row keeps its two lines
+      expect(byClass(item(root, "w1C:p1"), "inbox-line").map((line) => byClass(line, "inbox-topic").map(text))).toEqual([["Agent Inbox Feature Check"]]);
+      expect(said("w1D:p1", "inbox-name")).toEqual(["Guard the export button"]);
+      expect(said("w1D:p1", "inbox-topic")).toEqual(["Export Button Guard"]);
+      expect(said("w1E:p1", "inbox-topic")).toEqual(["Investigate backup failure"]);
+      // a bare command ("agy") or the folder names nothing the row's name does not
+      expect(said("w1F:p1", "inbox-topic")).toEqual([]);
+      // and a row with no title of its own keeps the name it has without one
+      expect(said("w1F:p1", "inbox-name")).toEqual(["jimmy@herdr: ~/projects/docs-site"]);
+      // a search finds a row by the title it draws, a learned one included
+      await redraw({ query: "backup failure" });
+      expect(byClass(root, "inbox-item").map((row) => row.dataset["pane"])).toEqual(["w1E:p1"]);
+    } finally {
+      forgetTabLabelsForTests();
+    }
   });
 
   it("says what a working agent is on from its plan", async () => {

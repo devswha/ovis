@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HC_METHODS } from "../../scripts/hc-types.ts";
 import { corePids, stopTestCores } from "../../scripts/test-hc.ts";
-import { herdrRpc, paneMoveToNewTab, paneRead, paneSendText, ping, sessionSnapshot, tabRename, workspaceClose, workspaceCreate, workspaceRename } from "../herdr/client.ts";
+import { herdrRpc, paneMoveBeside, paneMoveToNewTab, paneRead, paneSendText, ping, sessionSnapshot, tabRename, workspaceClose, workspaceCreate, workspaceRename } from "../herdr/client.ts";
 import { startHerdrCoreAdapter } from "./adapter.ts";
 import { CoreAttachSession, PAINT_END } from "./attach-session.ts";
 import { HcConnection } from "./connection.ts";
@@ -300,6 +300,37 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
       expect(snapshot.workspaces.some((workspace) => workspace.workspace_id === web.workspace.workspace_id)).toBe(false);
       expect(snapshot.tabs.filter((tab) => tab.workspace_id === api.workspace.workspace_id).map((tab) => tab.label)).toEqual(["server", "moved"]);
       expect(snapshot.workspaces.find((workspace) => workspace.workspace_id === api.workspace.workspace_id)?.label).toBe("backend");
+      await workspaceClose(api.workspace.workspace_id, socket);
+    } finally {
+      adapter.stop();
+    }
+  }, TEST_MS);
+
+  it("brings a pane of another tab beside a pane by its labels and Ovis's document, its program running on", async () => {
+    const socket = join(dir, "herdr.sock");
+    const adapter = await startHerdrCoreAdapter(hc, socket);
+    try {
+      const api = await workspaceCreate({ cwd: dir, label: "api" }, socket);
+      const web = await workspaceCreate({ cwd: dir, label: "web" }, socket);
+      const logs = (await herdrRpc<{ pane: HerdrPane }>("pane.split", { target_pane_id: web.root_pane.pane_id, direction: "right" }, socket)).pane;
+      const pid = async (address: string) => (await hc.call("terminal.get", { terminal: address })).pid;
+      const running = await pid(logs.pane_id);
+      expect(typeof running).toBe("number");
+      // logs leaves a tab of two: web's root pane stays there
+      expect(await paneMoveBeside(logs.pane_id, api.root_pane.pane_id, "down", socket)).toEqual({ changed: true, reason: null });
+      const snapshot = await sessionSnapshot(socket);
+      expect(snapshot.panes.find((pane) => pane.pane_id === logs.pane_id)).toMatchObject({ tab_id: api.tab.tab_id, workspace_id: api.workspace.workspace_id });
+      expect(snapshot.panes.filter((pane) => pane.tab_id === web.tab.tab_id).map((pane) => pane.pane_id)).toEqual([web.root_pane.pane_id]);
+      expect(Object.fromEntries(snapshot.layouts.find((layout) => layout.tab_id === api.tab.tab_id)!.panes.map((pane) => [pane.pane_id, pane.rect]))).toEqual({
+        [api.root_pane.pane_id]: { x: 0, y: 0, width: 1000, height: 500 },
+        [logs.pane_id]: { x: 0, y: 500, width: 1000, height: 500 },
+      });
+      expect(await pid(logs.pane_id)).toBe(running);
+      // web's last pane: its tab and workspace close with the move
+      const last = await herdrRpc<{ move_result: { changed: boolean; closed_tab_id: string | null; closed_workspace_id: string | null } }>("pane.move", {
+        pane_id: web.root_pane.pane_id, destination: { type: "tab", tab_id: api.tab.tab_id, target_pane_id: logs.pane_id, split: "right" },
+      }, socket);
+      expect(last.move_result).toMatchObject({ changed: true, closed_tab_id: web.tab.tab_id, closed_workspace_id: web.workspace.workspace_id });
       await workspaceClose(api.workspace.workspace_id, socket);
     } finally {
       adapter.stop();

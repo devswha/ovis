@@ -70,8 +70,18 @@ impl Model {
         let Some(update) = params.get("update") else { return };
         match update.get("sessionUpdate").and_then(Value::as_str).unwrap_or("") {
             "current_mode_update" => {
-                if let (Some(modes), Some(id)) = (self.modes.as_mut(), str_field(update, "currentModeId")) {
-                    modes.current = id;
+                if let Some(id) = str_field(update, "currentModeId") {
+                    match self.modes.as_mut() {
+                        Some(modes) => modes.current = id,
+                        // an agent that opened without modes now reports one: it is held to that mode from here on
+                        None => {
+                            self.modes = Some(Selector {
+                                current: id,
+                                options: Vec::new(),
+                                config_id: None,
+                            })
+                        }
+                    }
                 }
             }
             "config_option_update" => {

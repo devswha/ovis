@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import { isBrowserToolAgent } from "../../shared/browser-tools.ts";
+import { UNASKED_HARNESSES } from "../../shared/harness-tool.ts";
 import type { Capabilities } from "../../shared/harness-contract.generated.ts";
 
 const adapters = {
@@ -13,7 +14,14 @@ export interface HarnessCommand {
   readonly configOptions?: readonly unknown[];
   /** A mode set with `session/set_mode` once the session opens, for a harness whose opening report is not its mode */
   readonly setMode?: string;
+  /**
+   * For an agent whose ACP mode is a client of a daemon it starts and that outlives it: the child gets a daemon of its
+   * own on a socket in its private folder, passed after `socketArg`, and once the child has ended `stop` runs with the
+   * socket and that folder in `socketEnv` and `folderEnv` (AcpStart.ownDaemon).
+   */
+  readonly ownDaemon?: OwnDaemon;
 }
+export interface OwnDaemon { readonly socketArg: string; readonly stop: readonly string[]; readonly socketEnv: string; readonly folderEnv: string }
 const KIRO_NO_AGENTS = "/nonexistent/ovis-kiro-agents";
 /** The file a link on PATH names, or null once it is gone. */
 const resolved = (path: string | null): string | null => {
@@ -42,6 +50,16 @@ export function resolveHarness(kind: string): HarnessCommand | null {
         // unless the person turned folder trust on), so one approved launch would let edits run unasked: the child has none
         case "qwen": return { argv: [path, "--acp", "--approval-mode", "default", "--exclude-tools", "agent"] };
       }
+    }
+    case "prime-agent": {
+      // Prime Agent 0.10 serves ACP over a background daemon that it starts detached and that outlives it, with its
+      // workers and Python kernels; the default daemon may be the person's own, which a child must not share. Its
+      // shutdown, scoped to the child's socket and folder, stops no daemon of the person's (measured on 0.10.5)
+      const path = resolved(Bun.which("prime-agent", { PATH: process.env["PATH"] }));
+      return path === null ? null : {
+        argv: [path, "--mode", "acp"], env: { PRIME_AGENT_TELEMETRY: "0" },
+        ownDaemon: { socketArg: "--daemon-socket", stop: [path, "shutdown", "--force"], socketEnv: "PRIME_AGENT_DAEMON_SOCKET", folderEnv: "PRIME_AGENT_CODING_AGENT_DIR" },
+      };
     }
     case "claude": case "codex": {
       const adapter = adapters[kind];
@@ -72,7 +90,13 @@ const FULL_ACCESS_MODES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
 ]);
 /** Harnesses whose child must start in their ordinary mode, not merely outside a known full-access one. */
 const ORDINARY_MODES: ReadonlyMap<string, string> = new Map([["claude", "default"], ["agy", "default"], ["gemini", "default"], ["kiro", "vibe"], ["kimi", "default"], ["qwen", "default"]]);
+/**
+ * What a child of a harness without permission modes (UNASKED_HARNESSES) is expected to report instead of a mode: the
+ * keeper takes it only while the agent reports no mode at all (crates/acp-keeper, `permits_tool_mode`).
+ */
+export const NO_MODES = "_keeper/no-modes";
 export function allowsDelegatedMode(kind: string, mode: string): boolean {
+  if (UNASKED_HARNESSES.includes(kind) || mode === NO_MODES) return UNASKED_HARNESSES.includes(kind) && mode === NO_MODES;
   const ordinary = ORDINARY_MODES.get(kind);
   if (ordinary !== undefined) return mode === ordinary;
   return FULL_ACCESS_MODES.get(kind)?.has(mode) !== true;

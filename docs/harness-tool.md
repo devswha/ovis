@@ -29,10 +29,11 @@ The run reports are under `~/.dori-sa/reports/acp-children-open/`.
 | Kiro CLI (`kiro-cli acp --agent-engine=v3`) | `vibe` | A file write and a shell `mkdir` each requested approval on a clean setup (3.6.2), though its `autopilot` option reads `on` by default; consent rules the person saved still apply. Ovis points `KIRO_AGENT_CONFIG_DIR` at a folder that does not exist: started on V3, Kiro 3.6 otherwise rewrites the person's V2 agent files (`~/.kiro/agents`, the folder's `.kiro/agents`), so the child offers Kiro's own modes only. | `server/agent-tools/fixtures/kiro-3.6.2-*` |
 | Kimi Code (`kimi acp`) | `default` (manual approvals) | A file write and a shell `mkdir` each requested approval on a clean setup (2.8.1). Kimi 2.8.1 reports `default` on every new session even when the person saved another `default_permission_mode` (with `yolo` saved, a `mkdir` ran unasked), so Ovis sends `session/set_mode` `default` before the first task and does not start a child whose mode it could not set. Its request names no `kind`, only the tool (`Write`, `Bash`); the tool call it announced before it carries the kind. | `server/agent-tools/fixtures/kimi-2.8.1-*` |
 | Qwen Code (`qwen --acp --approval-mode default --exclude-tools agent`) | `default` | A file write and a shell `mkdir` each requested approval on a clean setup (0.28.7). Without the flag its ACP sessions open in `auto` (a model approves actions) or in the approval mode the person saved, so Ovis passes `--approval-mode default`, which outranks both. Its `agent` tool starts a subagent in `auto-edit` in a trusted folder, so the child runs without it. Qwen still reads the working folder's `.env` and settings, as when a person starts it there. | `server/agent-tools/fixtures/qwen-0.28.7-*` |
+| Prime Agent (`prime-agent --mode acp`) | none: it has no permission modes | Everything. It never asks: its one tool, a Python REPL, edits files and runs commands as you (0.10.5 wrote a file in its first turn with no request). So it is never selected by default, and Settings says so under **Agents they may call**; the child must keep reporting no mode. Its ACP mode works through a background daemon that outlives it, so the child gets a daemon of its own on a socket in its private folder (not the person's default daemon), which Ovis shuts down once the child has ended (a folder whose daemon is not confirmed stopped is kept and tried again at the next start); the shutdown is scoped to that socket and folder and leaves the person's daemons alone. Its workers are recorded in the person's own Prime Agent folder, so a daemon that does not stop by itself can leave a Python kernel behind. Ovis turns its anonymous usage report off for the child (`PRIME_AGENT_TELEMETRY=0`). | `server/agent-tools/fixtures/prime-agent-0.10.5-*` |
 
 Claude, agy, Gemini CLI, Kimi Code and Qwen Code must report `default`, and Kiro `vibe`. Ovis still refuses known full-access modes such as Codex's
 `agent-full-access` and Copilot's `autopilot` / `allow-all`, and stops any start that reports no
-mode. Claude's adapter is asked not to offer bypass. Ovis disables Copilot's `COPILOT_ALLOW_ALL`
+mode, except Prime Agent's, which has none and must report none. Claude's adapter is asked not to offer bypass. Ovis disables Copilot's `COPILOT_ALLOW_ALL`
 and refuses its separate Allow All selector even when the ACP mode still reads `#agent`.
 The keeper rechecks both the starting mode and Allow All just before Ovis registers the child,
 and before every delegated prompt or parent answer. A widened start stops with `not_granted`; a later prompt is
@@ -48,7 +49,8 @@ commands, and Copilot's `/allow-all` turns every card off without changing its r
 
 Settings → Agents → **Let agents call other agents** defaults to `start` on this PC's herdr-core
 (not on Windows). The default policy includes every harness with an ACP launch: Claude Code, Codex,
-Copilot, OpenCode, agy, GJC, Gemini CLI, Kiro, Kimi Code and Qwen Code. This does not install adapters or bypass launch checks.
+Copilot, OpenCode, agy, GJC, Gemini CLI, Kiro, Kimi Code and Qwen Code; Prime Agent, which never asks, is offered but
+not selected. This does not install adapters or bypass launch checks.
 **Agents they may call** shows installed agents with an ACP launch; deselect any you do not want
 called. Appearing in the list does not guarantee a start. Existing saved policies, including
 `view` and `off`, do not change. A driving device can set the policy with `PUT /api/preferences`,

@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it, spyOn } from "bun:test";
 import * as darwinProcess from "./darwin-process.ts";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,6 +9,14 @@ import { CompletionTracker, type OmoRest } from "./completion.ts";
 import { Finishes } from "./finishes.ts";
 import { createGjcStatus, gjcPanes, gjcTurnAfter, readOmoSnapshot, reconcileProviderStatus } from "./gjc-status.ts";
 import { noTurn, OMO_ALIASES, OmoStatus, type OmoLine, type OmoPane, type OmoTurn } from "./omo-status.ts";
+
+// a background job's start and end, as gjc's task, bash, job and subagent tools write them
+const JOB_AT = "2026-10-02T00:00:15.000Z";
+const result = (toolName: string, details: unknown, text = "") => JSON.stringify({ type: "message", timestamp: JOB_AT, message: { role: "toolResult", toolName, toolCallId: "c", content: [{ type: "text", text }], details } });
+const taskStarted = (...ids: string[]) => result("task", { async: { state: "running", jobId: ids[0], type: "task" } },
+  `Started ${ids.length} background task jobs using executor.\n${ids.map((id) => `- \`${id}\` (job \`${id}\`)`).join("\n")}`);
+const bashStarted = (id: string) => result("bash", { async: { state: "running", jobId: id, type: "bash" } }, `Background job ${id} started: x`);
+const delivered = (...ids: string[]) => JSON.stringify({ type: "custom_message", customType: "async-result", display: true, content: "…", timestamp: "2026-10-02T00:00:40.000Z", details: { jobs: ids.map((jobId) => ({ jobId, type: "task" })) } });
 
 // records as gjc's native transcript writes them: a message envelope with the pi family's roles
 const message = (role: string, stopReason?: string, at = "2026-10-02T00:00:10.000Z", text = "") => JSON.stringify({ type: "message", id: "x", parentId: null, timestamp: at, message: { role, content: [{ type: "text", text }], ...(stopReason ? { stopReason } : {}) } });
@@ -75,6 +83,27 @@ describe("a GJC turn, read from its transcript", () => {
     expect(reduce(...rested, message("assistant", "stop", "2026-10-02T00:00:30.000Z", "the async-result arrived")).status).toBe("idle");
     expect(reduce(...rested, bookkeeping("task-notification")).status).toBe("idle");
     expect(reduce(...rested, JSON.stringify({ type: "custom_message", customType: "task-notificationed" })).status).toBe("idle");
+  });
+
+  it("keeps each background job a turn started open until its delivery, an await or a cancel", () => {
+    const reduce = (...entries: string[]) => entries.reduce(status, noTurn());
+    const ids = (...entries: string[]) => reduce(...entries).detached?.map((job) => job.id) ?? [];
+    // a task batch names every job in its text; its details name only the first
+    const ran = [message("user"), message("assistant", "toolUse"), taskStarted("0-A", "1-B"), bashStarted("bg_1"), message("assistant", "stop")];
+    expect(reduce(...ran)).toMatchObject({ status: "idle", detached: [{ id: "0-A", at: Date.parse(JOB_AT) }, { id: "1-B" }, { id: "bg_1" }] });
+    // one delivery can end several; the session wakes for it
+    expect(reduce(...ran, delivered("0-A", "bg_1"))).toMatchObject({ status: "working", detached: [{ id: "1-B" }] });
+    // an await or a cancel ends a job with no delivery after it; one still running stays
+    expect(ids(...ran, result("subagent", { subagents: [{ id: "0-A", jobId: "0-A", status: "completed" }, { id: "1-B", jobId: "1-B", status: "running" }] }))).toEqual(["1-B", "bg_1"]);
+    expect(ids(...ran, result("job", { jobs: [{ id: "bg_1", status: "failed" }], cancelled: [{ id: "1-B", status: "cancelled" }] }))).toEqual(["0-A"]);
+    // a paused job runs no more: nothing waits on it
+    expect(ids(...ran, result("job", { jobs: [{ id: "bg_1", status: "paused" }] }))).toEqual(["0-A", "1-B"]);
+    // a job a started task's description names, in the form gjc's list writes, is no job that task started
+    expect(ids(message("user"), result("task", { async: { state: "running", jobId: "0-Fix", type: "task" } },
+      "Started 1 background task job using executor.\n- `0-Fix` (job `0-Fix`) — retry what (job `0-Old`) left half done"), message("assistant", "stop"))).toEqual(["0-Fix"]);
+    // a job that finished in the foreground, a sync task and a quoted start are no background work
+    expect(ids(message("user"), result("task", { async: { state: "completed", jobId: "2-C", type: "task" } }, "(job `2-C`)"), result("task", { results: [] }, "(job `3-D`)"),
+      message("user", undefined, undefined, "(job `4-E`)"), message("assistant", "stop"))).toEqual([]);
   });
 
   it("rejects a record that is not an object, and never throws on one", () => {
@@ -211,6 +240,42 @@ describe("a GJC pane's status in place of herdr's provider-child status", () => 
     gjc.poll();
     expect(completions.observe("gjc", told.at(-1)![1], "gjc")).toBe("working");
     expect(statuses(await served())["gjc"]).toBe("gjc/working");
+  });
+
+  it("reports the background jobs a turn left running, and none once their delivery arrives", async () => {
+    const { gjc, told, append } = setup(lines(message("user")));
+    await gjc.refresh(herdr().panes);
+    append(taskStarted("0-A"), message("assistant", "stop", "2026-10-02T00:00:30.000Z"));
+    gjc.poll();
+    expect(told.at(-1)).toEqual(["gjc", "idle", 1, true]);
+    expect(gjc.backgroundOf("gjc")).toBe(1);
+    append(delivered("0-A"));
+    gjc.poll();
+    expect(told.at(-1)).toEqual(["gjc", "working", 0, true]);
+    expect(gjc.backgroundOf("gjc")).toBe(0);
+  });
+
+  it("holds a turn gjc 0.18.12 ended on its background task job until the job's delivery (recorded)", async () => {
+    // a real gjc 0.18.12 session's records: prompt, task call, task result naming its job, rest, async-result, answer
+    const recorded = readFileSync(join(import.meta.dir, "fixtures", "gjc-0.18.12-background-task.jsonl"), "utf8").trim().split("\n");
+    const { gjc, told, append } = setup(lines(recorded[0]!));
+    await gjc.refresh(herdr().panes);
+    append(...recorded.slice(1, 4));
+    gjc.poll();
+    expect(told.at(-1)).toEqual(["gjc", "idle", 1, true]);
+    append(recorded[4]!);
+    gjc.poll();
+    expect(told.at(-1)).toEqual(["gjc", "working", 0, true]);
+    append(recorded[5]!);
+    gjc.poll();
+    expect(told.at(-1)).toEqual(["gjc", "idle", 0, true]);
+  });
+
+  it("ignores background jobs from before the process holding the session", async () => {
+    const { gjc, state } = setup(lines(message("user"), taskStarted("0-A"), message("assistant", "stop", "2026-10-02T00:00:30.000Z")));
+    state.discovered.set("gjc", { path: FILE, startedAt: Date.parse("2026-10-02T00:00:20.000Z") });
+    await gjc.refresh(herdr().panes);
+    expect(gjc.backgroundOf("gjc")).toBe(0);
   });
 
   it("reads READY not DONE for a turn that ended in an error or an abort, and DONE once a retry answers", async () => {

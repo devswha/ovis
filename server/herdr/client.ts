@@ -921,11 +921,13 @@ export function focusFromMove(paneId: string): boolean {
 }
 
 /**
- * The pane leaves its place for `side` of another pane of its own tab, its terminal running and its
- * ID kept. herdr 0.9.5 moves a pane into a tab only from another one (`same_tab` otherwise), and only
- * right of or below its target: the pane first goes to a tab of its own in its workspace, which herdr
- * closes again once the pane is back beside the target, and a swap then puts it left of or above
- * it. A herdr that moves within a tab, and herdr-core, take the first call. A pane herdr will not move
+ * The pane leaves its place for `side` of another pane, of its own tab or another one, its terminal
+ * running. herdr moves a pane into another tab in one call, right of or below its target (from another
+ * workspace with a new ID there), and closes a tab or workspace the pane leaves empty. herdr 0.9.5 moves
+ * a pane into a tab only from another one (`same_tab` otherwise): within its tab the pane first goes to
+ * a tab of its own in its workspace, which herdr closes again once the pane is back beside the target,
+ * and keeps its ID. A swap then puts it left of or above the target. A herdr that moves within a tab,
+ * and herdr-core, take the first call. A pane herdr will not move
  * out of its tab (a zoomed tab, say) moves nothing, `changed: false`. A pane herdr will not
  * bring back beside its target goes back beside another pane of its tab, and the error says so, or
  * says where it waits. A swap herdr refuses, or that fails, leaves it moved, right of or below the
@@ -939,7 +941,6 @@ export async function paneMoveBeside(paneId: string, targetPaneId: string, side:
     const target = before.panes.find((candidate) => candidate.pane_id === targetPaneId);
     if (!pane || !target) throw new HerdrError("pane_not_found", `pane ${pane ? targetPaneId : paneId} not found`);
     if (paneId === targetPaneId) return { changed: false, reason: "same_pane" };
-    if (pane.tab_id !== target.tab_id) return { changed: false, reason: "cross_tab" };
     type Moved = { changed?: boolean; reason?: string | null; pane: PaneInfo; source_layout?: { focused_pane_id?: string | null } };
     const move = async (id: string, destination: Record<string, unknown>) =>
       (await herdrRpc<{ move_result: Moved }>("pane.move", { pane_id: id, destination, focus: false }, socket)).move_result;

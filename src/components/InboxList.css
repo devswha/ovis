@@ -355,6 +355,25 @@
   white-space: nowrap;
 }
 
+/* the tab's auto-title, small beside the name: it takes only the room the name leaves, so it is cut first */
+.mode-inbox .inbox-name:has(+ .inbox-topic) {
+  flex-grow: 0;
+}
+
+.mode-inbox .inbox-topic {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode-inbox .inbox-topic::before {
+  content: "\00B7\00A0";
+}
+
 .mode-inbox .inbox-sub {
   display: flex;
   align-items: center;
@@ -603,6 +622,10 @@
 
 .mode-inbox.is-wide .inbox-name {
   font-size: var(--fs-md);
+}
+
+.mode-inbox.is-wide .inbox-topic {
+  font-size: var(--fs-xs);
 }
 
 .mode-inbox.is-wide .inbox-words {
