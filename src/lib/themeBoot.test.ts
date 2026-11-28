@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { DEFAULT_SETTINGS, loadSettings, resolveTheme, sanitizeSettings } from "./settings.ts";
-import { applyThemeEntry, CUSTOM_ROWS_STORAGE_KEY, CUSTOM_THEMES_STORAGE_KEY, DEFAULT_APPEARANCE, MARKDOWN_STYLE_STORAGE_KEY, readStoredAppearance, savedMarkdownStyle, savedThemeEntry, SETTINGS_STORAGE_KEY, storedAppearance, THEME_VARS, THEMES_STORAGE_KEY } from "./themeBoot.ts";
+import { applyThemeEntry, CUSTOM_ROWS_STORAGE_KEY, CUSTOM_THEMES_STORAGE_KEY, DEFAULT_APPEARANCE, MARKDOWN_STYLE_STORAGE_KEY, readStoredAppearance, sanitizeAppearance, savedMarkdownStyle, savedThemeEntry, SETTINGS_STORAGE_KEY, storedAppearance, THEME_VARS, THEMES_STORAGE_KEY } from "./themeBoot.ts";
 import { bootRows, customRow, drawnTheme, NO_CUSTOM_THEMES, readThemeFile, withTheme, type CustomTheme } from "./customThemes.ts";
 import { themeFor } from "./themeFor.ts";
 import { rowFor, SUPPORTED_ENTRIES, THEME_IDS, type DrawnTheme } from "./themes.ts";
@@ -346,5 +346,19 @@ describe("an imported theme at the first frame", () => {
     records.set(MARKDOWN_STYLE_STORAGE_KEY, JSON.stringify("invalid"));
     expect(read()).toBe("editorial");
     expect(loadSettings().markdownStyle).toBe("editorial");
+  });
+});
+
+describe("a modern record without a valid theme choice (#3466 item 3)", () => {
+  test("keeps both stored sides and follows the OS, not the legacy dark fallback", () => {
+    for (const record of [
+      { palette: null, darkTheme: "nord", lightTheme: "catppuccin" },
+      { palette: "amber", theme: "sepia", darkTheme: "nord", lightTheme: "catppuccin" },
+    ]) {
+      expect(sanitizeAppearance(record)).toEqual({ theme: "system", darkTheme: "nord", lightTheme: "catppuccin" });
+    }
+  });
+  test("a legacy palette record still boots dark", () => {
+    expect(sanitizeAppearance({ palette: "charcoal" }).theme).toBe("dark");
   });
 });

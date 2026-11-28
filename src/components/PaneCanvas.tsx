@@ -458,7 +458,8 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
             event.dataTransfer.setData(PANE_DRAG_TYPE, paneDragData({ machineId, paneId: item.pane_id }));
           }}>
           <span className="pane-frame-title" role={active && !offTab ? "heading" : undefined} aria-level={active && !offTab ? 2 : undefined}><span role="button" tabIndex={0} style={{ display: "block", lineHeight: "var(--pointer-target)", overflow: "hidden", textOverflow: "ellipsis" }} onClick={(event) => {
-            if (!paneContextPress(event, apple)) paneInput(event.currentTarget.closest(".pane-frame"))?.focus({ preventScroll: true });
+            // a tap would raise the on-screen keyboard over the pane it only meant to pick
+            if (!coarse && !paneContextPress(event, apple)) paneInput(event.currentTarget.closest(".pane-frame"))?.focus({ preventScroll: true });
           }} onKeyDown={(event) => {
             if (event.key !== "Enter" && event.key !== " ") return;
             event.preventDefault();

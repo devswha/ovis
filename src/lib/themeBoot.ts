@@ -48,7 +48,8 @@ export function defaultThemeSetting(): ThemeSetting {
 
 export function sanitizeAppearance(raw: unknown): Appearance {
   const record = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
-  const beforeThemes = "palette" in record || "paletteDark" in record || "paletteLight" in record;
+  const beforeThemes = !("darkTheme" in record || "lightTheme" in record)
+    && ("palette" in record || "paletteDark" in record || "paletteLight" in record);
   const theme = record["theme"] === "dark" || record["theme"] === "light" || record["theme"] === "system" ? record["theme"] : beforeThemes ? "dark" : defaultThemeSetting();
   const palette = isThemeId(record["palette"]) ? record["palette"] : "amber";
   const darkTheme = "darkTheme" in record

@@ -225,7 +225,6 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
     if (form !== null) writeReplyCommentDraft(storageKey, form.quote, value);
   };
   const close = () => {
-    if (form !== null) writeReplyCommentDraft(storageKey, form.quote, comment);
     formOpen.current = false;
     setForm(null);
     setComment("");
