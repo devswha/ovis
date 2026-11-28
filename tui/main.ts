@@ -77,7 +77,7 @@ const loop = startLoop({
 const crash = (error: unknown): never => {
   let where = "";
   try {
-    where = recordCrash(() => host.leave(), states, crashRecord(version, loop.report(), error, new Date()), process.pid);
+    where = recordCrash(() => host.leave(), states, () => crashRecord(version, loop.report(), error, new Date()), process.pid);
   } catch {
     // the folder cannot be written: the line below says so
   }

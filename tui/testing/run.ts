@@ -378,7 +378,7 @@ async function main(argv: string[]): Promise<number> {
     await run.advance(100);
     const end = await Promise.race([run.loop.done, Promise.resolve(null)]);
     if (end?.kind !== "crashed") throw new Error(`the forced error did not end the screen: ${end?.kind ?? "still running"}`);
-    const where = recordCrash(() => run.host.leave(), process.env["OVIS_TUI_STATE_DIR"]!, crashRecord(version, run.loop.report(), end.error, new Date()), process.pid);
+    const where = recordCrash(() => run.host.leave(), process.env["OVIS_TUI_STATE_DIR"]!, () => crashRecord(version, run.loop.report(), end.error, new Date()), process.pid);
     process.stderr.write(`ovis tui: crashed: a record is in ${where}\n`);
   }
   if (choice.dump) process.stdout.write(`${run.grid().join("\n")}\n`);

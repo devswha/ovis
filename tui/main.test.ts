@@ -146,7 +146,7 @@ describe("the crash record", () => {
       const path = recordCrash(() => {
         order.push(`leave with ${existsSync(folder) ? readdirSync(folder).length : 0} records`);
         run.host.leave();
-      }, folder, crashRecord(version, run.loop.report(), end.error, new Date()), process.pid);
+      }, folder, () => crashRecord(version, run.loop.report(), end.error, new Date()), process.pid);
       order.push("written");
       expect(order).toEqual([`leave with ${before} records`, "written"]);
       expect(run.host.log().at(-1)).toBe("raw off");
@@ -161,7 +161,7 @@ describe("the crash record", () => {
       expect(record.actions.length).toBeGreaterThan(0);
       for (const secret of ["QXJZ", "한글", "secret", "PASTED", "TOKEN", "PANE-BYTES", "more"]) expect(text).not.toContain(secret);
       for (let at = 0; at + 6 <= typed.length; at++) expect(text.includes(typed.slice(at, at + 6))).toBe(false);
-      for (let n = 0; n < 12; n++) recordCrash(() => {}, folder, crashRecord(version, null, new Error("x"), new Date(Date.UTC(2030, 0, 1, 0, 0, n))), process.pid);
+      for (let n = 0; n < 12; n++) recordCrash(() => {}, folder, () => crashRecord(version, null, new Error("x"), new Date(Date.UTC(2030, 0, 1, 0, 0, n))), process.pid);
       const kept = readdirSync(folder).sort();
       expect(kept).toHaveLength(CRASH_RECORDS_KEPT);
       expect(kept.at(-1)).toContain("2030-01-01T00-00-11");

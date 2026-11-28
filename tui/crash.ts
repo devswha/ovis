@@ -34,6 +34,8 @@ export function errorCode(error: unknown): string {
 
 export function crashRecord(version: string, report: LoopReport | null, error: unknown, now: Date): CrashRecord {
   const stack = error instanceof Error && typeof error.stack === "string" ? error.stack : "";
+  // the stack opens with the error's name and its message, which may run over several lines and quote anything
+  const headLines = error instanceof Error ? String(error.message).split("\n").length : 0;
   return {
     at: now.toISOString(),
     version,
@@ -45,8 +47,8 @@ export function crashRecord(version: string, report: LoopReport | null, error: u
     error: {
       code: errorCode(error),
       name: error instanceof Error ? error.constructor.name : typeof error,
-      // only the frames: the first line holds the message, which may quote anything
-      frames: stack.split("\n").map((line) => line.trim()).filter((line) => line.startsWith("at ")).slice(0, 20),
+      // only the frames, after the message's own lines: a message line that reads like a frame is still the message
+      frames: stack.split("\n").slice(headLines).map((line) => line.trim()).filter((line) => line.startsWith("at ")).slice(0, 20),
     },
   };
 }
@@ -70,12 +72,15 @@ function writeCrashRecord(folder: string, record: CrashRecord, pid: number): str
   return path;
 }
 
-/** After an unexpected error: the terminal is given back FIRST (else the runtime prints onto the alternate screen), then the record is written. */
-export function recordCrash(leave: () => void, folder: string, record: CrashRecord, pid: number): string {
+/**
+ * After an unexpected error: the terminal is given back FIRST (else the runtime prints onto the alternate screen), then
+ * the record is built and written. It is built only here, after the leave: reading a broken error or loop may throw.
+ */
+export function recordCrash(leave: () => void, folder: string, record: () => CrashRecord, pid: number): string {
   try {
     leave();
   } catch {
     // a terminal that cannot even be given back still gets its record: it says what happened
   }
-  return writeCrashRecord(folder, record, pid);
+  return writeCrashRecord(folder, record(), pid);
 }
