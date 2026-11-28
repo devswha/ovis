@@ -121,8 +121,8 @@ const ELAPSED = String.raw`(?:\d+h ?)?(?:\d+m ?)?\d+(?:\.\d+)?s`;
  * The lines agents with no reader of their own (and Hermes, for its generic card) redraw while a prompt of theirs
  * waits, each to the letter, and what it reads as in the id: the clock, countdown, spinner frame or token count
  * blanked, every word kept. A rule is applied only when exactly one shown line has its shape, so two rows of a menu
- * that happen to look alike are read as written; `each` (a spinner frame that starts a row) applies to every row with
- * it, as maki draws one on its tool row and its status bar at once. Recorded from Copilot 1.0.109, Grok 1.0.77,
+ * that happen to look alike are read as written, and a spinner frame is blanked only on the rows it was recorded on:
+ * frames that start a menu's rows may be its selection mark. Recorded from Copilot 1.0.109, Grok 1.0.77,
  * Hermes 0.21.5, Muse 1.4.14, maki, kimi and dsh-tui as the agent lab runs them (2026-11-12).
  */
 const WAITING_LINES: Readonly<Record<string, readonly WaitingLine[]>> = {
@@ -152,22 +152,26 @@ const WAITING_LINES: Readonly<Record<string, readonly WaitingLine[]>> = {
     // over its approval dialog, while the call waits (Muse 1.4.25): "◇ Calling tools (21s · esc to interrupt)"
     { pattern: new RegExp(`^[◆◈◇] (\\S(?:.*\\S)?) \\(${ELAPSED} · esc to interrupt\\)$`, "u"), steady: "◈ $1 (<time> · esc to interrupt)" },
   ],
-  // "⠏ bash> List directory contents    16:34:03" and "⠇ [BUILD]../lab-maki  anthropic/… $0.001"
-  maki: [{ pattern: new RegExp(`^${BRAILLE_SPINNER} (\\S.*)$`, "u"), steady: "<spinner> $1", each: true }],
+  maki: [
+    // its tool row: "⠏ bash> List directory contents    16:34:03"
+    { pattern: new RegExp(`^${BRAILLE_SPINNER} (\\S+> \\S.* \\d{2}:\\d{2}:\\d{2})$`, "u"), steady: "<spinner> $1" },
+    // its status bar: "⠇ [BUILD]../lab-maki  anthropic/… $0.001"
+    { pattern: new RegExp(`^${BRAILLE_SPINNER} (\\[[A-Z]+\\]\\S.*)$`, "u"), steady: "<spinner> $1" },
+  ],
   // "⠋ Using Shell (ls -la)"
-  kimi: [{ pattern: new RegExp(`^${BRAILLE_SPINNER} (\\S.*)$`, "u"), steady: "<spinner> $1", each: true }],
+  kimi: [{ pattern: new RegExp(`^${BRAILLE_SPINNER} (Using \\S+ \\(.*\\))$`, "u"), steady: "<spinner> $1" }],
   // "🌖 Checking with you · 50s · ↑ 11.3k · ↓ 18 tokens", its moon turning
   "dsh-tui": [{ pattern: new RegExp(`^[\\u{1F311}-\\u{1F318}] (\\S(?:.*\\S)?) · ${ELAPSED} · ↑ [\\d.,]+[kKmM]? · ↓ [\\d.,]+[kKmM]? tokens$`, "u"), steady: "<moon> $1 · <time> · <tokens>" }],
 };
 
-interface WaitingLine { pattern: RegExp; steady: string | ((all: string, ...groups: (string | undefined)[]) => string); each?: true }
+interface WaitingLine { pattern: RegExp; steady: string | ((all: string, ...groups: (string | undefined)[]) => string) }
 
 function waitingReader(rules: readonly WaitingLine[], shown: string[]): SteadyReader {
   const steadied = new Map<string, string>();
   const working: number[] = [];
   for (const rule of rules) {
     const at = shown.flatMap((line, index) => rule.pattern.test(line) ? [index] : []);
-    if (at.length === 0 || (at.length > 1 && !rule.each)) continue;
+    if (at.length !== 1) continue;
     for (const index of at) {
       steadied.set(shown[index]!, (typeof rule.steady === "string" ? shown[index]!.replace(rule.pattern, rule.steady) : shown[index]!.replace(rule.pattern, rule.steady)));
       working.push(index);
