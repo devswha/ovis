@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import * as client from "./herdr/client.ts";
 import { isGjcProcess } from "./gjc-runtime.ts";
-import { catalogLocator } from "./agent-catalog-detect.ts";
+import { AgentDetector, catalogLocator } from "./agent-catalog-detect.ts";
 import { agentPathProbe, loginPathProbe, paneShell, parseLoginAliases, parseLoginPath, powershellNativeArgs, shellAgentExecutable, ShellAgentLocator, shellCommandLine, startShellAgent, type LoginPathProbe, type LoginPathResult } from "./shell-agent.ts";
 import { descendantArgv, descendantProcesses, parseProcessTable, windowsArgv, windowsProcessTable } from "./windows-processes.ts";
 
@@ -487,6 +487,14 @@ for (const name of ["bash", "zsh"]) {
       expect(await locate("codex")).toBe(join(home, "bin/codex"));
       for (const other of ["gemini", "amp", "kimi"]) expect(await locate(other)).toBeNull();
       expect(locate.alias?.("claude")).toBe(join(home, ".claude/local/claude"));
+      const detector = new AgentDetector({ home, locate });
+      expect(await detector.aliasTarget("claude")).toBe(join(home, ".claude/local/claude"));
+      // a copy on the PATH wins over the alias, as before: that copy is detected and started by name
+      mkdirSync(join(home, "path"), { recursive: true });
+      writeFileSync(join(home, "path/claude"), "#!/bin/sh\n", { mode: 0o755 });
+      const onPath = catalogLocator({ probe: agentPathProbe({ shell, env: { HOME: home, ZDOTDIR: home, PATH: `${join(home, "path")}:/usr/bin:/bin` }, aliases: ["claude"] }), servicePath: () => "/nonexistent" });
+      expect(await onPath("claude")).toBe(join(home, "path/claude"));
+      expect(await new AgentDetector({ home, locate: onPath }).aliasTarget("claude")).toBeNull();
       expect(existsSync(ran)).toBe(false);
     } finally {
       rmSync(home, { recursive: true, force: true });
