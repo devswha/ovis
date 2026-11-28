@@ -80,7 +80,7 @@ export function driftTable(rows: readonly Drift[]): string {
   ].join("\n");
 }
 
-async function latestOf(npm: string): Promise<Latest> {
+export async function latestOf(npm: string): Promise<Latest> {
   const github = npm.startsWith("github:") ? npm.slice("github:".length) : null;
   const source = github === null ? "npm" : "GitHub";
   try {

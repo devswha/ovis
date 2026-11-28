@@ -1,6 +1,6 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { APPROVAL_ADAPTERS } from "../server/approvals/adapters.ts";
-import { drifted, HARNESSES, type Harness } from "./harness-drift.ts";
+import { drifted, HARNESSES, latestOf, type Harness } from "./harness-drift.ts";
 
 describe("harness drift", () => {
   const measuredOn1 = (kind: string): Harness => ({ kind, npm: kind, link: "Ovis's hook", supports: (version) => version.startsWith("1.") });
@@ -18,6 +18,20 @@ describe("harness drift", () => {
     const prime = HARNESSES.filter((harness) => harness.kind === "prime-agent");
     expect(drifted(prime, new Map([["prime-agent", { version: "0.10.9" }]]))).toEqual([]);
     expect(drifted(prime, new Map([["prime-agent", { version: "0.11.0" }]])).map((row) => row.outside)).toEqual([true]);
+  });
+
+  it("reads a GitHub-released CLI's latest release tag, and says when GitHub did not answer", async () => {
+    const asked: string[] = [];
+    const answers = [Response.json({ tag_name: "v0.10.5", version: "9.9.9" }), new Response("rate limited", { status: 403 })];
+    const fetching = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (url: string | URL | Request) => {
+      asked.push(String(url));
+      return answers.shift()!;
+    }, { preconnect: globalThis.fetch.preconnect }));
+    try {
+      expect(await latestOf("github:PrimeIntellect-ai/prime-agent")).toEqual({ version: "0.10.5" });
+      expect(await latestOf("github:PrimeIntellect-ai/prime-agent")).toEqual({ error: "GitHub answered 403" });
+      expect(asked).toEqual(Array(2).fill("https://api.github.com/repos/PrimeIntellect-ai/prime-agent/releases/latest"));
+    } finally { fetching.mockRestore(); }
   });
 
   it("checks every hooked agent, Codex's own server and Prime Agent against the windows in the code", () => {
